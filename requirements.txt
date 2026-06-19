@@ -1,0 +1,8 @@
+streamlit
+pandas
+numpy
+plotly
+streamlit-autorefresh
+ib-insync
+requests
+pytz
