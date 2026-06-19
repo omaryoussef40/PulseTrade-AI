@@ -6,3 +6,4 @@ streamlit-autorefresh
 ib-insync
 requests
 pytz
+python-dotenv

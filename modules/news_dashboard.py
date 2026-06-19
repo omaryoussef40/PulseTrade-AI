@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -192,6 +193,21 @@ def _safe_list(value: Any) -> list[str]:
         return [x.strip() for x in value.split(",") if x.strip()]
     return []
 
+
+
+
+def _clean_news_text(value: Any, max_chars: int | None = None) -> str:
+    """Clean Benzinga HTML/body text before rendering or summarizing."""
+    text = "" if value is None else str(value)
+    text = html.unescape(text)
+    text = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"```[\s\S]*?```", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if max_chars and len(text) > max_chars:
+        return text[: max_chars - 1].rstrip() + "…"
+    return text
 
 def _articles_to_df(rows: list[dict[str, Any]]) -> pd.DataFrame:
     if not rows:
@@ -428,6 +444,150 @@ def _ticker_chart(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+
+def _build_ticker_sentiment_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate the filtered news into a ticker-level bullish/bearish summary."""
+    if df.empty or "tickers" not in df.columns:
+        return pd.DataFrame()
+
+    rows: list[dict[str, Any]] = []
+    for _, row in df.iterrows():
+        tickers = _safe_list(row.get("tickers"))
+        if not tickers:
+            continue
+        sentiment = str(row.get("sentiment", "neutral") or "neutral").lower()
+        impact = int(row.get("impact_score", 0) or 0)
+        headline = _clean_news_text(row.get("headline", ""), 140)
+        published = row.get("published_at")
+        categories = ", ".join(_safe_list(row.get("categories"))[:3])
+
+        for ticker in tickers:
+            rows.append({
+                "Ticker": str(ticker).upper(),
+                "Sentiment": sentiment,
+                "Impact": impact,
+                "Headline": headline,
+                "Published": published,
+                "Categories": categories,
+            })
+
+    if not rows:
+        return pd.DataFrame()
+
+    expanded = pd.DataFrame(rows)
+
+    def last_headline(group: pd.DataFrame) -> str:
+        group = group.sort_values("Published", ascending=False)
+        return str(group.iloc[0].get("Headline", ""))
+
+    def last_time(group: pd.DataFrame) -> Any:
+        group = group.sort_values("Published", ascending=False)
+        return group.iloc[0].get("Published")
+
+    summary = (
+        expanded.groupby("Ticker")
+        .agg(
+            Articles=("Ticker", "count"),
+            Bullish=("Sentiment", lambda s: int((s == "bullish").sum())),
+            Bearish=("Sentiment", lambda s: int((s == "bearish").sum())),
+            Neutral=("Sentiment", lambda s: int((s == "neutral").sum())),
+            Avg_Impact=("Impact", "mean"),
+            Max_Impact=("Impact", "max"),
+        )
+        .reset_index()
+    )
+
+    headline_map: dict[str, str] = {}
+    time_map: dict[str, Any] = {}
+    for ticker_value, group in expanded.groupby("Ticker"):
+        group = group.sort_values("Published", ascending=False)
+        headline_map[str(ticker_value)] = str(group.iloc[0].get("Headline", ""))
+        time_map[str(ticker_value)] = group.iloc[0].get("Published")
+
+    summary["Latest Headline"] = summary["Ticker"].map(headline_map)
+    summary["Latest"] = summary["Ticker"].map(time_map)
+    summary["Avg Impact"] = summary["Avg_Impact"].round(0).astype(int)
+    summary["Max Impact"] = summary["Max_Impact"].astype(int)
+    summary["Bias Score"] = summary["Bullish"] - summary["Bearish"]
+
+    def bias_label(row: pd.Series) -> str:
+        if row["Bias Score"] > 0:
+            return "Bullish"
+        if row["Bias Score"] < 0:
+            return "Bearish"
+        return "Mixed / Neutral"
+
+    summary["Bias"] = summary.apply(bias_label, axis=1)
+    return summary.sort_values(["Max Impact", "Articles"], ascending=[False, False])
+
+
+def _render_market_summary(filtered: pd.DataFrame) -> None:
+    """Render a decision-friendly summary above the raw news feed."""
+    st.markdown("### Market Intelligence Summary")
+    st.caption("Quick read of the filtered news: which watchlist names look bullish, bearish, or have fresh catalysts.")
+
+    if filtered.empty:
+        st.info("No articles match the current filters.")
+        return
+
+    ticker_summary = _build_ticker_sentiment_summary(filtered)
+
+    s1, s2, s3, s4 = st.columns(4)
+    bullish_articles = int((filtered.get("sentiment", pd.Series(dtype=str)).astype(str).str.lower() == "bullish").sum())
+    bearish_articles = int((filtered.get("sentiment", pd.Series(dtype=str)).astype(str).str.lower() == "bearish").sum())
+    high_impact_articles = int((filtered.get("impact_score", pd.Series(dtype=int)) >= 85).sum()) if "impact_score" in filtered.columns else 0
+    ticker_count = int(len(ticker_summary)) if not ticker_summary.empty else 0
+    with s1:
+        _stat_card("Bullish Articles", f"{bullish_articles:,}")
+    with s2:
+        _stat_card("Bearish Articles", f"{bearish_articles:,}")
+    with s3:
+        _stat_card("High Impact", f"{high_impact_articles:,}")
+    with s4:
+        _stat_card("Tickers Mentioned", f"{ticker_count:,}")
+
+    if ticker_summary.empty:
+        st.info("No ticker-level summary available for the current filters.")
+        return
+
+    left, right = st.columns(2)
+
+    bullish = ticker_summary[ticker_summary["Bias"] == "Bullish"].copy()
+    bearish = ticker_summary[ticker_summary["Bias"] == "Bearish"].copy()
+
+    bullish = bullish.sort_values(["Bias Score", "Max Impact", "Articles"], ascending=[False, False, False]).head(8)
+    bearish = bearish.sort_values(["Bias Score", "Max Impact", "Articles"], ascending=[True, False, False]).head(8)
+
+    display_cols = ["Ticker", "Bias", "Articles", "Bullish", "Bearish", "Avg Impact", "Max Impact", "Latest Headline"]
+
+    with left:
+        st.markdown("#### Bullish Watchlist")
+        if bullish.empty:
+            st.caption("No clear bullish watchlist names in the current filter.")
+        else:
+            st.dataframe(bullish[display_cols], use_container_width=True, hide_index=True)
+
+    with right:
+        st.markdown("#### Bearish Watchlist")
+        if bearish.empty:
+            st.caption("No clear bearish watchlist names in the current filter.")
+        else:
+            st.dataframe(bearish[display_cols], use_container_width=True, hide_index=True)
+
+    st.markdown("#### Highest Impact Catalysts")
+    catalyst_cols = [c for c in ["published_at", "headline", "tickers", "sentiment", "impact_score", "categories", "url"] if c in filtered.columns]
+    catalysts = filtered.sort_values(["impact_score", "published_at"], ascending=[False, False]).head(10).copy()
+    if catalysts.empty:
+        st.caption("No catalyst headlines in the current filter.")
+    else:
+        if "published_at" in catalysts.columns:
+            catalysts["published_at"] = catalysts["published_at"].astype(str)
+        if "headline" in catalysts.columns:
+            catalysts["headline"] = catalysts["headline"].apply(lambda x: _clean_news_text(x, 140))
+        st.dataframe(catalysts[catalyst_cols], use_container_width=True, hide_index=True)
+
+
+
 # -----------------------------------------------------------------------------
 # Main render function
 # -----------------------------------------------------------------------------
@@ -510,7 +670,7 @@ def render_market_intelligence_tab(db_path: str | Path = DEFAULT_DB_PATH) -> Non
     with f3:
         sentiment = st.selectbox("Sentiment", ["All", "bullish", "bearish", "neutral"])
     with f4:
-        min_impact = st.slider("Minimum impact", min_value=0, max_value=100, value=0, step=5)
+        min_impact = st.slider("Minimum impact", min_value=0, max_value=100, value=70, step=5)
 
     f5, f6, f7 = st.columns(3)
     with f5:
@@ -518,7 +678,7 @@ def render_market_intelligence_tab(db_path: str | Path = DEFAULT_DB_PATH) -> Non
     with f6:
         source = st.selectbox("Source", ["All"] + all_sources)
     with f7:
-        watchlist_only = st.checkbox("Watchlist only", value=False)
+        watchlist_only = st.checkbox("Watchlist only", value=True)
 
     query = st.text_input("Search news", value="", placeholder="Search headline, summary, ticker, category...")
 
@@ -533,6 +693,8 @@ def render_market_intelligence_tab(db_path: str | Path = DEFAULT_DB_PATH) -> Non
         min_impact=min_impact,
         lookback_hours=lookback_hours,
     )
+
+    _render_market_summary(filtered)
 
     st.markdown("### Intelligence Overview")
     c1, c2 = st.columns(2)

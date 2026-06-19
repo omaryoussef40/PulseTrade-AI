@@ -86,5 +86,11 @@
     "RKLB",
     "HIMS",
     "CRWD"
-  ]
+  ],
+  "news": {
+    "benzinga_api_key": "bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74",
+    "poll_interval_seconds": 30,
+    "only_watchlist_alerts": true,
+    "min_impact_for_alert": 70
+  }
 }

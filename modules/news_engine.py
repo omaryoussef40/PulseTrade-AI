@@ -81,6 +81,33 @@ NEWS_LOG_FILE = LOG_DIR / "news_engine.log"
 
 BENZINGA_NEWS_URL = "https://api.benzinga.com/api/v2/news"
 SOURCE_NAME = "benzinga"
+ENV_PATH = PROJECT_ROOT / ".env"
+
+
+def load_dotenv_file(path: Path = ENV_PATH) -> None:
+    """Load simple KEY=VALUE pairs from .env without requiring python-dotenv.
+
+    Existing environment variables are not overwritten. Lines starting with # are ignored.
+    Supports optional single or double quotes around values.
+    """
+    if not path.exists():
+        return
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except Exception as exc:
+        log(f"Could not load .env file: {exc}", "WARN")
+
+
+# Load .env as early as possible so BENZINGA_API_KEY is available to load_config().
+load_dotenv_file()
 
 DEFAULT_WATCHLIST = [
     "SPY", "QQQ", "IWM",
