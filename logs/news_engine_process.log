@@ -3163,3 +3163,248 @@ Traceback (most recent call last):
   File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_database.py", line 339, in update_health
   File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_database.py", line 89, in connect
 sqlite3.OperationalError: unable to open database file
+
+--- Manual one-shot poll ---
+2026-06-20T06:08:26.185092+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+    raw_items = self.client.fetch_news(
+        page_size=self.config.page_size,
+    ...<2 lines>...
+        updated_since=since,
+    )
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A08%3A25Z
+
+{
+  "seen": 0,
+  "inserted": 0,
+  "duplicates": 0,
+  "watchlist_hits": 0,
+  "alerts_sent": 0,
+  "errors": [
+    "400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A08%3A25Z"
+  ]
+}
+
+--- Manual one-shot poll ---
+2026-06-20T06:08:40.262459+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+    raw_items = self.client.fetch_news(
+        page_size=self.config.page_size,
+    ...<2 lines>...
+        updated_since=since,
+    )
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A08%3A39Z
+
+{
+  "seen": 0,
+  "inserted": 0,
+  "duplicates": 0,
+  "watchlist_hits": 0,
+  "alerts_sent": 0,
+  "errors": [
+    "400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A08%3A39Z"
+  ]
+}
+
+--- Starting PulseTrade AI news engine ---
+2026-06-20T06:10:02.110578+00:00 | INFO | News engine started.
+2026-06-20T06:10:02.441431+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+    raw_items = self.client.fetch_news(
+        page_size=self.config.page_size,
+    ...<2 lines>...
+        updated_since=since,
+    )
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A10%3A02Z
+
+
+--- Manual one-shot poll ---
+2026-06-20T06:10:04.111368+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+    raw_items = self.client.fetch_news(
+        page_size=self.config.page_size,
+    ...<2 lines>...
+        updated_since=since,
+    )
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A10%3A03Z
+
+{
+  "seen": 0,
+  "inserted": 0,
+  "duplicates": 0,
+  "watchlist_hits": 0,
+  "alerts_sent": 0,
+  "errors": [
+    "400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A10%3A03Z"
+  ]
+}
+2026-06-20T06:10:32.643059+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+    raw_items = self.client.fetch_news(
+        page_size=self.config.page_size,
+    ...<2 lines>...
+        updated_since=since,
+    )
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A10%3A32Z
+
+2026-06-20T06:11:02.818511+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+    raw_items = self.client.fetch_news(
+        page_size=self.config.page_size,
+    ...<2 lines>...
+        updated_since=since,
+    )
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A11%3A02Z
+
+2026-06-20T06:11:32.987066+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+    raw_items = self.client.fetch_news(
+        page_size=self.config.page_size,
+    ...<2 lines>...
+        updated_since=since,
+    )
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A11%3A32Z
+
+2026-06-20T06:12:03.349581+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+    raw_items = self.client.fetch_news(
+        page_size=self.config.page_size,
+    ...<2 lines>...
+        updated_since=since,
+    )
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A12%3A02Z
+
+
+--- Manual one-shot poll ---
+2026-06-20T06:12:19.140522+00:00 | INFO | Poll complete | seen=25 inserted=1 duplicates=24 hits=1 alerts=1
+{
+  "seen": 25,
+  "inserted": 1,
+  "duplicates": 24,
+  "watchlist_hits": 1,
+  "alerts_sent": 1,
+  "errors": []
+}
+2026-06-20T06:12:33.527553+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+        return self.config.tickers
+                        ^^^^^^^^^^
+    ...<4 lines>...
+        Articles are still stored in SQLite even when alerts are suppressed.
+        ^^^^^
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    ) -> list[dict[str, Any]]:
+        ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A12%3A33Z
+
+2026-06-20T06:13:03.719425+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+        return self.config.tickers
+                        ^^^^^^^^^^
+    ...<4 lines>...
+        Articles are still stored in SQLite even when alerts are suppressed.
+        ^^^^^
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    ) -> list[dict[str, Any]]:
+        ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A13%3A03Z
+
+2026-06-20T06:13:33.903308+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+        return self.config.tickers
+                        ^^^^^^^^^^
+    ...<4 lines>...
+        Articles are still stored in SQLite even when alerts are suppressed.
+        ^^^^^
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    ) -> list[dict[str, Any]]:
+        ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A13%3A33Z
+
+2026-06-20T06:14:04.088075+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+        return self.config.tickers
+                        ^^^^^^^^^^
+    ...<4 lines>...
+        Articles are still stored in SQLite even when alerts are suppressed.
+        ^^^^^
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    ) -> list[dict[str, Any]]:
+        ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A14%3A03Z
+
+2026-06-20T06:14:34.272552+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 661, in poll_once
+        return self.config.tickers
+                        ^^^^^^^^^^
+    ...<4 lines>...
+        Articles are still stored in SQLite even when alerts are suppressed.
+        ^^^^^
+  File "/Users/omaryoussef/Documents/GitHub/PulseTrade-AI/modules/news_engine.py", line 551, in fetch_news
+    ) -> list[dict[str, Any]]:
+        ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/site-packages/requests/models.py", line 1167, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://api.benzinga.com/api/v2/news?token=bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74&pageSize=50&displayOutput=full&updatedSince=2026-06-20T05%3A14%3A34Z
+

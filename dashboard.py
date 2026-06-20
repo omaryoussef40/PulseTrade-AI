@@ -20,6 +20,12 @@ try:
 except Exception:
     render_market_intelligence_tab = None
 
+try:
+    from modules.news_bridge import get_catalyst_map, render_catalyst_html
+except Exception:
+    get_catalyst_map = None
+    render_catalyst_html = None
+
 st.set_page_config(page_title=APP_NAME, layout="wide")
 st.title(APP_NAME)
 st.caption("Production dashboard + shared config + independent engine")
@@ -50,6 +56,7 @@ st.markdown("""
 
 
 cfg = load_config()
+NEWS_CATALYSTS = {}
 
 
 def status_card(label: str, value: str):
@@ -63,10 +70,17 @@ def status_card(label: str, value: str):
 
 def setup_card(row: dict):
     signal = str(row.get("Signal", "WAIT"))
+    symbol = str(row.get("Symbol", "")).upper()
     card_cls = "setup-card-call" if signal == "CALL" else "setup-card-put" if signal == "PUT" else ""
     badge_cls = "badge-call" if signal == "CALL" else "badge-put" if signal == "PUT" else ""
     reasons = str(row.get("Reasons", "")).replace(" | ", " • ")
     quality = setup_quality_label(row.get("Score"), row.get("Confidence")) if "setup_quality_label" in globals() else "Setup"
+    catalyst_html = ""
+    try:
+        catalyst = NEWS_CATALYSTS.get(symbol) if isinstance(NEWS_CATALYSTS, dict) else None
+        catalyst_html = render_catalyst_html(catalyst) if catalyst and render_catalyst_html else ""
+    except Exception:
+        catalyst_html = ""
     st.markdown(f"""
     <div class='setup-card {card_cls}'>
         <div class='setup-symbol'>{row.get('Symbol', '')}</div>
@@ -78,6 +92,7 @@ def setup_card(row: dict):
             <div><div class='setup-label'>RVOL</div><b>{row.get('RVOL', 'N/A')}</b></div>
             <div><div class='setup-label'>ATR %</div><b>{row.get('ATR %', 'N/A')}</b></div>
         </div>
+        {catalyst_html}
         <div class='small-muted' style='margin-top:10px;'>{reasons[:160]}</div>
     </div>
     """, unsafe_allow_html=True)
@@ -266,6 +281,13 @@ ib_cfg = IBConfig(
 tg_cfg = TelegramConfig(bot_token=cfg["telegram"].get("bot_token", ""), chat_id=cfg["telegram"].get("chat_id", ""))
 symbols = cfg.get("watchlist", WATCHLIST)
 
+# Read recent Benzinga catalysts once per dashboard refresh.
+# This is UI-only and does not affect order placement.
+try:
+    NEWS_CATALYSTS = get_catalyst_map(symbols, min_impact=70, lookback_hours=24) if get_catalyst_map else {}
+except Exception:
+    NEWS_CATALYSTS = {}
+
 health = read_health()
 
 def operational_order_label(config: dict, health_state: dict) -> str:
@@ -335,7 +357,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 Scanner", "🔍 Breakdown", 
 
 with tab1:
     st.subheader("Scanner")
-    st.caption("Scan the full watchlist, rank the best setups, and review option ideas. Scanner requires IBKR / ib-insync connection.")
+    st.caption("Scan the full watchlist, rank the best setups, and review option ideas. Fresh Benzinga catalysts are shown inside setup cards when available.")
     if st.button("▶ Run IBKR Scanner", use_container_width=True):
         rows, option_rows = [], []
         progress = st.progress(0)

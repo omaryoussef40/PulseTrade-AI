@@ -25,7 +25,11 @@ Config.json support:
         "poll_interval_seconds": 30,
         "lookback_minutes": 60,
         "only_watchlist_alerts": true,
-        "min_impact_for_alert": 70,
+        "min_impact_for_alert": 85,
+        "alert_categories": ["breaking", "analyst_upgrade", "analyst_downgrade", "earnings", "government", "fed", "ma", "sec", "lawsuit", "social"],
+        "blocked_alert_categories": ["general"],
+        "alert_etfs": false,
+        "max_alerts_per_poll": 5,
         "send_telegram_alerts": true,
         "channels": [],
         "tickers": []
@@ -81,33 +85,6 @@ NEWS_LOG_FILE = LOG_DIR / "news_engine.log"
 
 BENZINGA_NEWS_URL = "https://api.benzinga.com/api/v2/news"
 SOURCE_NAME = "benzinga"
-ENV_PATH = PROJECT_ROOT / ".env"
-
-
-def load_dotenv_file(path: Path = ENV_PATH) -> None:
-    """Load simple KEY=VALUE pairs from .env without requiring python-dotenv.
-
-    Existing environment variables are not overwritten. Lines starting with # are ignored.
-    Supports optional single or double quotes around values.
-    """
-    if not path.exists():
-        return
-    try:
-        for raw_line in path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
-    except Exception as exc:
-        log(f"Could not load .env file: {exc}", "WARN")
-
-
-# Load .env as early as possible so BENZINGA_API_KEY is available to load_config().
-load_dotenv_file()
 
 DEFAULT_WATCHLIST = [
     "SPY", "QQQ", "IWM",
@@ -180,6 +157,21 @@ HIGH_IMPACT_WORDS = [
     "earnings", "guidance", "upgrade", "downgrade", "acquisition", "merger", "bankruptcy", "offering",
 ]
 
+MAJOR_ETF_SYMBOLS = {"SPY", "QQQ", "IWM", "DIA", "VIX", "UVXY", "TQQQ", "SQQQ", "SOXL", "SOXS"}
+DEFAULT_ALERT_CATEGORIES = [
+    "breaking",
+    "analyst_upgrade",
+    "analyst_downgrade",
+    "earnings",
+    "government",
+    "fed",
+    "ma",
+    "sec",
+    "lawsuit",
+    "social",
+]
+DEFAULT_BLOCKED_ALERT_CATEGORIES = ["general"]
+
 
 @dataclass
 class NewsEngineConfig:
@@ -192,7 +184,11 @@ class NewsEngineConfig:
     tickers: list[str] = field(default_factory=list)
     watchlist: list[str] = field(default_factory=list)
     only_watchlist_alerts: bool = True
-    min_impact_for_alert: int = 70
+    min_impact_for_alert: int = 85
+    alert_categories: list[str] = field(default_factory=lambda: DEFAULT_ALERT_CATEGORIES.copy())
+    blocked_alert_categories: list[str] = field(default_factory=lambda: DEFAULT_BLOCKED_ALERT_CATEGORIES.copy())
+    alert_etfs: bool = False
+    max_alerts_per_poll: int = 5
     send_telegram_alerts: bool = False
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
@@ -207,6 +203,16 @@ def log(message: str, level: str = "INFO") -> None:
             f.write(line + "\n")
     except Exception:
         pass
+
+def redact_secrets(text: str) -> str:
+    """Remove API tokens from logs/errors before printing to the dashboard or log files."""
+    if not text:
+        return ""
+    text = re.sub(r"(token=)[^&\s]+", r"\1***REDACTED***", str(text))
+    text = re.sub(r"(BENZINGA_API_KEY=)[^\s]+", r"\1***REDACTED***", text)
+    text = re.sub(r"bz\.[A-Za-z0-9_\-]+", "bz.***REDACTED***", text)
+    return text
+
 
 
 def load_json_file(path: Path) -> dict[str, Any]:
@@ -236,6 +242,14 @@ def load_config() -> NewsEngineConfig:
     if not isinstance(channels, list):
         channels = []
 
+    alert_categories = news_cfg.get("alert_categories", DEFAULT_ALERT_CATEGORIES)
+    if not isinstance(alert_categories, list):
+        alert_categories = DEFAULT_ALERT_CATEGORIES
+
+    blocked_alert_categories = news_cfg.get("blocked_alert_categories", DEFAULT_BLOCKED_ALERT_CATEGORIES)
+    if not isinstance(blocked_alert_categories, list):
+        blocked_alert_categories = DEFAULT_BLOCKED_ALERT_CATEGORIES
+
     return NewsEngineConfig(
         enabled=bool(news_cfg.get("enabled", True)),
         api_key=str(
@@ -250,7 +264,11 @@ def load_config() -> NewsEngineConfig:
         tickers=[str(x).strip().upper().replace("$", "") for x in configured_tickers if str(x).strip()],
         watchlist=[str(x).strip().upper().replace("$", "") for x in watchlist if str(x).strip()],
         only_watchlist_alerts=bool(news_cfg.get("only_watchlist_alerts", True)),
-        min_impact_for_alert=int(news_cfg.get("min_impact_for_alert", 70)),
+        min_impact_for_alert=int(news_cfg.get("min_impact_for_alert", 85)),
+        alert_categories=[str(x).strip().lower() for x in alert_categories if str(x).strip()],
+        blocked_alert_categories=[str(x).strip().lower() for x in blocked_alert_categories if str(x).strip()],
+        alert_etfs=bool(news_cfg.get("alert_etfs", False)),
+        max_alerts_per_poll=int(news_cfg.get("max_alerts_per_poll", 5)),
         send_telegram_alerts=bool(news_cfg.get("send_telegram_alerts", telegram_cfg.get("send_alerts", False))),
         telegram_bot_token=str(telegram_cfg.get("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN", "")).strip(),
         telegram_chat_id=str(telegram_cfg.get("chat_id") or os.getenv("TELEGRAM_CHAT_ID", "")).strip(),
@@ -543,9 +561,9 @@ class BenzingaClient:
             params["tickers"] = ",".join(tickers)
         if channels:
             params["channels"] = ",".join(channels)
-        if updated_since:
-            # Benzinga News API supports updatedSince for delta-style queries.
-            params["updatedSince"] = updated_since.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        # Do not send updatedSince. Some Benzinga News API accounts reject this parameter
+        # depending on entitlements/date-format handling. Local SQLite duplicate protection
+        # keeps repeated polls clean.
 
         response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
         response.raise_for_status()
@@ -643,12 +661,36 @@ class NewsEngine:
         return self.config.tickers
 
     def should_alert(self, article: NewsArticle) -> bool:
+        """Return True only for actionable, high-signal alerts.
+
+        Articles are still stored in SQLite even when alerts are suppressed.
+        This keeps the dashboard complete while preventing Telegram spam.
+        """
         if not self.config.send_telegram_alerts:
             return False
+
         if article.impact_score < self.config.min_impact_for_alert:
             return False
+
         if self.config.only_watchlist_alerts and not article.watchlist_hit:
             return False
+
+        categories = {str(c).lower() for c in (article.categories or [])}
+
+        if categories & set(self.config.blocked_alert_categories):
+            return False
+
+        allowed_categories = set(self.config.alert_categories or [])
+        if allowed_categories and not (categories & allowed_categories):
+            return False
+
+        tickers = {str(t).upper() for t in (article.tickers or [])}
+        if not tickers:
+            return False
+
+        if not self.config.alert_etfs and tickers and tickers.issubset(MAJOR_ETF_SYMBOLS):
+            return False
+
         return True
 
     def poll_once(self, dry_run: bool = False) -> PollResult:
@@ -662,7 +704,7 @@ class NewsEngine:
                 page_size=self.config.page_size,
                 tickers=self.get_query_tickers(),
                 channels=self.config.channels,
-                updated_since=since,
+                updated_since=None,
             )
             result.seen = len(raw_items)
 
@@ -687,7 +729,7 @@ class NewsEngine:
                     if article.watchlist_hit:
                         result.watchlist_hits += 1
 
-                    if article_id and self.should_alert(article):
+                    if article_id and result.alerts_sent < self.config.max_alerts_per_poll and self.should_alert(article):
                         ok, status = send_telegram(
                             self.config.telegram_bot_token,
                             self.config.telegram_chat_id,
@@ -718,8 +760,8 @@ class NewsEngine:
             return result
 
         except Exception as exc:
-            err = traceback.format_exc()
-            result.errors.append(str(exc))
+            err = redact_secrets(traceback.format_exc())
+            result.errors.append(redact_secrets(str(exc)))
             self.db.update_health(
                 engine_running=True,
                 last_poll_finished_at=utc_now_iso(),
