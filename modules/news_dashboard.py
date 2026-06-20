@@ -57,6 +57,21 @@ try:
 except Exception:
     NewsAnalyzer = None  # type: ignore
 
+try:
+    from news_control import (
+        get_news_engine_status,
+        start_news_engine,
+        stop_news_engine,
+        run_news_poll_once,
+        tail_news_process_log,
+    )
+except Exception:
+    get_news_engine_status = None  # type: ignore
+    start_news_engine = None  # type: ignore
+    stop_news_engine = None  # type: ignore
+    run_news_poll_once = None  # type: ignore
+    tail_news_process_log = None  # type: ignore
+
 
 # -----------------------------------------------------------------------------
 # Styling
@@ -617,15 +632,47 @@ def render_market_intelligence_tab(db_path: str | Path = DEFAULT_DB_PATH) -> Non
     with top_cols[4]:
         _stat_card("News Engine", "Running" if health.get("engine_running") else "Idle")
 
+    process_status = None
+    if get_news_engine_status is not None:
+        try:
+            process_status = get_news_engine_status()
+        except Exception:
+            process_status = None
+
     with st.expander("News engine health", expanded=False):
         st.json(health or {"status": "No news engine heartbeat yet."})
+        if process_status is not None:
+            st.caption("Local process status")
+            st.json(process_status.as_dict())
 
-    action_cols = st.columns(4)
-    with action_cols[0]:
-        if st.button("Initialize DB", use_container_width=True):
-            initialize_news_database(db_path)
-            st.success("News database initialized.")
-    with action_cols[1]:
+    st.markdown("### News Engine Controls")
+    st.caption("Use these controls to run Benzinga polling without opening a separate Terminal window.")
+
+    control_cols = st.columns(5)
+    with control_cols[0]:
+        if st.button("Start News Engine", use_container_width=True, disabled=start_news_engine is None):
+            status = start_news_engine()
+            if status.running:
+                st.success(status.message)
+            else:
+                st.warning(status.message)
+    with control_cols[1]:
+        if st.button("Stop News Engine", use_container_width=True, disabled=stop_news_engine is None):
+            status = stop_news_engine()
+            st.info(status.message)
+    with control_cols[2]:
+        if st.button("Run One Poll", use_container_width=True, disabled=run_news_poll_once is None):
+            with st.spinner("Polling Benzinga..."):
+                result = run_news_poll_once()
+            if result.get("ok"):
+                st.success("One news poll completed.")
+            else:
+                st.error("News poll failed.")
+            with st.expander("Poll output", expanded=False):
+                st.code((result.get("stdout") or "")[-4000:])
+                if result.get("stderr"):
+                    st.code((result.get("stderr") or "")[-4000:])
+    with control_cols[3]:
         if st.button("Analyze Recent", use_container_width=True):
             if NewsAnalyzer is None:
                 st.error("news_analyzer.py could not be imported.")
@@ -633,10 +680,15 @@ def render_market_intelligence_tab(db_path: str | Path = DEFAULT_DB_PATH) -> Non
                 analyzer = NewsAnalyzer(db_path)
                 result = analyzer.analyze_recent(limit=500)
                 st.success(f"Analyzed {result.get('articles_analyzed', 0)} articles.")
-    with action_cols[2]:
-        st.button("Poll Benzinga", disabled=True, use_container_width=True, help="This will be connected after your Benzinga token is added.")
-    with action_cols[3]:
-        st.button("Send Test Alert", disabled=True, use_container_width=True, help="Telegram news alerts are the next integration step.")
+    with control_cols[4]:
+        if st.button("Initialize DB", use_container_width=True):
+            initialize_news_database(db_path)
+            st.success("News database initialized.")
+
+    if tail_news_process_log is not None:
+        with st.expander("News engine process log", expanded=False):
+            log_text = tail_news_process_log()
+            st.code(log_text if log_text else "No process log yet.")
 
     raw_articles = db.get_recent_articles(limit=1000)
     df = _articles_to_df(raw_articles)
