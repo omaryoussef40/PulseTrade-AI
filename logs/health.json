@@ -1,9 +1,9 @@
 {
   "engine_running": true,
   "market_open": false,
-  "last_status": "Automation disabled",
-  "mode": "Simulation",
-  "updated_at": "2026-06-19T03:41:37.718001-04:00",
+  "last_status": "Waiting for market hours",
+  "mode": "Paper",
+  "updated_at": "2026-06-20T03:54:34.305383-04:00",
   "started_at": "2026-06-19T03:14:03.574312-04:00",
   "ib_connected": false,
   "auto_trading": false

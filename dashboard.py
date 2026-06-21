@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import json
 import traceback
 from datetime import datetime, timedelta, time as dtime
 
@@ -25,6 +26,29 @@ try:
 except Exception:
     get_catalyst_map = None
     render_catalyst_html = None
+
+try:
+    from backtester.data import YahooDataClient, YFINANCE_AVAILABLE
+    from backtester.replay import MarketReplayEngine, ReplayConfig, make_replay_log
+    from backtester.strategy import scan_replay_history, clean_signal_row
+    from backtester.simulator import OptionSimulationConfig, simulate_option_trades, summarize_trades
+except Exception:
+    YahooDataClient = None
+    YFINANCE_AVAILABLE = False
+    MarketReplayEngine = None
+    ReplayConfig = None
+    make_replay_log = None
+    scan_replay_history = None
+    clean_signal_row = None
+    OptionSimulationConfig = None
+    simulate_option_trades = None
+    summarize_trades = None
+
+
+try:
+    from backtester.ui import render_strategy_lab_tab
+except Exception:
+    render_strategy_lab_tab = None
 
 st.set_page_config(page_title=APP_NAME, layout="wide")
 st.title(APP_NAME)
@@ -267,7 +291,10 @@ with st.sidebar:
     st.caption("Settings auto-saved to config.json")
 
 # Light dashboard refresh so health updates while engine is running.
-st_autorefresh(interval=30_000, key="dashboard_refresh")
+# Auto-refresh disabled while the Yahoo Backtester is active.
+# Manual refresh is safer for long replay/simulation jobs.
+# if not bool(st.session_state.get("bt_job_running", False)):
+    st_autorefresh(interval=30_000, key="dashboard_refresh")
 
 # Shared objects from saved config.
 cfg = load_config()
@@ -353,7 +380,625 @@ with connection_col3:
             st.error(f"Engine cycle failed: {e}")
             st.caption("Technical details are hidden in the dashboard. Check the terminal/log files if needed.")
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 Scanner", "🔍 Breakdown", "💼 Positions", "📊 Performance", "📝 Logs", "🧠 Market Intelligence"])
+
+
+def render_yahoo_backtester_tab(config: dict, default_symbols: list[str]):
+    st.subheader("Yahoo Historical Replay")
+    st.caption("Phase 3: Yahoo/yfinance historical replay connected to the shared scanner strategy. This does not place trades and does not use IBKR.")
+
+    if YahooDataClient is None or MarketReplayEngine is None:
+        st.error("Backtester package could not be loaded.")
+        st.caption("Make sure TradingBot/backtester/ contains __init__.py, data.py, replay.py, and strategy.py.")
+        return
+
+    if not YFINANCE_AVAILABLE:
+        st.error("yfinance is not installed.")
+        st.code("pip install yfinance pyarrow", language="bash")
+        return
+
+    strategy = config.get("strategy", {})
+    risk = config.get("risk", {})
+
+    st.markdown("### Setup")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        period = st.selectbox("Historical period", ["5d", "10d", "30d", "60d"], index=2, key="bt_period")
+    with c2:
+        interval = st.selectbox("Candle interval", ["5m", "15m", "30m", "60m", "1d"], index=0, key="bt_interval")
+    with c3:
+        max_symbols = st.number_input("Max symbols", min_value=1, max_value=20, value=min(5, max(1, len(default_symbols))), step=1, key="bt_max_symbols")
+    with c4:
+        force_refresh = st.checkbox("Force Yahoo refresh", value=False, key="bt_force_refresh")
+
+    default_text = ", ".join(default_symbols[: int(max_symbols)]) if default_symbols else "SPY, QQQ, NVDA"
+    symbols_text = st.text_area("Symbols to replay", value=default_text, height=80, key="bt_symbols_text")
+    selected_symbols = [s.strip().upper() for s in symbols_text.replace("\n", ",").split(",") if s.strip()][: int(max_symbols)]
+
+    with st.expander("Replay rules", expanded=False):
+        r1, r2, r3, r4 = st.columns(4)
+        with r1:
+            orb_minutes = st.number_input("ORB window minutes", min_value=5, max_value=90, value=30, step=5, key="bt_orb_minutes")
+        with r2:
+            first_signal_minutes = st.number_input("First scanner minute", min_value=5, max_value=120, value=35, step=5, key="bt_first_signal_minutes")
+        with r3:
+            min_session_bars = st.number_input("Minimum bars before scanner", min_value=2, max_value=30, value=7, step=1, key="bt_min_session_bars")
+        with r4:
+            replay_mode = st.selectbox("Replay mode", ["Instant", "10x visual", "5x visual", "1x visual"], index=0, key="bt_replay_mode")
+
+        st.caption(
+            f"Current live filters shown for reference: score ≥ {strategy.get('min_score', 70)}, "
+            f"confidence ≥ {strategy.get('min_confidence', 75)}, ATR% ≥ {strategy.get('min_atr', 0.3)}, "
+            f"max trades/day {risk.get('max_trades_per_day', 2)}. Phase 3 applies scanner filters and records historical CALL/PUT signals."
+        )
+
+    st.markdown("### Step 1 — Historical Data")
+    download_col, cache_col = st.columns([2, 1])
+    with download_col:
+        download_clicked = st.button("⬇ Download Historical Data", use_container_width=True, key="bt_download_data")
+    with cache_col:
+        clear_clicked = st.button("Clear Yahoo Cache", use_container_width=True, key="bt_clear_cache")
+
+    client = YahooDataClient()
+
+    # Persist Phase 3 replay output to disk as well as Streamlit session state.
+    # Streamlit can rerun after button/progress updates; disk persistence makes results durable.
+    bt_export_dir = os.path.join(os.path.dirname(__file__), "backtester", "exports")
+    os.makedirs(bt_export_dir, exist_ok=True)
+    replay_csv_path = os.path.join(bt_export_dir, "last_replay_log.csv")
+    signals_csv_path = os.path.join(bt_export_dir, "last_scanner_signals.csv")
+    sessions_csv_path = os.path.join(bt_export_dir, "last_sessions.csv")
+    sim_trades_csv_path = os.path.join(bt_export_dir, "last_simulated_trades.csv")
+    sim_metrics_json_path = os.path.join(bt_export_dir, "last_simulation_metrics.json")
+    meta_json_path = os.path.join(bt_export_dir, "last_replay_meta.json")
+
+    def _save_backtest_result(replay_df: pd.DataFrame, sessions_df: pd.DataFrame, signals_df: pd.DataFrame, meta: dict) -> None:
+        st.session_state["bt_last_replay_log"] = replay_df
+        st.session_state["bt_last_sessions"] = sessions_df
+        st.session_state["bt_last_signals"] = signals_df
+        st.session_state["bt_last_replay_meta"] = meta
+        # New replay invalidates old simulated trades.
+        st.session_state.pop("bt_last_sim_trades", None)
+        st.session_state.pop("bt_last_sim_metrics", None)
+        try:
+            for _path in [sim_trades_csv_path, sim_metrics_json_path]:
+                if os.path.exists(_path):
+                    os.remove(_path)
+        except Exception:
+            pass
+        try:
+            replay_df.to_csv(replay_csv_path, index=False)
+            sessions_df.to_csv(sessions_csv_path, index=False)
+            signals_df.to_csv(signals_csv_path, index=False)
+            with open(meta_json_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2, default=str)
+        except Exception as exc:
+            st.warning(f"Replay finished, but disk save failed: {exc}")
+
+    def _load_backtest_result_from_disk(force: bool = False) -> None:
+        """Reload the last replay result from disk when Streamlit reruns.
+
+        Streamlit reruns can leave the session key present but empty. In that case
+        the old loader skipped disk reload, so the table disappeared. This loader
+        only skips disk reload when a real non-empty replay DataFrame is already
+        available in session state.
+        """
+        current = st.session_state.get("bt_last_replay_log")
+        if not force and isinstance(current, pd.DataFrame) and not current.empty:
+            return
+        if not os.path.exists(replay_csv_path):
+            return
+        try:
+            replay_df = pd.read_csv(replay_csv_path)
+            if replay_df.empty:
+                return
+            sessions_df = pd.read_csv(sessions_csv_path) if os.path.exists(sessions_csv_path) else pd.DataFrame()
+            signals_df = pd.read_csv(signals_csv_path) if os.path.exists(signals_csv_path) else pd.DataFrame()
+            meta = {}
+            if os.path.exists(meta_json_path):
+                with open(meta_json_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+            st.session_state["bt_last_replay_log"] = replay_df
+            st.session_state["bt_last_sessions"] = sessions_df
+            st.session_state["bt_last_signals"] = signals_df
+            st.session_state["bt_last_replay_meta"] = meta
+            if os.path.exists(sim_trades_csv_path):
+                sim_trades_df = pd.read_csv(sim_trades_csv_path)
+                st.session_state["bt_last_sim_trades"] = sim_trades_df
+            if os.path.exists(sim_metrics_json_path):
+                with open(sim_metrics_json_path, "r", encoding="utf-8") as f:
+                    st.session_state["bt_last_sim_metrics"] = json.load(f)
+        except Exception as exc:
+            st.caption(f"Could not reload saved replay result: {exc}")
+
+    _load_backtest_result_from_disk()
+
+    if clear_clicked:
+        removed = 0
+        for symbol in selected_symbols:
+            removed += client.clear_cache(symbol)
+        st.session_state.pop("bt_loaded_data", None)
+        st.session_state.pop("bt_loaded_meta", None)
+        st.session_state.pop("bt_last_replay_log", None)
+        st.session_state.pop("bt_last_sessions", None)
+        st.session_state.pop("bt_last_replay_meta", None)
+        st.session_state.pop("bt_last_signals", None)
+        st.session_state.pop("bt_last_sim_trades", None)
+        st.session_state.pop("bt_last_sim_metrics", None)
+        for _path in [replay_csv_path, signals_csv_path, sessions_csv_path, sim_trades_csv_path, sim_metrics_json_path, meta_json_path]:
+            try:
+                if os.path.exists(_path):
+                    os.remove(_path)
+            except Exception:
+                pass
+        st.success(f"Removed {removed} cached file(s) and cleared last replay result.")
+
+    if download_clicked:
+        if not selected_symbols:
+            st.warning("Add at least one symbol.")
+            return
+
+        progress = st.progress(0)
+        status = st.empty()
+        data = {}
+        errors = []
+
+        for i, symbol in enumerate(selected_symbols):
+            try:
+                status.info(f"Downloading {symbol} from Yahoo...")
+                df = client.load(symbol=symbol, period=period, interval=interval, force_refresh=force_refresh)
+                if df.empty:
+                    errors.append({"symbol": symbol, "error": "Yahoo returned no candles"})
+                else:
+                    data[symbol] = df
+            except Exception as exc:
+                errors.append({"symbol": symbol, "error": str(exc)})
+            progress.progress((i + 1) / max(len(selected_symbols), 1))
+
+        if data:
+            st.session_state["bt_loaded_data"] = data
+            st.session_state["bt_loaded_meta"] = {
+                "symbols": list(data.keys()),
+                "period": period,
+                "interval": interval,
+                "loaded_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            status.success("Historical data downloaded and cached.")
+        else:
+            status.error("No usable historical data was loaded.")
+
+        if errors:
+            with st.expander("Download warnings", expanded=True):
+                st.dataframe(pd.DataFrame(errors), use_container_width=True, hide_index=True)
+
+    loaded_data = st.session_state.get("bt_loaded_data", {})
+    loaded_meta = st.session_state.get("bt_loaded_meta", {})
+
+    if loaded_data:
+        total_bars = sum(len(df) for df in loaded_data.values())
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Loaded Symbols", len(loaded_data))
+        d2.metric("Loaded Candles", f"{total_bars:,}")
+        d3.metric("Period", loaded_meta.get("period", period))
+        d4.metric("Interval", loaded_meta.get("interval", interval))
+        st.caption(f"Loaded at: {loaded_meta.get('loaded_at', 'N/A')} | Symbols: {', '.join(loaded_data.keys())}")
+    else:
+        st.info("Download historical data first. After that, the replay step can run from memory/cache without another Yahoo request.")
+
+    with st.expander("Yahoo cache files", expanded=False):
+        cache_info = client.cache_info()
+        if cache_info.empty:
+            st.info("No cache files found yet.")
+        else:
+            st.dataframe(cache_info, use_container_width=True, hide_index=True)
+
+    st.markdown("### Step 2 — Replay Market")
+    run_col, preview_col = st.columns([2, 1])
+    with run_col:
+        replay_clicked = st.button("▶ Replay Market", use_container_width=True, key="bt_replay_market")
+    with preview_col:
+        scanner_only = st.checkbox("Scanner-ready events only", value=False, key="bt_scanner_only")
+
+    if replay_clicked:
+        if not loaded_data:
+            st.warning("Download historical data first, then run replay.")
+            return
+
+        try:
+            replay_config = ReplayConfig(
+                interval=interval,
+                orb_minutes=int(orb_minutes),
+                first_signal_minutes=int(first_signal_minutes),
+                min_session_bars=int(min_session_bars),
+            )
+            engine = MarketReplayEngine(loaded_data, config=replay_config)
+            sessions_df = engine.sessions()
+            events = list(engine.events(only_scanner_allowed=bool(scanner_only)))
+            total_events = len(events)
+
+            if total_events == 0:
+                st.warning("No replay events found for this data/rule combination.")
+                return
+
+            progress = st.progress(0)
+            status = st.empty()
+            live_box = st.empty()
+            recent_rows = []
+            log_rows = []
+            signal_rows = []
+
+            min_score = float(strategy.get("min_score", 70))
+            min_confidence = float(strategy.get("min_confidence", 75))
+            min_rvol = float(strategy.get("min_rvol", 1.5))
+            min_atr = float(strategy.get("min_atr", 0.3))
+            use_rvol_filter = bool(strategy.get("use_rvol_filter", False))
+            use_rvol_score = bool(strategy.get("use_rvol_score", False))
+
+            delay_map = {
+                "Instant": 0.0,
+                "10x visual": 0.001,
+                "5x visual": 0.004,
+                "1x visual": 0.015,
+            }
+            delay = delay_map.get(replay_mode, 0.0)
+            update_every = max(1, total_events // 200)
+
+            import time as _time
+
+            for idx, event in enumerate(events, start=1):
+                row = {
+                    "#": idx,
+                    "symbol": event.symbol,
+                    "timestamp": event.timestamp,
+                    "session_date": event.session_date,
+                    "bar_number": event.bar_number,
+                    "close": round(event.close, 2),
+                    "scanner_allowed": event.scanner_allowed,
+                    "new_session": event.is_new_session,
+                    "session_close": event.is_session_close,
+                }
+
+                if event.scanner_allowed and scan_replay_history is not None:
+                    scan_result = scan_replay_history(
+                        symbol=event.symbol,
+                        history=event.history,
+                        daily=None,
+                        use_rvol_score=use_rvol_score,
+                        min_score=min_score,
+                    )
+                    clean_scan = clean_signal_row(scan_result) if clean_signal_row else None
+                    if clean_scan:
+                        row.update({
+                            "signal": clean_scan.get("Signal"),
+                            "score": clean_scan.get("Score"),
+                            "confidence": clean_scan.get("Confidence"),
+                            "rvol": clean_scan.get("RVOL"),
+                            "atr_pct": clean_scan.get("ATR %"),
+                        })
+
+                        qualifies = is_top_candidate(
+                            clean_scan,
+                            min_score,
+                            min_confidence,
+                            min_rvol,
+                            min_atr,
+                            use_rvol_filter,
+                        )
+
+                        if qualifies:
+                            signal_rows.append({
+                                "timestamp": event.timestamp,
+                                "symbol": event.symbol,
+                                "signal": clean_scan.get("Signal"),
+                                "score": clean_scan.get("Score"),
+                                "confidence": clean_scan.get("Confidence"),
+                                "price": clean_scan.get("Price"),
+                                "rvol": clean_scan.get("RVOL"),
+                                "atr_pct": clean_scan.get("ATR %"),
+                                "vwap": clean_scan.get("VWAP"),
+                                "orb_high": clean_scan.get("ORB High"),
+                                "orb_low": clean_scan.get("ORB Low"),
+                                "pdh": clean_scan.get("PDH"),
+                                "pdl": clean_scan.get("PDL"),
+                                "pdh_method": clean_scan.get("PDH Method"),
+                                "reasons": clean_scan.get("Reasons"),
+                            })
+
+                log_rows.append(row)
+                recent_rows.append(row)
+                if len(recent_rows) > 15:
+                    recent_rows = recent_rows[-15:]
+
+                if idx == 1 or idx == total_events or idx % update_every == 0:
+                    progress.progress(idx / total_events)
+                    status.info(
+                        f"Replaying {idx:,} / {total_events:,} candles | "
+                        f"Signals: {len(signal_rows):,} | {event.symbol} | {event.timestamp.strftime('%Y-%m-%d %H:%M')}"
+                    )
+                    live_box.dataframe(pd.DataFrame(recent_rows), use_container_width=True, hide_index=True)
+
+                if delay:
+                    _time.sleep(delay)
+
+            replay_log = pd.DataFrame(log_rows)
+            signals_df = pd.DataFrame(signal_rows)
+            scanner_events = replay_log[replay_log["scanner_allowed"] == True].copy() if not replay_log.empty else pd.DataFrame()
+
+            replay_meta = {
+                "completed_at": datetime.now().isoformat(timespec="seconds"),
+                "symbols": list(loaded_data.keys()),
+                "events": int(len(replay_log)),
+                "scanner_events": int(len(scanner_events)),
+                "signals": int(len(signals_df)),
+                "sessions": int(len(sessions_df)) if not sessions_df.empty else 0,
+                "scanner_only": bool(scanner_only),
+                "interval": interval,
+                "period": loaded_meta.get("period", period),
+            }
+            _save_backtest_result(replay_log, sessions_df, signals_df, replay_meta)
+            status.success("Replay + scanner pass complete. Result saved under Last Replay Result.")
+
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Replay Events", f"{len(replay_log):,}")
+            m2.metric("Scanner Events", f"{len(scanner_events):,}")
+            m3.metric("Signals", f"{len(signals_df):,}")
+            m4.metric("Sessions", len(sessions_df) if not sessions_df.empty else 0)
+            m5.metric("Symbols", len(loaded_data))
+
+            if not signals_df.empty:
+                st.markdown("### Historical Scanner Signals")
+                st.dataframe(signals_df.tail(500), use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Download scanner signals",
+                    signals_df.to_csv(index=False),
+                    "yahoo_phase3_scanner_signals.csv",
+                    "text/csv",
+                )
+            else:
+                st.info("No CALL/PUT signals passed the current scanner filters for this replay.")
+
+            st.markdown("### Replay Timeline")
+            st.dataframe(replay_log.tail(500), use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download full replay log",
+                replay_log.to_csv(index=False),
+                "yahoo_phase3_replay_log.csv",
+                "text/csv",
+            )
+
+            st.markdown("### Sessions")
+            if sessions_df.empty:
+                st.info("No sessions found.")
+            else:
+                st.dataframe(sessions_df, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Download sessions CSV",
+                    sessions_df.to_csv(index=False),
+                    "yahoo_replay_sessions.csv",
+                    "text/csv",
+                )
+
+            st.session_state["bt_last_replay_log"] = replay_log
+            st.session_state["bt_last_sessions"] = sessions_df
+            st.session_state["bt_last_signals"] = signals_df
+            st.session_state["bt_last_replay_meta"] = {
+                "completed_at": datetime.now().isoformat(timespec="seconds"),
+                "symbols": list(loaded_data.keys()),
+                "events": int(len(replay_log)),
+                "scanner_events": int(len(scanner_events)),
+                "signals": int(len(signals_df)),
+                "sessions": int(len(sessions_df)) if not sessions_df.empty else 0,
+                "scanner_only": bool(scanner_only),
+                "interval": interval,
+                "period": loaded_meta.get("period", period),
+            }
+
+            first_symbol = next(iter(loaded_data.keys()))
+            preview = loaded_data[first_symbol].tail(120).copy()
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(
+                x=preview.index,
+                open=preview["Open"],
+                high=preview["High"],
+                low=preview["Low"],
+                close=preview["Close"],
+                name=first_symbol,
+            ))
+            fig.update_layout(height=520, title=f"{first_symbol} Yahoo Data Preview", xaxis_rangeslider_visible=False)
+            fig.update_xaxes(rangebreaks=[dict(bounds=[16, 9.5], pattern="hour"), dict(bounds=["sat", "mon"])])
+            st.plotly_chart(fig, use_container_width=True)
+
+        except Exception as exc:
+            st.error(f"Replay failed: {exc}")
+            st.caption("The dashboard is safe. This error is isolated to the Yahoo Backtester tab.")
+
+    # Persist replay output across Streamlit reruns/autorefresh.
+    # Without this block, the replay appears briefly and disappears on the next rerun.
+    # Rerun-safe display: before rendering the result area, reload from disk
+    # if the in-memory replay object is missing or empty.
+    _memory_replay = st.session_state.get("bt_last_replay_log")
+    if not isinstance(_memory_replay, pd.DataFrame) or _memory_replay.empty:
+        _load_backtest_result_from_disk(force=True)
+
+    saved_replay = st.session_state.get("bt_last_replay_log")
+    saved_sessions = st.session_state.get("bt_last_sessions")
+    saved_signals = st.session_state.get("bt_last_signals")
+    saved_meta = st.session_state.get("bt_last_replay_meta", {})
+
+    if isinstance(saved_replay, pd.DataFrame) and not saved_replay.empty:
+        st.markdown("### Last Replay Result")
+        st.caption(
+            f"Completed at: {saved_meta.get('completed_at', 'N/A')} | "
+            f"Symbols: {', '.join(saved_meta.get('symbols', []))} | "
+            f"Period: {saved_meta.get('period', 'N/A')} | "
+            f"Interval: {saved_meta.get('interval', 'N/A')}"
+        )
+
+        scanner_events_saved = saved_replay[saved_replay["scanner_allowed"] == True].copy() if "scanner_allowed" in saved_replay.columns else pd.DataFrame()
+        rr1, rr2, rr3, rr4, rr5 = st.columns(5)
+        rr1.metric("Replay Events", f"{len(saved_replay):,}")
+        rr2.metric("Scanner Events", f"{len(scanner_events_saved):,}")
+        rr3.metric("Signals", saved_meta.get("signals", 0))
+        rr4.metric("Sessions", saved_meta.get("sessions", 0))
+        rr5.metric("Symbols", len(saved_meta.get("symbols", [])))
+
+        if isinstance(saved_signals, pd.DataFrame) and not saved_signals.empty:
+            st.markdown("### Historical Scanner Signals")
+            st.dataframe(saved_signals.tail(500), use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download scanner signals",
+                saved_signals.to_csv(index=False),
+                "yahoo_phase3_scanner_signals.csv",
+                "text/csv",
+                key="bt_download_saved_signals",
+            )
+
+        st.markdown("### Replay Timeline")
+        display_df = scanner_events_saved if bool(st.session_state.get("bt_scanner_only", False)) and not scanner_events_saved.empty else saved_replay
+        st.dataframe(display_df.tail(500), use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download full replay log",
+            saved_replay.to_csv(index=False),
+            "yahoo_phase2_replay_log.csv",
+            "text/csv",
+            key="bt_download_saved_replay",
+        )
+
+        st.markdown("### Sessions")
+        if isinstance(saved_sessions, pd.DataFrame) and not saved_sessions.empty:
+            st.dataframe(saved_sessions, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download sessions CSV",
+                saved_sessions.to_csv(index=False),
+                "yahoo_replay_sessions.csv",
+                "text/csv",
+                key="bt_download_saved_sessions",
+            )
+        else:
+            st.info("No sessions found for the last replay.")
+
+
+
+    st.markdown("### Step 3 — Simulate Option Trades")
+    st.caption("Uses the historical CALL/PUT scanner signals and simulates 7-DTE, ~0.50-delta option trades. This is still Yahoo-based approximation, not real historical option-chain pricing.")
+
+    sim_col1, sim_col2, sim_col3, sim_col4 = st.columns(4)
+    with sim_col1:
+        sim_starting_capital = st.number_input("Backtest capital USD", min_value=100.0, value=float(risk.get("account_size", 1000)), step=100.0, key="bt_sim_capital")
+        sim_max_trades = st.number_input("Max trades/day", min_value=1, max_value=10, value=int(risk.get("max_trades_per_day", 2)), step=1, key="bt_sim_max_trades")
+    with sim_col2:
+        sim_spend = st.number_input("Max spend/trade USD", min_value=50.0, value=float(risk.get("max_spend_per_trade", 250)), step=50.0, key="bt_sim_spend")
+        sim_daily_cap = st.number_input("Max daily capital USD", min_value=50.0, value=float(risk.get("max_daily_capital", 500)), step=50.0, key="bt_sim_daily_cap")
+    with sim_col3:
+        sim_stop = st.number_input("Stop loss %", min_value=1.0, max_value=90.0, value=float(risk.get("stop_loss_pct", 20.0)), step=1.0, key="bt_sim_stop")
+        sim_tp = st.number_input("Take profit %", min_value=1.0, max_value=300.0, value=float(risk.get("take_profit_pct", 30.0)), step=1.0, key="bt_sim_tp")
+    with sim_col4:
+        sim_premium_pct = st.number_input("Entry premium % of stock", min_value=0.5, max_value=10.0, value=2.5, step=0.1, key="bt_sim_premium_pct")
+        sim_slippage = st.number_input("Slippage %", min_value=0.0, max_value=20.0, value=2.0, step=0.5, key="bt_sim_slippage")
+
+    sim_run_col, sim_note_col = st.columns([2, 1])
+    with sim_run_col:
+        simulate_clicked = st.button("▶ Simulate Option Trades", use_container_width=True, key="bt_simulate_options")
+    with sim_note_col:
+        allow_same_symbol = st.checkbox("Allow same symbol same day", value=False, key="bt_sim_same_symbol")
+
+    if simulate_clicked:
+        if simulate_option_trades is None or OptionSimulationConfig is None:
+            st.error("Option simulator module could not be loaded. Make sure backtester/simulator.py exists.")
+        elif not isinstance(saved_signals, pd.DataFrame) or saved_signals.empty:
+            st.warning("Run Replay Market first and generate scanner signals before simulating trades.")
+        else:
+            try:
+                sim_data = loaded_data if isinstance(loaded_data, dict) and loaded_data else {}
+                if not sim_data:
+                    sim_symbols = saved_meta.get("symbols", []) or sorted(saved_signals.get("symbol", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+                    sim_period = saved_meta.get("period", period)
+                    sim_interval = saved_meta.get("interval", interval)
+                    for _sym in sim_symbols:
+                        try:
+                            sim_data[_sym] = client.load(symbol=_sym, period=sim_period, interval=sim_interval, force_refresh=False)
+                        except Exception:
+                            pass
+
+                sim_cfg = OptionSimulationConfig(
+                    starting_capital=float(sim_starting_capital),
+                    max_trades_per_day=int(sim_max_trades),
+                    max_spend_per_trade=float(sim_spend),
+                    max_daily_capital=float(sim_daily_cap),
+                    max_contracts=int(risk.get("max_contracts", 2)),
+                    stop_loss_pct=float(sim_stop),
+                    take_profit_pct=float(sim_tp),
+                    breakeven_trigger_pct=float(risk.get("breakeven_trigger_pct", 15.0)),
+                    trailing_trigger_pct=float(risk.get("trailing_trigger_pct", 25.0)),
+                    trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
+                    force_exit_time=dtime(int(risk.get("force_exit_hour", 15)), int(risk.get("force_exit_minute", 55))),
+                    premium_pct=float(sim_premium_pct) / 100.0,
+                    slippage_pct=float(sim_slippage),
+                    allow_same_symbol_same_day=bool(allow_same_symbol),
+                )
+                trades_df = simulate_option_trades(saved_signals, sim_data, sim_cfg)
+                metrics = summarize_trades(trades_df, starting_capital=float(sim_starting_capital)) if summarize_trades else {}
+                st.session_state["bt_last_sim_trades"] = trades_df
+                st.session_state["bt_last_sim_metrics"] = metrics
+                try:
+                    trades_df.to_csv(sim_trades_csv_path, index=False)
+                    with open(sim_metrics_json_path, "w", encoding="utf-8") as f:
+                        json.dump(metrics, f, indent=2, default=str)
+                except Exception as exc:
+                    st.warning(f"Simulation completed, but save failed: {exc}")
+                st.success(f"Simulated {len(trades_df):,} option trade(s).")
+            except Exception as exc:
+                st.error(f"Simulation failed: {exc}")
+                st.caption("The error is isolated to the Yahoo Backtester simulator.")
+
+    saved_sim_trades = st.session_state.get("bt_last_sim_trades")
+    saved_sim_metrics = st.session_state.get("bt_last_sim_metrics", {})
+    if (not isinstance(saved_sim_trades, pd.DataFrame) or saved_sim_trades.empty) and os.path.exists(sim_trades_csv_path):
+        try:
+            saved_sim_trades = pd.read_csv(sim_trades_csv_path)
+            st.session_state["bt_last_sim_trades"] = saved_sim_trades
+            if os.path.exists(sim_metrics_json_path):
+                with open(sim_metrics_json_path, "r", encoding="utf-8") as f:
+                    saved_sim_metrics = json.load(f)
+                    st.session_state["bt_last_sim_metrics"] = saved_sim_metrics
+        except Exception:
+            saved_sim_trades = pd.DataFrame()
+
+    if isinstance(saved_sim_trades, pd.DataFrame) and not saved_sim_trades.empty:
+        st.markdown("### Simulated Option Performance")
+        sm1, sm2, sm3, sm4, sm5, sm6 = st.columns(6)
+        sm1.metric("Net P/L", f"${float(saved_sim_metrics.get('net_pnl', 0)):,.2f}")
+        sm2.metric("Return", f"{float(saved_sim_metrics.get('return_pct', 0)):,.2f}%")
+        sm3.metric("Win Rate", f"{float(saved_sim_metrics.get('win_rate', 0)):,.1f}%")
+        sm4.metric("Profit Factor", saved_sim_metrics.get("profit_factor", 0))
+        sm5.metric("Max DD", f"${float(saved_sim_metrics.get('max_drawdown', 0)):,.2f}")
+        sm6.metric("Trades", int(saved_sim_metrics.get("total_trades", len(saved_sim_trades))))
+
+        if "equity" in saved_sim_trades.columns:
+            equity_fig = go.Figure()
+            equity_fig.add_trace(go.Scatter(
+                x=pd.to_datetime(saved_sim_trades.get("exit_time", saved_sim_trades.index), errors="coerce"),
+                y=pd.to_numeric(saved_sim_trades["equity"], errors="coerce"),
+                mode="lines+markers",
+                name="Simulated Equity",
+            ))
+            equity_fig.update_layout(height=380, title="Simulated Equity Curve", xaxis_title="Exit Time", yaxis_title="Equity USD")
+            st.plotly_chart(equity_fig, use_container_width=True)
+
+        st.markdown("### Simulated Trades")
+        key_cols = [c for c in ["trade_no", "entry_time", "exit_time", "date", "symbol", "signal", "score", "confidence", "entry_underlying", "exit_underlying", "entry_premium", "exit_premium", "quantity", "realized_pnl", "return_pct", "hold_minutes", "exit_reason", "reasons"] if c in saved_sim_trades.columns]
+        st.dataframe(saved_sim_trades[key_cols].tail(500), use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download simulated trades",
+            saved_sim_trades.to_csv(index=False),
+            "yahoo_simulated_option_trades.csv",
+            "text/csv",
+            key="bt_download_sim_trades",
+        )
+
+    st.info("Current phase: Yahoo replay now simulates approximate 7-DTE option entries/exits and P/L. Next phase: improve analytics, trade explorer, and parameter testing.")
+
+
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📈 Scanner", "🔍 Breakdown", "💼 Positions", "📊 Performance", "📝 Logs", "🧠 Market Intelligence", "📈 Strategy Lab"])
 
 with tab1:
     st.subheader("Scanner")
@@ -697,3 +1342,10 @@ with tab6:
         except Exception as e:
             st.error(f"Market Intelligence failed: {e}")
             st.caption("Check logs/news_engine.log and confirm data/news.db exists.")
+
+with tab7:
+    if render_strategy_lab_tab is None:
+        st.error("Strategy Lab module could not be loaded.")
+        st.caption("Make sure backtester/ui.py, controller.py, data.py, replay.py, strategy.py, simulator.py, and metrics.py exist and compile.")
+    else:
+        render_strategy_lab_tab(cfg, symbols)

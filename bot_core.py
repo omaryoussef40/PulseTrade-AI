@@ -16,6 +16,8 @@ import os
 import math
 import time
 import json
+import sqlite3
+import uuid
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta, time as dtime
@@ -25,6 +27,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import requests
+
+from backtester.strategy import scan_dataframe
 
 try:
     from ib_insync import (
@@ -360,175 +364,24 @@ def calculate_support_resistance(daily: pd.DataFrame, current_price: float, look
 # =========================
 
 def scan_symbol_ib(ib: IB, symbol: str, use_rvol_score: bool = False) -> dict | None:
+    """Live IBKR scanner wrapper.
+
+    The trading logic itself lives in backtester.strategy.scan_dataframe so the
+    live bot and Yahoo backtester use the same decision engine.
+    """
     intraday = fetch_ib_intraday(ib, symbol)
     daily = fetch_ib_daily(ib, symbol)
-
-    if intraday.empty or len(intraday) < 50:
-        return None
-
-    if daily.empty:
-        return None
-
-    intraday = intraday.dropna().copy()
-    daily = daily.dropna().copy()
-
-    intraday["VWAP"] = calculate_vwap(intraday)
-    intraday["EMA9"] = intraday["Close"].ewm(span=9).mean()
-    intraday["EMA21"] = intraday["Close"].ewm(span=21).mean()
-    intraday["ATR"] = calculate_atr(intraday)
-    intraday = intraday.dropna()
-
-    valid_sessions = get_valid_sessions(intraday, min_bars=7)
-    if not valid_sessions:
-        return None
-
-    today_date = valid_sessions[-1]
-    today_data = intraday[intraday.index.date == today_date]
-
-    # 30-minute ORB uses the first 6 x 5-minute candles.
-    # A trade signal is allowed only after at least one full 5-minute candle
-    # closes above ORB High or below ORB Low. Earliest valid signal is around 10:05 ET.
-    if len(today_data) < 7:
-        return None
-
-    opening_range = today_data.iloc[:6]
-    post_orb_data = today_data.iloc[6:]
-    orb_high = float(opening_range["High"].max())
-    orb_low = float(opening_range["Low"].min())
-
-    confirmation_candle = post_orb_data.iloc[-1]
-    confirmation_close = float(confirmation_candle["Close"])
-    confirmation_time = confirmation_candle.name
-    orb_confirmed_up = bool(confirmation_close > orb_high)
-    orb_confirmed_down = bool(confirmation_close < orb_low)
-
-    # PDH / PDL: use actual previous completed trading day from daily bars.
-    previous_daily_index = previous_trading_day_from_daily(daily, today_date)
-    if previous_daily_index is not None:
-        previous_day = daily.loc[previous_daily_index]
-        pdh = float(previous_day["High"])
-        pdl = float(previous_day["Low"])
-        pdh_source = str(pd.to_datetime(previous_daily_index).date())
-        pdh_method = "IBKR daily"
-    else:
-        valid_prior_sessions = [d for d in valid_sessions if d < today_date]
-        if not valid_prior_sessions:
-            return None
-        previous_session_date = valid_prior_sessions[-1]
-        previous_session = intraday[intraday.index.date == previous_session_date]
-        pdh = float(previous_session["High"].max())
-        pdl = float(previous_session["Low"].min())
-        pdh_source = str(previous_session_date)
-        pdh_method = "IBKR intraday fallback"
-
-    rvol = calculate_rvol(intraday, today_date)
-    last = intraday.iloc[-1]
-
-    price = float(last["Close"])
-    atr_percent = float((last["ATR"] / price) * 100) if price else 0.0
-
-    above_vwap = bool(price > last["VWAP"])
-    below_vwap = bool(price < last["VWAP"])
-    ema_bullish = bool(last["EMA9"] > last["EMA21"])
-    ema_bearish = bool(last["EMA9"] < last["EMA21"])
-    orb_up = orb_confirmed_up
-    orb_down = orb_confirmed_down
-    pdh_break = bool(price > pdh)
-    pdl_break = bool(price < pdl)
-
-    bull_score = 0
-    bear_score = 0
-    reasons = []
-
-    if above_vwap:
-        bull_score += 20
-        reasons.append("Above VWAP")
-    if below_vwap:
-        bear_score += 20
-        reasons.append("Below VWAP")
-    if ema_bullish:
-        bull_score += 20
-        reasons.append("EMA9 above EMA21")
-    if ema_bearish:
-        bear_score += 20
-        reasons.append("EMA9 below EMA21")
-    if orb_up:
-        bull_score += 25
-        reasons.append("ORB breakout up")
-    if orb_down:
-        bear_score += 25
-        reasons.append("ORB breakdown")
-    if pdh_break:
-        bull_score += 20
-        reasons.append("Broke PDH")
-    if pdl_break:
-        bear_score += 20
-        reasons.append("Broke PDL")
-    # RVOL is optional. By default, it is informational only so it does not delay valid setups.
-    if use_rvol_score:
-        if rvol >= 2.0:
-            bull_score += 10
-            bear_score += 10
-            reasons.append(f"RVOL bonus: {rvol:.2f}")
-        elif rvol >= 1.5:
-            bull_score += 5
-            bear_score += 5
-            reasons.append(f"Light RVOL bonus: {rvol:.2f}")
-    else:
-        reasons.append(f"RVOL observed: {rvol:.2f}")
-    if atr_percent >= 0.5:
-        bull_score += 10
-        bear_score += 10
-    if atr_percent >= 1.0:
-        bull_score += 10
-        bear_score += 10
-        reasons.append(f"Good ATR%: {atr_percent:.2f}")
-
-    bull_score = min(bull_score, 100)
-    bear_score = min(bear_score, 100)
-    confidence = abs(bull_score - bear_score)
-
-    if bull_score >= MIN_SCORE and bull_score > bear_score:
-        signal = "CALL"
-    elif bear_score >= MIN_SCORE and bear_score > bull_score:
-        signal = "PUT"
-    else:
-        signal = "WAIT"
-
-    score = max(bull_score, bear_score)
-    sr_levels = calculate_support_resistance(daily, price)
-
-    return {
-        "Symbol": symbol,
-        "Signal": signal,
-        "Score": round(score, 1),
-        "Confidence": round(confidence, 1),
-        "Bull Score": round(bull_score, 1),
-        "Bear Score": round(bear_score, 1),
-        "Price": round(price, 2),
-        "RVOL": round(rvol, 2),
-        "ATR %": round(atr_percent, 2),
-        "VWAP": round(float(last["VWAP"]), 2),
-        "ORB High": round(orb_high, 2),
-        "ORB Low": round(orb_low, 2),
-        "PDH": round(pdh, 2),
-        "PDL": round(pdl, 2),
-        **sr_levels,
-        "PDH Source": pdh_source,
-        "PDH Method": pdh_method,
-        "ORB Up": orb_up,
-        "ORB Down": orb_down,
-        "ORB Confirmation Close": round(confirmation_close, 2),
-        "ORB Confirmation Time": confirmation_time.strftime("%Y-%m-%d %H:%M %Z") if hasattr(confirmation_time, "strftime") else str(confirmation_time),
-        "PDH Break": pdh_break,
-        "PDL Break": pdl_break,
-        "Above VWAP": above_vwap,
-        "Below VWAP": below_vwap,
-        "EMA Bullish": ema_bullish,
-        "EMA Bearish": ema_bearish,
-        "Reasons": " | ".join(reasons),
-        "Intraday Data": intraday,
-    }
+    result = scan_dataframe(
+        symbol=symbol,
+        intraday=intraday,
+        daily=daily,
+        use_rvol_score=use_rvol_score,
+    )
+    if result and result.get("PDH Method") == "daily":
+        result["PDH Method"] = "IBKR daily"
+    elif result and result.get("PDH Method") == "intraday fallback":
+        result["PDH Method"] = "IBKR intraday fallback"
+    return result
 
 
 # =========================
@@ -708,7 +561,7 @@ def get_today_trade_stats() -> tuple[int, float]:
         if df.empty or "timestamp" not in df.columns:
             return 0, 0.0
 
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
         today_et = datetime.now(EASTERN).date()
         today_df = df[df["timestamp"].dt.date == today_et]
 
@@ -778,9 +631,17 @@ def place_option_order(
 
 
 def log_trade(row: dict):
+    """Write the legacy CSV trade log and mirror the event into SQLite journal."""
     df = pd.DataFrame([row])
     exists = os.path.exists(TRADE_LOG_FILE)
     df.to_csv(TRADE_LOG_FILE, mode="a", index=False, header=not exists)
+    try:
+        journal_log_event(row)
+    except Exception as exc:
+        try:
+            app_log(f"Trade journal mirror failed: {exc}", "ERROR")
+        except Exception:
+            pass
 
 
 def read_active_positions() -> list[dict]:
@@ -807,7 +668,7 @@ def get_today_loss_stats() -> tuple[int, float]:
         df = pd.read_csv(TRADE_LOG_FILE)
         if df.empty or "timestamp" not in df.columns:
             return 0, 0.0
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
         today = datetime.now(EASTERN).date()
         df = df[df["timestamp"].dt.date == today].copy()
         if df.empty:
@@ -994,6 +855,20 @@ def manage_open_positions(
                 else:
                     realized = round((current_price - entry_price) * int(pos.get("quantity", 0)) * 100, 2)
                     status = "Exit signal only / trading disabled"
+                    log_trade({
+                        "timestamp": datetime.now(EASTERN).isoformat(),
+                        "event": "EXIT_SIGNAL",
+                        "symbol": pos.get("symbol"),
+                        "signal": pos.get("signal"),
+                        "option": pos.get("option"),
+                        "quantity": int(pos.get("quantity", 0)),
+                        "exit_reason": reason,
+                        "entry_price": entry_price,
+                        "exit_price": round(current_price, 2),
+                        "estimated_cost": round(entry_price * int(pos.get("quantity", 0)) * 100, 2),
+                        "realized_pnl": realized,
+                        "status": status,
+                    })
                 events.append({
                     "Symbol": pos.get("symbol"),
                     "Option": pos.get("option"),
@@ -1120,7 +995,7 @@ def make_equity_curve_chart():
         df = df[df["event"].astype(str) == "EXIT"].copy()
         if df.empty:
             return None
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
         df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
         df["realized_pnl"] = pd.to_numeric(df["realized_pnl"], errors="coerce").fillna(0)
         df["cumulative_pnl"] = df["realized_pnl"].cumsum()
@@ -1143,7 +1018,7 @@ def make_trade_pnl_bar_chart():
         df = df[df["event"].astype(str) == "EXIT"].copy()
         if df.empty:
             return None
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
         df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
         df["realized_pnl"] = pd.to_numeric(df["realized_pnl"], errors="coerce").fillna(0)
         labels = df.get("symbol", pd.Series(range(len(df)))).astype(str) + " " + df["timestamp"].dt.strftime("%m-%d %H:%M")
@@ -1241,6 +1116,9 @@ os.makedirs(EXPORT_DIR, exist_ok=True)
 TRADE_LOG_FILE = os.path.join(EXPORT_DIR, "trade_log.csv")
 ALERT_LOG_FILE = os.path.join(EXPORT_DIR, "alert_log.csv")
 ACTIVE_POSITIONS_FILE = os.path.join(EXPORT_DIR, "active_positions.json")
+DATABASE_DIR = BASE_DIR / "database"
+DATABASE_DIR.mkdir(exist_ok=True)
+TRADE_JOURNAL_DB = DATABASE_DIR / "trades.db"
 
 
 def deep_merge(default: dict, override: dict) -> dict:
@@ -1357,6 +1235,320 @@ def app_log(message: str, level: str = "INFO") -> None:
         f.write(line + "\n")
 
 
+
+# =========================
+# SQLITE TRADE JOURNAL HELPERS
+# =========================
+
+def init_trade_journal_db() -> None:
+    """Create the local SQLite journal database if it does not exist."""
+    with sqlite3.connect(TRADE_JOURNAL_DB) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trades (
+                trade_id TEXT PRIMARY KEY,
+                opened_at TEXT,
+                closed_at TEXT,
+                status TEXT,
+                account_mode TEXT,
+                symbol TEXT,
+                signal TEXT,
+                option_symbol TEXT,
+                expiry TEXT,
+                strike REAL,
+                option_type TEXT,
+                quantity INTEGER,
+                entry_price REAL,
+                exit_price REAL,
+                estimated_cost REAL,
+                realized_pnl REAL DEFAULT 0,
+                return_pct REAL DEFAULT 0,
+                r_multiple REAL DEFAULT 0,
+                score REAL,
+                confidence REAL,
+                rank_score REAL,
+                bull_score REAL,
+                bear_score REAL,
+                price REAL,
+                rvol REAL,
+                atr_pct REAL,
+                vwap REAL,
+                orb_high REAL,
+                orb_low REAL,
+                pdh REAL,
+                pdl REAL,
+                nearest_support REAL,
+                nearest_resistance REAL,
+                reasons TEXT,
+                exit_reason TEXT,
+                ai_review_status TEXT DEFAULT 'Pending',
+                ai_grade TEXT,
+                ai_notes TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trade_events (
+                event_id TEXT PRIMARY KEY,
+                trade_id TEXT,
+                timestamp TEXT,
+                event TEXT,
+                symbol TEXT,
+                signal TEXT,
+                option_symbol TEXT,
+                quantity INTEGER,
+                price REAL,
+                estimated_cost REAL,
+                realized_pnl REAL DEFAULT 0,
+                status TEXT,
+                notes TEXT,
+                raw_json TEXT,
+                FOREIGN KEY(trade_id) REFERENCES trades(trade_id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_opened ON trades(opened_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_trade ON trade_events(trade_id)")
+        conn.commit()
+
+
+def _journal_now() -> str:
+    return datetime.now(EASTERN).isoformat()
+
+
+def _to_float(value, default: float | None = None):
+    try:
+        if value is None or value == "":
+            return default
+        if pd.isna(value):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _to_int(value, default: int = 0) -> int:
+    try:
+        if value is None or value == "":
+            return default
+        if pd.isna(value):
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _clean_key(row: dict, *keys, default=None):
+    for key in keys:
+        if key in row and row.get(key) not in [None, ""]:
+            return row.get(key)
+    return default
+
+
+def _parse_option_fields(option_text: str | None, signal: str | None = None) -> dict:
+    out = {"expiry": None, "strike": None, "option_type": signal}
+    if not option_text:
+        return out
+    try:
+        parts = str(option_text).split()
+        if len(parts) >= 4:
+            out["expiry"] = parts[1]
+            out["strike"] = _to_float(parts[2])
+            out["option_type"] = parts[3]
+    except Exception:
+        pass
+    return out
+
+
+def _find_open_trade_id(conn: sqlite3.Connection, row: dict) -> str | None:
+    symbol = _clean_key(row, "symbol", "Symbol")
+    option_symbol = _clean_key(row, "option", "Option")
+    if not symbol:
+        return None
+    if option_symbol:
+        found = conn.execute(
+            """
+            SELECT trade_id FROM trades
+            WHERE status IN ('OPEN', 'ENTRY_SUBMITTED') AND symbol=? AND option_symbol=?
+            ORDER BY opened_at DESC LIMIT 1
+            """,
+            (symbol, option_symbol),
+        ).fetchone()
+        if found:
+            return found[0]
+    found = conn.execute(
+        """
+        SELECT trade_id FROM trades
+        WHERE status IN ('OPEN', 'ENTRY_SUBMITTED') AND symbol=?
+        ORDER BY opened_at DESC LIMIT 1
+        """,
+        (symbol,),
+    ).fetchone()
+    return found[0] if found else None
+
+
+def _make_trade_id(row: dict) -> str:
+    seed = "|".join(str(_clean_key(row, k, default="")) for k in ["timestamp", "symbol", "Symbol", "option", "Option", "event"])
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
+def journal_log_event(row: dict) -> str:
+    """Insert/update a normalized trade journal record from an engine trade event."""
+    init_trade_journal_db()
+    row = dict(row or {})
+    timestamp = str(_clean_key(row, "timestamp", default=_journal_now()))
+    event = str(_clean_key(row, "event", default="EVENT")).upper()
+    symbol = _clean_key(row, "symbol", "Symbol")
+    signal = _clean_key(row, "signal", "Signal")
+    option_symbol = _clean_key(row, "option", "Option")
+    option_fields = _parse_option_fields(option_symbol, signal)
+    quantity = _to_int(_clean_key(row, "quantity", "Qty"), 0)
+    entry_price = _to_float(_clean_key(row, "entry_price", "limit_price", "Mid"))
+    exit_price = _to_float(_clean_key(row, "exit_price"))
+    estimated_cost = _to_float(_clean_key(row, "estimated_cost", "Estimated Cost"), 0.0)
+    realized_pnl = _to_float(_clean_key(row, "realized_pnl"), 0.0) or 0.0
+    status = str(_clean_key(row, "status", "order_status", default=""))
+    notes = str(_clean_key(row, "notes", "exit_reason", default=""))
+
+    with sqlite3.connect(TRADE_JOURNAL_DB) as conn:
+        trade_id = _clean_key(row, "trade_id")
+        if not trade_id and event.startswith("EXIT"):
+            trade_id = _find_open_trade_id(conn, row)
+        if not trade_id:
+            trade_id = _make_trade_id({**row, "timestamp": timestamp})
+
+        if event in ["ENTRY", "SIGNAL_ONLY", "SIGNAL", "ENTRY_SUBMITTED"]:
+            trade_status = "OPEN" if event == "ENTRY" else "SIGNAL_ONLY"
+            conn.execute(
+                """
+                INSERT INTO trades (
+                    trade_id, opened_at, status, account_mode, symbol, signal, option_symbol,
+                    expiry, strike, option_type, quantity, entry_price, estimated_cost,
+                    score, confidence, rank_score, bull_score, bear_score, price, rvol, atr_pct,
+                    vwap, orb_high, orb_low, pdh, pdl, nearest_support, nearest_resistance,
+                    reasons, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_id) DO UPDATE SET
+                    status=excluded.status,
+                    quantity=COALESCE(excluded.quantity, trades.quantity),
+                    entry_price=COALESCE(excluded.entry_price, trades.entry_price),
+                    estimated_cost=COALESCE(excluded.estimated_cost, trades.estimated_cost),
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    trade_id, timestamp, trade_status, _clean_key(row, "account_mode"), symbol, signal, option_symbol,
+                    option_fields["expiry"], option_fields["strike"], option_fields["option_type"], quantity,
+                    entry_price, estimated_cost, _to_float(_clean_key(row, "score", "Score")),
+                    _to_float(_clean_key(row, "confidence", "Confidence")), _to_float(_clean_key(row, "rank_score", "Rank Score")),
+                    _to_float(_clean_key(row, "bull_score", "Bull Score")), _to_float(_clean_key(row, "bear_score", "Bear Score")),
+                    _to_float(_clean_key(row, "price", "Price")), _to_float(_clean_key(row, "rvol", "RVOL")),
+                    _to_float(_clean_key(row, "atr_pct", "ATR %")), _to_float(_clean_key(row, "vwap", "VWAP")),
+                    _to_float(_clean_key(row, "orb_high", "ORB High")), _to_float(_clean_key(row, "orb_low", "ORB Low")),
+                    _to_float(_clean_key(row, "pdh", "PDH")), _to_float(_clean_key(row, "pdl", "PDL")),
+                    _to_float(_clean_key(row, "nearest_support", "Nearest Support")), _to_float(_clean_key(row, "nearest_resistance", "Nearest Resistance")),
+                    _clean_key(row, "reasons", "Reasons"), _journal_now(),
+                ),
+            )
+        elif event.startswith("EXIT"):
+            if not trade_id:
+                trade_id = _make_trade_id({**row, "event": "UNMATCHED_EXIT"})
+            existing = conn.execute("SELECT entry_price, quantity, estimated_cost FROM trades WHERE trade_id=?", (trade_id,)).fetchone()
+            entry_for_calc = _to_float(existing[0]) if existing else entry_price
+            qty_for_calc = _to_int(existing[1]) if existing else quantity
+            cost_for_calc = _to_float(existing[2], 0.0) if existing else estimated_cost
+            return_pct = round((realized_pnl / cost_for_calc * 100), 2) if cost_for_calc else 0.0
+            risk_dollars = abs((entry_for_calc or 0) * qty_for_calc * 100 * 0.20)
+            r_multiple = round(realized_pnl / risk_dollars, 2) if risk_dollars else 0.0
+            conn.execute(
+                """
+                UPDATE trades SET
+                    closed_at=?, status='CLOSED', exit_price=?, realized_pnl=?, return_pct=?,
+                    r_multiple=?, exit_reason=?, updated_at=?
+                WHERE trade_id=?
+                """,
+                (timestamp, exit_price, realized_pnl, return_pct, r_multiple, _clean_key(row, "exit_reason", default=notes), _journal_now(), trade_id),
+            )
+            if conn.total_changes == 0:
+                conn.execute(
+                    """
+                    INSERT INTO trades (trade_id, opened_at, closed_at, status, symbol, signal, option_symbol,
+                    quantity, entry_price, exit_price, estimated_cost, realized_pnl, return_pct, r_multiple, exit_reason, updated_at)
+                    VALUES (?, ?, ?, 'CLOSED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (trade_id, timestamp, timestamp, symbol, signal, option_symbol, quantity, entry_price, exit_price, estimated_cost, realized_pnl, return_pct, r_multiple, notes, _journal_now()),
+                )
+
+        event_price = exit_price if event.startswith("EXIT") else entry_price
+        conn.execute(
+            """
+            INSERT INTO trade_events (event_id, trade_id, timestamp, event, symbol, signal, option_symbol,
+            quantity, price, estimated_cost, realized_pnl, status, notes, raw_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (str(uuid.uuid4()), trade_id, timestamp, event, symbol, signal, option_symbol, quantity,
+             event_price, estimated_cost, realized_pnl, status, notes, json.dumps(row, default=str)),
+        )
+        conn.commit()
+        return trade_id
+
+
+def journal_log_replay_snapshot(replay: dict) -> str:
+    """Store signal-only/entry setup snapshots in SQLite without replacing the CSV replay."""
+    event = str(replay.get("event", "SIGNAL")).upper()
+    if event in ["SIGNAL_ONLY", "SIGNAL", "ENTRY"]:
+        return journal_log_event(replay)
+    return ""
+
+
+def load_trade_journal() -> pd.DataFrame:
+    init_trade_journal_db()
+    try:
+        with sqlite3.connect(TRADE_JOURNAL_DB) as conn:
+            df = pd.read_sql_query("SELECT * FROM trades ORDER BY opened_at DESC", conn)
+        for col in ["opened_at", "closed_at", "created_at", "updated_at"]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def load_trade_events() -> pd.DataFrame:
+    init_trade_journal_db()
+    try:
+        with sqlite3.connect(TRADE_JOURNAL_DB) as conn:
+            df = pd.read_sql_query("SELECT * FROM trade_events ORDER BY timestamp DESC", conn)
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def migrate_csv_logs_to_journal() -> int:
+    """One-click backfill from existing exports/trade_log.csv and trade_replay.csv."""
+    init_trade_journal_db()
+    imported = 0
+    for path in [TRADE_LOG_FILE, TRADE_REPLAY_FILE if "TRADE_REPLAY_FILE" in globals() else None]:
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            df = pd.read_csv(path)
+            for _, row in df.iterrows():
+                journal_log_event(row.dropna().to_dict())
+                imported += 1
+        except Exception as exc:
+            try:
+                app_log(f"CSV to journal migration skipped {path}: {exc}", "WARN")
+            except Exception:
+                pass
+    return imported
+
+
+def journal_db_path() -> str:
+    init_trade_journal_db()
+    return str(TRADE_JOURNAL_DB)
+
 # =========================
 # TRADE REPLAY / JOURNAL HELPERS
 # =========================
@@ -1454,6 +1646,13 @@ def save_trade_replay(row: dict, option: dict | None = None, event: str = "SIGNA
         replay["snapshot_path"] = snapshot_path
     except Exception:
         pass
+    try:
+        journal_log_replay_snapshot(replay)
+    except Exception as exc:
+        try:
+            app_log(f"Replay journal mirror failed: {exc}", "ERROR")
+        except Exception:
+            pass
     return replay
 
 
@@ -1463,7 +1662,7 @@ def load_trade_replay() -> pd.DataFrame:
     try:
         df = pd.read_csv(TRADE_REPLAY_FILE)
         if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
             df = df.dropna(subset=["timestamp"]).sort_values("timestamp", ascending=False)
         return df
     except Exception:

@@ -38,7 +38,7 @@
     "max_trades_per_day": 2,
     "max_spend_per_trade": 250,
     "max_daily_capital": 500,
-    "max_contracts": 2,
+    "max_contracts": 12,
     "stop_loss_pct": 20.0,
     "take_profit_pct": 30.0,
     "breakeven_trigger_pct": 15.0,

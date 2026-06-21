@@ -7,3 +7,5 @@ ib-insync
 requests
 pytz
 python-dotenv
+yfinance
+pyarrow
