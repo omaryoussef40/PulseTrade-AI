@@ -1,27 +1,21 @@
 {
   "version": "v0.9.5",
-  "started_at": "2026-06-21T11:06:33",
-  "completed_at": "2026-06-21T11:08:11",
+  "started_at": "2026-06-21T20:44:55",
+  "completed_at": "2026-06-21T20:45:30",
   "status": "COMPLETE",
   "symbols": [
-    "MU",
-    "MRVL",
-    "INTL",
-    "ARM"
+    "MRVL"
   ],
   "period": "30d",
   "interval": "5m",
-  "candles": 7837,
-  "replay_events": 7837,
-  "signals": 60,
-  "trades": 46,
-  "decisions": 60,
+  "candles": 2339,
+  "replay_events": 2339,
+  "signals": 19,
+  "trades": 19,
+  "decisions": 19,
   "settings": {
     "symbols": [
-      "MU",
-      "MRVL",
-      "INTL",
-      "ARM"
+      "MRVL"
     ],
     "period": "30d",
     "interval": "5m",

@@ -483,6 +483,23 @@ def _simulate_single_trade(
         exit_pricing_components = _price_model_components(signal, entry_underlying, exit_underlying, entry_premium_mid, final_minutes_held, config)
         exit_premium_mid = float(exit_pricing_components["mark"])
 
+    # Directional consistency guard for the Yahoo approximate pricing model.
+    # In real options, a profitable trailing stop can sometimes fill before the
+    # underlying closes back below entry. With 5-minute Yahoo stock candles only,
+    # we do not have the actual option tape or intrabar stop trigger. To avoid
+    # impossible-looking results such as a CALL closing with the stock below the
+    # entry price but still booking a large profit, cap favorable fills to
+    # breakeven whenever the final underlying move is against the option. This
+    # keeps the approximate Yahoo model conservative until IBKR historical option
+    # prices are available.
+    directional_guard_applied = False
+    if str(signal).upper() == "CALL" and float(exit_underlying) <= float(entry_underlying) and float(exit_premium_mid) > float(entry_premium):
+        exit_premium_mid = float(entry_premium)
+        directional_guard_applied = True
+    elif str(signal).upper() == "PUT" and float(exit_underlying) >= float(entry_underlying) and float(exit_premium_mid) > float(entry_premium):
+        exit_premium_mid = float(entry_premium)
+        directional_guard_applied = True
+
     exit_premium = round(exit_premium_mid * (1 - float(config.slippage_pct) / 100.0), 2)
     exit_notional = round(exit_premium * sizing.quantity * 100.0, 2)
     exit_commission = round(sizing.quantity * float(config.commission_per_contract), 2)
@@ -521,6 +538,7 @@ def _simulate_single_trade(
         "underlying_move": round(exit_underlying - entry_underlying, 4),
         "underlying_move_pct": round(((exit_underlying - entry_underlying) / entry_underlying) * 100.0, 4) if entry_underlying else 0.0,
         "option_return_pct": round(((exit_premium - entry_premium) / entry_premium) * 100.0, 2) if entry_premium else 0.0,
+        "directional_guard_applied": directional_guard_applied,
         "pricing_model": exit_pricing_components.get("pricing_model"),
         "raw_delta_return_pct": exit_pricing_components.get("raw_delta_return_pct"),
         "model_option_return_pct": exit_pricing_components.get("option_return_after_theta_pct"),
@@ -569,6 +587,7 @@ def _simulate_single_trade(
         model_option_return_pct=exit_pricing_components.get("option_return_after_theta_pct"),
         theta_decay_pct=exit_pricing_components.get("theta_decay_pct"),
         realized_pnl=realized_pnl,
+        directional_guard_applied=directional_guard_applied,
         account_equity=round(account.equity, 2),
         daily_capital_used=daily_capital_used,
     )
