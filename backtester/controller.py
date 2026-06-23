@@ -20,6 +20,11 @@ import json
 import pandas as pd
 
 from .data import YahooDataClient
+
+try:
+    from market_data import create_market_data_provider
+except Exception:  # pragma: no cover
+    create_market_data_provider = None
 from .replay import MarketReplayEngine, ReplayConfig
 from .strategy import scan_replay_history, clean_signal_row
 from .simulator import OptionSimulationConfig, simulate_option_trades_with_decisions, summarize_trades
@@ -35,8 +40,8 @@ class StrategyLabSettings:
     period: str = "30d"
     interval: str = "5m"
     force_refresh: bool = False
-    orb_minutes: int = 30
-    first_signal_minutes: int = 35
+    orb_minutes: int = 15
+    first_signal_minutes: int = 20
     min_session_bars: int = 7
     min_score: float = 70.0
     min_confidence: float = 75.0
@@ -64,6 +69,8 @@ class StrategyLabSettings:
     premium_pct: float = 0.0025
     slippage_pct: float = 2.0
     allow_same_symbol_same_day: bool = False
+    selected_strategies: tuple[str, ...] = ("PMB",)
+    data_source: str = "IBKR"
 
 
 def is_top_candidate_replay(
@@ -74,31 +81,97 @@ def is_top_candidate_replay(
     min_atr: float,
     use_rvol_filter: bool,
 ) -> bool:
+    """Return whether a replay signal is tradable.
+
+    PMB v2 no longer uses Confidence as a filter. The min_confidence argument is
+    kept only so older UI/config calls do not break.
+    """
     if not result or result.get("Signal") not in ["CALL", "PUT"]:
         return False
     try:
         if float(result.get("Score", 0)) < float(min_score):
             return False
-        if float(result.get("Confidence", 0)) < float(min_confidence):
-            return False
         if bool(use_rvol_filter) and float(result.get("RVOL", 0)) < float(min_rvol):
             return False
         if float(result.get("ATR %", 0)) < float(min_atr):
             return False
-        if result.get("Signal") == "CALL":
-            return float(result.get("Bull Score", 0)) >= float(min_score)
-        if result.get("Signal") == "PUT":
-            return float(result.get("Bear Score", 0)) >= float(min_score)
     except Exception:
         return False
-    return False
+    return True
+
+
+def _normalize_strategy_names(values) -> list[str]:
+    allowed = {"PMB", "BRT", "PULLBACK", "GAP"}
+    out: list[str] = []
+    for value in values or ["PMB"]:
+        name = str(value).strip().upper().replace(" ", "_")
+        if name in {"PULLBACK_REVERSAL", "PBR"}:
+            name = "PULLBACK"
+        if name in {"GAP_CONTINUATION", "GCS"}:
+            name = "GAP"
+        if name in allowed and name not in out:
+            out.append(name)
+    return out or ["PMB"]
+
+
+def _strategy_display_name(strategy: str) -> str:
+    return {
+        "PMB": "PMB",
+        "BRT": "BRT",
+        "PULLBACK": "Pullback",
+        "GAP": "Gap",
+    }.get(str(strategy).upper(), str(strategy).upper())
+
+
+def _scan_strategy_replay(strategy_name: str, symbol: str, history: pd.DataFrame, settings: StrategyLabSettings) -> dict | None:
+    """Run one strategy against replay history.
+
+    PMB is fully implemented and uses the current Pulse Momentum Breakout rules.
+    BRT, Pullback, and Gap are structure-ready placeholders until we code their exact
+    entry rules. They intentionally return no trades rather than fake performance.
+    """
+    strategy_name = str(strategy_name).strip().upper()
+    if strategy_name == "PMB":
+        result = scan_replay_history(
+            symbol=symbol,
+            history=history,
+            daily=None,
+            use_rvol_score=bool(settings.use_rvol_score),
+            min_score=float(settings.min_score),
+            orb_minutes=int(settings.orb_minutes),
+        )
+        if result:
+            result["Strategy"] = "PMB"
+        return result
+    return None
 
 
 class StrategyLabController:
-    def __init__(self, export_dir: str | Path | None = None, data_client: YahooDataClient | None = None):
+    def __init__(self, export_dir: str | Path | None = None, data_client: YahooDataClient | None = None, data_provider=None):
         self.export_dir = Path(export_dir) if export_dir else EXPORT_DIR
         self.export_dir.mkdir(parents=True, exist_ok=True)
-        self.client = data_client or YahooDataClient()
+        # data_client is kept for backward compatibility. New code should pass data_provider.
+        self.client = data_provider or data_client or YahooDataClient()
+
+    @property
+    def provider_name(self) -> str:
+        return str(getattr(self.client, "name", self.client.__class__.__name__))
+
+    def cache_info(self) -> pd.DataFrame:
+        if hasattr(self.client, "cache_info"):
+            try:
+                return self.client.cache_info()
+            except Exception:
+                return pd.DataFrame()
+        return pd.DataFrame()
+
+    def clear_cache(self, symbol: str | None = None) -> int:
+        if hasattr(self.client, "clear_cache"):
+            try:
+                return int(self.client.clear_cache(symbol))
+            except Exception:
+                return 0
+        return 0
 
     @property
     def paths(self) -> dict[str, Path]:
@@ -108,6 +181,7 @@ class StrategyLabController:
             "trades": self.export_dir / "strategy_lab_trades.csv",
             "decisions": self.export_dir / "strategy_lab_signal_decisions.csv",
             "sessions": self.export_dir / "strategy_lab_sessions.csv",
+            "comparison": self.export_dir / "strategy_lab_comparison.csv",
             "metrics": self.export_dir / "strategy_lab_metrics.json",
             "meta": self.export_dir / "strategy_lab_meta.json",
         }
@@ -135,7 +209,7 @@ class StrategyLabController:
                     force_refresh=settings.force_refresh,
                 )
                 if df is None or df.empty:
-                    errors.append({"symbol": symbol, "error": "Yahoo returned no candles"})
+                    errors.append({"symbol": symbol, "error": f"{self.provider_name} returned no candles"})
                 else:
                     data[symbol] = df
             except Exception as exc:
@@ -153,10 +227,11 @@ class StrategyLabController:
         sessions_df = engine.sessions()
         events = list(engine.events(only_scanner_allowed=False))
         total_events = max(len(events), 1)
+        selected_strategies = _normalize_strategy_names(settings.selected_strategies)
 
         replay_rows: list[dict[str, Any]] = []
         signal_rows: list[dict[str, Any]] = []
-        seen_signal_keys: set[tuple[str, str, str]] = set()
+        seen_signal_keys: set[tuple[str, str, str, str]] = set()
 
         for idx, event in enumerate(events, start=1):
             row = {
@@ -169,22 +244,23 @@ class StrategyLabController:
                 "scanner_allowed": event.scanner_allowed,
                 "new_session": event.is_new_session,
                 "session_close": event.is_session_close,
+                "strategies": ", ".join(selected_strategies),
             }
 
             if event.scanner_allowed:
-                scan_result = scan_replay_history(
-                    symbol=event.symbol,
-                    history=event.history,
-                    daily=None,
-                    use_rvol_score=bool(settings.use_rvol_score),
-                    min_score=float(settings.min_score),
-                )
-                clean_scan = clean_signal_row(scan_result)
-                if clean_scan:
+                for strategy_name in selected_strategies:
+                    scan_result = _scan_strategy_replay(strategy_name, event.symbol, event.history, settings)
+                    clean_scan = clean_signal_row(scan_result)
+                    if not clean_scan:
+                        continue
+                    clean_scan["Strategy"] = strategy_name
                     row.update({
+                        f"{strategy_name.lower()}_signal": clean_scan.get("Signal"),
+                        f"{strategy_name.lower()}_score": clean_scan.get("Score"),
+                        f"{strategy_name.lower()}_grade": clean_scan.get("Grade"),
                         "signal": clean_scan.get("Signal"),
                         "score": clean_scan.get("Score"),
-                        "confidence": clean_scan.get("Confidence"),
+                        "grade": clean_scan.get("Grade"),
                         "rvol": clean_scan.get("RVOL"),
                         "atr_pct": clean_scan.get("ATR %"),
                     })
@@ -197,19 +273,18 @@ class StrategyLabController:
                         settings.use_rvol_filter,
                     )
                     if qualifies:
-                        # De-duplicate continuous signals on the same symbol/direction/date.
-                        # Keep the first signal of each direction per symbol per session. This
-                        # produces realistic entry candidates and avoids hundreds of repeated
-                        # signals after one breakout.
-                        signal_key = (event.symbol, str(event.session_date), str(clean_scan.get("Signal")))
+                        signal_key = (strategy_name, event.symbol, str(event.session_date), str(clean_scan.get("Signal")))
                         if signal_key not in seen_signal_keys:
                             seen_signal_keys.add(signal_key)
                             signal_rows.append({
+                                "strategy": strategy_name,
+                                "strategy_name": _strategy_display_name(strategy_name),
                                 "timestamp": event.timestamp,
                                 "session_date": event.session_date,
                                 "symbol": event.symbol,
                                 "signal": clean_scan.get("Signal"),
                                 "score": clean_scan.get("Score"),
+                                "grade": clean_scan.get("Grade"),
                                 "confidence": clean_scan.get("Confidence"),
                                 "price": clean_scan.get("Price"),
                                 "rvol": clean_scan.get("RVOL"),
@@ -220,6 +295,7 @@ class StrategyLabController:
                                 "pdh": clean_scan.get("PDH"),
                                 "pdl": clean_scan.get("PDL"),
                                 "pdh_method": clean_scan.get("PDH Method"),
+                                "score_components": clean_scan.get("Score Components"),
                                 "reasons": clean_scan.get("Reasons"),
                             })
             replay_rows.append(row)
@@ -228,7 +304,7 @@ class StrategyLabController:
 
         return pd.DataFrame(replay_rows), pd.DataFrame(signal_rows), sessions_df
 
-    def simulate(self, signals: pd.DataFrame, data: dict[str, pd.DataFrame], settings: StrategyLabSettings) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+    def simulate(self, signals: pd.DataFrame, data: dict[str, pd.DataFrame], settings: StrategyLabSettings) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame]:
         sim_config = OptionSimulationConfig(
             starting_capital=float(settings.starting_capital),
             max_trades_per_day=int(settings.max_trades_per_day),
@@ -248,14 +324,63 @@ class StrategyLabController:
             slippage_pct=float(settings.slippage_pct),
             allow_same_symbol_same_day=bool(settings.allow_same_symbol_same_day),
         )
-        trades, decisions = simulate_option_trades_with_decisions(signals, data, sim_config)
-        metrics = summarize_trades(trades, starting_capital=float(settings.starting_capital))
-        if isinstance(decisions, pd.DataFrame) and not decisions.empty:
-            metrics["total_decisions"] = int(len(decisions))
-            metrics["traded_signals"] = int((decisions.get("status", pd.Series(dtype=str)).astype(str) == "TRADED").sum())
-            metrics["rejected_signals"] = int((decisions.get("status", pd.Series(dtype=str)).astype(str) == "REJECTED").sum())
-            metrics["skipped_signals"] = int((decisions.get("status", pd.Series(dtype=str)).astype(str) == "SKIPPED").sum())
-        return trades, metrics, decisions
+
+        all_trades: list[pd.DataFrame] = []
+        all_decisions: list[pd.DataFrame] = []
+        comparison_rows: list[dict[str, Any]] = []
+        selected_strategies = _normalize_strategy_names(settings.selected_strategies)
+
+        if signals is None or signals.empty:
+            for strategy_name in selected_strategies:
+                base_metrics = summarize_trades(pd.DataFrame(), starting_capital=float(settings.starting_capital))
+                comparison_rows.append({
+                    "Strategy": _strategy_display_name(strategy_name),
+                    "Status": "No signals" if strategy_name == "PMB" else "Placeholder only",
+                    "Trades": 0,
+                    "Win %": 0.0,
+                    "Avg R": 0.0,
+                    "Max DD": 0.0,
+                    "Profit Factor": 0.0,
+                    "Net P/L": 0.0,
+                    "Return %": 0.0,
+                })
+            comparison = pd.DataFrame(comparison_rows)
+            return pd.DataFrame(), {}, pd.DataFrame(), comparison
+
+        for strategy_name in selected_strategies:
+            strategy_signals = signals[signals.get("strategy", "PMB").astype(str).str.upper() == strategy_name].copy() if "strategy" in signals.columns else signals.copy()
+            trades, decisions = simulate_option_trades_with_decisions(strategy_signals, data, sim_config)
+            if not trades.empty:
+                trades["strategy"] = strategy_name
+                trades["strategy_name"] = _strategy_display_name(strategy_name)
+                all_trades.append(trades)
+            if not decisions.empty:
+                decisions["strategy"] = strategy_name
+                decisions["strategy_name"] = _strategy_display_name(strategy_name)
+                all_decisions.append(decisions)
+            metrics = summarize_trades(trades, starting_capital=float(settings.starting_capital))
+            comparison_rows.append({
+                "Strategy": _strategy_display_name(strategy_name),
+                "Status": "Implemented" if strategy_name == "PMB" else "Placeholder only",
+                "Trades": int(metrics.get("total_trades", 0)),
+                "Win %": float(metrics.get("win_rate", 0)),
+                "Avg R": round(float(metrics.get("avg_trade", 0)) / max(abs(float(settings.max_spend_per_trade or 1)), 1.0), 2),
+                "Max DD": float(metrics.get("max_drawdown", 0)),
+                "Profit Factor": metrics.get("profit_factor", 0),
+                "Net P/L": float(metrics.get("net_pnl", 0)),
+                "Return %": float(metrics.get("return_pct", 0)),
+            })
+
+        combined_trades = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
+        combined_decisions = pd.concat(all_decisions, ignore_index=True) if all_decisions else pd.DataFrame()
+        combined_metrics = summarize_trades(combined_trades, starting_capital=float(settings.starting_capital))
+        if isinstance(combined_decisions, pd.DataFrame) and not combined_decisions.empty:
+            combined_metrics["total_decisions"] = int(len(combined_decisions))
+            combined_metrics["traded_signals"] = int((combined_decisions.get("status", pd.Series(dtype=str)).astype(str) == "TRADED").sum())
+            combined_metrics["rejected_signals"] = int((combined_decisions.get("status", pd.Series(dtype=str)).astype(str) == "REJECTED").sum())
+            combined_metrics["skipped_signals"] = int((combined_decisions.get("status", pd.Series(dtype=str)).astype(str) == "SKIPPED").sum())
+        comparison = pd.DataFrame(comparison_rows)
+        return combined_trades, combined_metrics, combined_decisions, comparison
 
     def run(self, settings: StrategyLabSettings, progress_callback=None) -> dict[str, Any]:
         started_at = datetime.now().isoformat(timespec="seconds")
@@ -269,6 +394,7 @@ class StrategyLabController:
                 "sessions": pd.DataFrame(),
                 "trades": pd.DataFrame(),
                 "decisions": pd.DataFrame(),
+                "comparison": pd.DataFrame(),
                 "metrics": {},
                 "meta": {"started_at": started_at, "completed_at": datetime.now().isoformat(timespec="seconds"), "status": "NO_DATA"},
             }
@@ -276,23 +402,26 @@ class StrategyLabController:
             return result
 
         replay, signals, sessions = self.replay_and_scan(data, settings, progress_callback=progress_callback)
-        trades, metrics, decisions = self.simulate(signals, data, settings)
+        trades, metrics, decisions, comparison = self.simulate(signals, data, settings)
         meta = {
-            "version": "v0.9.5",
+            "version": "v0.9.6-pmb-v2",
             "started_at": started_at,
             "completed_at": datetime.now().isoformat(timespec="seconds"),
             "status": "COMPLETE",
             "symbols": list(data.keys()),
             "period": settings.period,
             "interval": settings.interval,
+            "data_source": settings.data_source,
+            "provider": self.provider_name,
             "candles": int(sum(len(df) for df in data.values())),
             "replay_events": int(len(replay)),
             "signals": int(len(signals)),
             "trades": int(len(trades)),
             "decisions": int(len(decisions)),
+            "strategies": _normalize_strategy_names(settings.selected_strategies),
             "settings": asdict(settings),
         }
-        result = {"data": data, "errors": errors, "replay": replay, "signals": signals, "sessions": sessions, "trades": trades, "decisions": decisions, "metrics": metrics, "meta": meta}
+        result = {"data": data, "errors": errors, "replay": replay, "signals": signals, "sessions": sessions, "trades": trades, "decisions": decisions, "comparison": comparison, "metrics": metrics, "meta": meta}
         self.save_result(result)
         return result
 
@@ -303,6 +432,7 @@ class StrategyLabController:
             "signals": result.get("signals", pd.DataFrame()),
             "trades": result.get("trades", pd.DataFrame()),
             "decisions": result.get("decisions", pd.DataFrame()),
+            "comparison": result.get("comparison", pd.DataFrame()),
             "sessions": result.get("sessions", pd.DataFrame()),
         }
         for key, frame in frames.items():
@@ -321,7 +451,7 @@ class StrategyLabController:
     def load_last_result(self) -> dict[str, Any]:
         paths = self.paths
         out: dict[str, Any] = {}
-        for key in ["replay", "signals", "trades", "decisions", "sessions"]:
+        for key in ["replay", "signals", "trades", "decisions", "comparison", "sessions"]:
             try:
                 out[key] = pd.read_csv(paths[key]) if paths[key].exists() else pd.DataFrame()
             except Exception:

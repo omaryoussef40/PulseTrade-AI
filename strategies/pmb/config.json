@@ -1,0 +1,35 @@
+{
+  "name": "PMB",
+  "display_name": "Pulse Momentum Breakout",
+  "enabled": true,
+  "description": "PMB v2: 15-minute opening range, Score + Grade setup quality, no Confidence blocker.",
+  "orb_minutes": 15,
+  "first_signal_minutes": 20,
+  "min_score": 70,
+  "min_confidence": 0,
+  "use_rvol_filter": false,
+  "use_rvol_score": false,
+  "use_rvol_ranking": false,
+  "min_rvol": 1.5,
+  "min_atr": 0.3,
+  "confidence_mode": "debug_only",
+  "grade_scale": {
+    "A+": "95-100",
+    "A": "90-94",
+    "A-": "85-89",
+    "B+": "80-84",
+    "B": "75-79",
+    "B-": "70-74",
+    "C": "60-69",
+    "Ignore": "<60"
+  },
+  "scoring_components": {
+    "vwap": 15,
+    "ema_trend": 15,
+    "orb_break": 20,
+    "pdh_pdl_break": 20,
+    "breakout_candle": 10,
+    "atr": 15,
+    "rvol_optional_bonus": 5
+  }
+}

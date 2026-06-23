@@ -320,12 +320,15 @@ def _base_decision(signal_row: dict, status: str, reason: str, stage: str = "SIM
     ts = signal_row.get("timestamp") or signal_row.get("Timestamp")
     symbol = str(signal_row.get("symbol") or signal_row.get("Symbol") or "").upper()
     signal = str(signal_row.get("signal") or signal_row.get("Signal") or "").upper()
+    strategy = str(signal_row.get("strategy") or signal_row.get("Strategy") or "PMB").upper()
     out = {
         "timestamp": ts,
         "session_date": signal_row.get("session_date"),
+        "strategy": strategy,
         "symbol": symbol,
         "signal": signal,
         "score": signal_row.get("score") or signal_row.get("Score"),
+        "grade": signal_row.get("grade") or signal_row.get("Grade") or signal_row.get("Setup Quality"),
         "confidence": signal_row.get("confidence") or signal_row.get("Confidence"),
         "price": signal_row.get("price") or signal_row.get("Price"),
         "status": status,
@@ -517,9 +520,11 @@ def _simulate_single_trade(
         "entry_time": entry_ts,
         "exit_time": exit_ts,
         "date": entry_ts.date().isoformat(),
+        "strategy": str(signal_row.get("strategy") or signal_row.get("Strategy") or "PMB").upper(),
         "symbol": symbol,
         "signal": signal,
         "score": signal_row.get("score"),
+        "grade": signal_row.get("grade") or signal_row.get("Grade") or signal_row.get("Setup Quality"),
         "confidence": signal_row.get("confidence"),
         "entry_underlying": round(entry_underlying, 2),
         "exit_underlying": round(exit_underlying, 2),

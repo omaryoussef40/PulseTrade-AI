@@ -1,0 +1,7 @@
+{
+  "name": "BRT",
+  "display_name": "Break & Retest",
+  "enabled": false,
+  "description": "Future strategy for premarket/high-low breaks, retests, and continuation confirmation.",
+  "status": "placeholder"
+}

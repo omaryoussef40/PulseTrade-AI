@@ -50,12 +50,11 @@ try:
 except Exception:
     render_strategy_lab_tab = None
 
-st.set_page_config(page_title=APP_NAME, layout="wide")
-st.title(APP_NAME)
-st.caption("Production dashboard + shared config + independent engine")
-
+APP_DISPLAY_NAME = "PulseTrade AI"
+st.set_page_config(page_title=APP_DISPLAY_NAME, layout="wide")
 st.markdown("""
 <style>
+    .block-container { padding-top: 1.15rem !important; }
     div[data-testid="stMetricValue"] { font-size: 1.35rem !important; white-space: nowrap !important; }
     div[data-testid="stMetricLabel"] { font-size: 0.82rem !important; }
     .status-card, .setup-card {
@@ -75,6 +74,89 @@ st.markdown("""
     .badge-call { color: #22c55e; background: rgba(34,197,94,0.12); }
     .badge-put { color: #ef4444; background: rgba(239,68,68,0.12); }
     .small-muted { color: rgba(250,250,250,0.65); font-size: 0.82rem; }
+
+    /* Cleaner sidebar navigation */
+    section[data-testid="stSidebar"] {
+        border-right: 1px solid rgba(250,250,250,0.08);
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label {
+        border: 1px solid rgba(250,250,250,0.12);
+        border-radius: 12px;
+        padding: 10px 12px;
+        margin-bottom: 8px;
+        background: rgba(255,255,255,0.035);
+        transition: all 0.15s ease;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+        border-color: rgba(239,68,68,0.55);
+        background: rgba(239,68,68,0.08);
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
+        border-color: rgba(239,68,68,0.95);
+        background: rgba(239,68,68,0.16);
+        box-shadow: inset 3px 0 0 rgba(239,68,68,0.95);
+    }
+
+    /* Cleaner action buttons */
+    div.stButton > button {
+        border-radius: 12px !important;
+        border: 1px solid rgba(250,250,250,0.16) !important;
+        background: linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.035)) !important;
+        padding: 0.72rem 1.05rem !important;
+        font-weight: 700 !important;
+        min-height: 44px !important;
+        transition: all 0.15s ease !important;
+    }
+    div.stButton > button:hover {
+        border-color: rgba(239,68,68,0.8) !important;
+        background: rgba(239,68,68,0.14) !important;
+        transform: translateY(-1px);
+    }
+    div.stButton > button:active {
+        transform: translateY(0);
+    }
+
+    /* Compact global status ribbon */
+    .app-title {
+        font-size: 2.35rem !important;
+        line-height: 1.05 !important;
+        margin: 0.55rem 0 0.15rem 0 !important;
+        font-weight: 900 !important;
+    }
+    .app-subtitle {
+        color: rgba(250,250,250,0.62);
+        font-size: 0.86rem;
+        margin-bottom: 1.05rem;
+    }
+    .compact-status-wrap {
+        margin: 0 0 0.8rem 0;
+    }
+    .compact-status-card {
+        border: 1px solid rgba(250,250,250,0.12);
+        border-radius: 12px;
+        padding: 7px 10px;
+        background: rgba(255,255,255,0.032);
+        min-height: 44px;
+    }
+    .compact-status-label {
+        font-size: 0.68rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(250,250,250,0.58);
+        margin-bottom: 2px;
+    }
+    .compact-status-value {
+        font-size: 0.86rem;
+        font-weight: 800;
+        line-height: 1.15;
+        color: rgba(250,250,250,0.96);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    @media (max-width: 1100px) {
+        .compact-status-wrap { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -202,11 +284,79 @@ def render_empty_performance_dashboard():
     action_cols[3].button("Reset Filters", disabled=True)
 
 
+
+
+def _money_value(value, currency: str = "USD") -> str:
+    """Format IBKR account values safely for dashboard display."""
+    try:
+        return f"{currency} {float(value):,.2f}"
+    except Exception:
+        return f"{currency} {value}" if value not in [None, ""] else "N/A"
+
+
+def fetch_ibkr_account_summary(ib_cfg: IBConfig) -> dict:
+    """Fetch key account fields directly from IBKR/TWS."""
+    ib = connect_ib(ib_cfg)
+    summary = ib.accountSummary()
+    accounts = sorted({item.account for item in summary if getattr(item, "account", None)})
+    account_id = ib_cfg.account or (accounts[0] if accounts else "N/A")
+
+    wanted = {
+        "NetLiquidation": None,
+        "TotalCashValue": None,
+        "AvailableFunds": None,
+        "BuyingPower": None,
+        "MaintMarginReq": None,
+        "UnrealizedPnL": None,
+        "RealizedPnL": None,
+    }
+
+    currency = "USD"
+    for item in summary:
+        if item.tag in wanted and (account_id == "N/A" or not ib_cfg.account or item.account == account_id):
+            wanted[item.tag] = item.value
+            currency = item.currency or currency
+
+    ib.disconnect()
+    return {
+        "account_id": account_id,
+        "currency": currency,
+        "connected": True,
+        "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        **wanted,
+    }
+
+
+def render_ibkr_account_summary(summary: dict):
+    """Render professional account overview cards."""
+    if not summary:
+        return
+
+    st.markdown("### IBKR Account Summary")
+    st.caption(f"Last synced: {summary.get('fetched_at', 'N/A')} | Account: {summary.get('account_id', 'N/A')}")
+
+    cur = summary.get("currency", "USD")
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("Net Liquidation", _money_value(summary.get("NetLiquidation"), cur))
+    a2.metric("Cash Balance", _money_value(summary.get("TotalCashValue"), cur))
+    a3.metric("Available Funds", _money_value(summary.get("AvailableFunds"), cur))
+    a4.metric("Buying Power", _money_value(summary.get("BuyingPower"), cur))
+
+    b1, b2, b3, b4 = st.columns(4)
+    b1.metric("Maintenance Margin", _money_value(summary.get("MaintMarginReq"), cur))
+    b2.metric("Unrealized P/L", _money_value(summary.get("UnrealizedPnL", 0), cur))
+    b3.metric("Realized P/L", _money_value(summary.get("RealizedPnL", 0), cur))
+    b4.metric("Connection", "🟢 Connected" if summary.get("connected") else "🔴 Disconnected")
+
+
 def save_and_rerun(new_cfg: dict):
     save_config(new_cfg)
 
 
-with st.sidebar:
+def render_platform_settings():
+    st.markdown("### Platform Settings")
+    st.caption("These settings were previously in the left control panel. They now live here so the sidebar can be used only for navigation.")
+
     st.header("Control Panel")
 
     with st.expander("Automation Safety", expanded=False):
@@ -290,11 +440,32 @@ with st.sidebar:
     save_config(cfg)
     st.caption("Settings auto-saved to config.json")
 
+
+with st.sidebar:
+    st.markdown("### PulseTrade AI")
+    st.caption("Navigation")
+    selected_page = st.radio(
+        "Menu",
+        [
+            "📊 Performance",
+            "💼 Positions",
+            "📈 Strategy Lab",
+            "🧠 Market Intelligence",
+            "📈 Scanner",
+            "🔍 Breakdown",
+            "🏦 Account Status",
+            "📝 Logs",
+        ],
+        label_visibility="collapsed",
+    )
+
 # Light dashboard refresh so health updates while engine is running.
 # Auto-refresh disabled while the Yahoo Backtester is active.
 # Manual refresh is safer for long replay/simulation jobs.
 # if not bool(st.session_state.get("bt_job_running", False)):
-    st_autorefresh(interval=30_000, key="dashboard_refresh")
+# Auto-refresh disabled to preserve scanner/research state while navigating.
+# Use manual refresh/reconnect buttons when needed.
+# st_autorefresh(interval=30_000, key="dashboard_refresh")
 
 # Shared objects from saved config.
 cfg = load_config()
@@ -316,6 +487,27 @@ except Exception:
     NEWS_CATALYSTS = {}
 
 health = read_health()
+
+# Automatically connect/sync IBKR account summary on dashboard startup.
+# If TWS/IB Gateway is not open yet, the dashboard remains usable and will retry
+# on the next Streamlit refresh or manual reconnect.
+try:
+    if not st.session_state.get("ibkr_account_summary"):
+        summary = fetch_ibkr_account_summary(ib_cfg)
+        st.session_state["ibkr_account_summary"] = summary
+        st.session_state["ibkr_connected"] = True
+        st.session_state.pop("ibkr_auto_connect_error", None)
+        write_health(ib_connected=True, last_status="Dashboard auto-connected + account synced")
+except Exception as _auto_ibkr_error:
+    st.session_state["ibkr_connected"] = False
+    st.session_state["ibkr_auto_connect_error"] = str(_auto_ibkr_error)
+
+if st.session_state.get("ibkr_connected"):
+    health["ib_connected"] = True
+    health["last_status"] = "Dashboard connected to IBKR"
+if st.session_state.get("ibkr_account_summary"):
+    health["ib_connected"] = True
+
 
 def operational_order_label(config: dict, health_state: dict) -> str:
     mode = config.get("account_mode", "Simulation")
@@ -344,41 +536,124 @@ def next_action_label(config: dict, health_state: dict) -> str:
         status = status[:18] + "…"
     return status
 
-header_cols = st.columns(6)
-with header_cols[0]:
-    status_card("ENGINE", "🟢 Running" if health.get("engine_running") else "⚪ Unknown")
-with header_cols[1]:
-    status_card("IBKR", "🟢 Connected" if health.get("ib_connected") else "⚪ Unknown")
-with header_cols[2]:
-    status_card("MARKET", "🟢 Open" if is_market_open_now(cfg) else "🔴 Closed")
-with header_cols[3]:
-    status_card("MODE", cfg.get("account_mode", "Simulation"))
-with header_cols[4]:
-    status_card("ORDERS", operational_order_label(cfg, health))
-with header_cols[5]:
-    status_card("NEXT ACTION", next_action_label(cfg, health))
-st.caption(f"Operational status: {operational_order_label(cfg, health).replace('🔵 ', '').replace('🟢 ', '').replace('🟡 ', '').replace('🔒 ', '')} | Config status: {trading_status_from_config(cfg)} | Last update: {health.get('updated_at', 'N/A')}")
+def render_status_overview():
+    header_cols = st.columns(6)
+    with header_cols[0]:
+        status_card("ENGINE", "🟢 Running" if health.get("engine_running") else "⚪ Unknown")
+    with header_cols[1]:
+        status_card("IBKR", "🟢 Connected" if health.get("ib_connected") else "⚪ Unknown")
+    with header_cols[2]:
+        status_card("MARKET", "🟢 Open" if is_market_open_now(cfg) else "🔴 Closed")
+    with header_cols[3]:
+        status_card("MODE", cfg.get("account_mode", "Simulation"))
+    with header_cols[4]:
+        status_card("ORDERS", operational_order_label(cfg, health))
+    with header_cols[5]:
+        status_card("NEXT ACTION", next_action_label(cfg, health))
+    st.caption(f"Operational status: {operational_order_label(cfg, health).replace('🔵 ', '').replace('🟢 ', '').replace('🟡 ', '').replace('🔒 ', '')} | Config status: {trading_status_from_config(cfg)} | Last update: {health.get('updated_at', 'N/A')}")
 
-connection_col1, connection_col2, connection_col3 = st.columns(3)
-with connection_col1:
-    if st.button("Connect to IBKR"):
-        try:
-            ib = connect_ib(ib_cfg)
-            st.success(f"Connected: {ib.isConnected()}")
-        except Exception as e:
-            st.error(f"IBKR connection failed: {e}")
-with connection_col2:
-    if st.button("Test Telegram"):
-        ok = send_telegram_message(tg_cfg, "AutoTrader Telegram test message.")
-        st.success("Telegram sent") if ok else st.error("Telegram failed")
-with connection_col3:
-    if st.button("Run One Engine Cycle Now"):
-        try:
-            run_cycle()
-            st.success("Engine cycle completed. Check logs/health below.")
-        except Exception as e:
-            st.error(f"Engine cycle failed: {e}")
-            st.caption("Technical details are hidden in the dashboard. Check the terminal/log files if needed.")
+def compact_status_card(label: str, value: str):
+    """Render one compact health/status item without raw HTML injection issues."""
+    st.markdown(
+        f"""
+        <div class="compact-status-card">
+            <div class="compact-status-label">{label}</div>
+            <div class="compact-status-value">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_compact_status_bar():
+    items = [
+        ("Engine", "🟢 Running" if health.get("engine_running") else "⚪ Unknown"),
+        ("IBKR", "🟢 Connected" if health.get("ib_connected") else "⚪ Unknown"),
+        ("Market", "🟢 Open" if is_market_open_now(cfg) else "🔴 Closed"),
+        ("Mode", str(cfg.get("account_mode", "Simulation"))),
+        ("Orders", operational_order_label(cfg, health)),
+        ("Next", next_action_label(cfg, health)),
+    ]
+    cols = st.columns(6)
+    for col, (label, value) in zip(cols, items):
+        with col:
+            compact_status_card(label, value)
+
+
+def render_app_header():
+    render_compact_status_bar()
+    st.markdown(f"<h1 class='app-title'>{APP_DISPLAY_NAME}</h1>", unsafe_allow_html=True)
+    st.markdown("<div class='app-subtitle'>IBKR-powered options scanner, strategy lab, and trading dashboard</div>", unsafe_allow_html=True)
+
+
+def render_account_status_tab():
+    st.subheader("IBKR Account Status")
+    st.caption("Auto-connects on dashboard startup. Use these controls only when TWS/IB Gateway was restarted or account data needs a manual refresh.")
+
+    with st.expander("⚙️ Platform Settings", expanded=False):
+        render_platform_settings()
+
+    st.divider()
+
+    control_cols = st.columns(4)
+    with control_cols[0]:
+        if st.button("Reconnect IBKR", use_container_width=True):
+            try:
+                summary = fetch_ibkr_account_summary(ib_cfg)
+                st.session_state["ibkr_account_summary"] = summary
+                st.session_state["ibkr_connected"] = True
+                write_health(ib_connected=True, last_status="Dashboard connected + account synced")
+                st.rerun()
+            except Exception as e:
+                st.session_state["ibkr_connected"] = False
+                st.session_state.pop("ibkr_account_summary", None)
+                write_health(ib_connected=False, last_status="Dashboard IBKR connection failed", last_error=str(e))
+                st.error(f"IBKR connection failed: {e}")
+
+    with control_cols[1]:
+        if st.button("Refresh Account", use_container_width=True):
+            try:
+                summary = fetch_ibkr_account_summary(ib_cfg)
+                st.session_state["ibkr_account_summary"] = summary
+                st.session_state["ibkr_connected"] = True
+                write_health(ib_connected=True, last_status="Account summary synced")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Account summary failed: {e}")
+
+    with control_cols[2]:
+        if st.button("Test Telegram", use_container_width=True):
+            ok = send_telegram_message(tg_cfg, "AutoTrader Telegram test message.")
+            st.success("Telegram sent") if ok else st.error("Telegram failed")
+
+    with control_cols[3]:
+        if st.button("Run One Engine Cycle Now", use_container_width=True):
+            try:
+                run_cycle()
+                st.success("Engine cycle completed. Check logs/health below.")
+            except Exception as e:
+                st.error(f"Engine cycle failed: {e}")
+                st.caption("Technical details are hidden in the dashboard. Check the terminal/log files if needed.")
+
+    if not st.session_state.get("ibkr_account_summary") and st.session_state.get("ibkr_auto_connect_error"):
+        st.warning(f"IBKR auto-connect pending: {st.session_state.get('ibkr_auto_connect_error')}")
+
+    render_ibkr_account_summary(st.session_state.get("ibkr_account_summary", {}))
+
+    with st.expander("Connection details", expanded=False):
+        details = {
+            "Host": ib_cfg.host,
+            "Port": ib_cfg.port,
+            "Client ID": ib_cfg.client_id,
+            "Configured Account": ib_cfg.account or "Auto / All",
+            "Read-only": ib_cfg.readonly,
+            "Account Mode": cfg.get("account_mode", "Simulation"),
+            "Trading Status": trading_status_from_config(cfg),
+            "Engine Status": "Running" if health.get("engine_running") else "Unknown",
+            "IBKR Status": "Connected" if health.get("ib_connected") else "Unknown",
+            "Last Health Update": health.get("updated_at", "N/A"),
+        }
+        st.json(details)
 
 
 
@@ -998,12 +1273,19 @@ def render_yahoo_backtester_tab(config: dict, default_symbols: list[str]):
     st.info("Current phase: Yahoo replay now simulates approximate 7-DTE option entries/exits and P/L. Next phase: improve analytics, trade explorer, and parameter testing.")
 
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📈 Scanner", "🔍 Breakdown", "💼 Positions", "📊 Performance", "📝 Logs", "🧠 Market Intelligence", "📈 Strategy Lab"])
+# Global compact terminal header shown on every page.
+render_app_header()
 
-with tab1:
+# Page routing from sidebar navigation
+
+if selected_page == "🏦 Account Status":
+    render_account_status_tab()
+
+elif selected_page == "📈 Scanner":
     st.subheader("Scanner")
     st.caption("Scan the full watchlist, rank the best setups, and review option ideas. Fresh Benzinga catalysts are shown inside setup cards when available.")
-    if st.button("▶ Run IBKR Scanner", use_container_width=True):
+    run_scanner_clicked = st.button("▶ Run IBKR Scanner", use_container_width=True)
+    if run_scanner_clicked:
         rows, option_rows = [], []
         progress = st.progress(0)
         try:
@@ -1037,6 +1319,10 @@ with tab1:
             if not option_df.empty:
                 option_df = option_df.sort_values(["Score", "Option Score"], ascending=[False, False])
 
+            st.session_state["scanner_stock_df"] = stock_df
+            st.session_state["scanner_option_df"] = option_df
+            st.session_state["scanner_last_run"] = datetime.now().isoformat(timespec="seconds")
+
             st.markdown("### Top Opportunities")
             card_source = option_df if not option_df.empty else stock_df
             if card_source.empty:
@@ -1058,7 +1344,32 @@ with tab1:
         except Exception as e:
             clean_ui_error("Scanner failed", e)
 
-with tab2:
+    if not run_scanner_clicked:
+        stock_df = st.session_state.get("scanner_stock_df", pd.DataFrame())
+        option_df = st.session_state.get("scanner_option_df", pd.DataFrame())
+        last_run = st.session_state.get("scanner_last_run")
+        if (isinstance(stock_df, pd.DataFrame) and not stock_df.empty) or (isinstance(option_df, pd.DataFrame) and not option_df.empty):
+            st.markdown("### Last Scanner Results")
+            if last_run:
+                st.caption(f"Last scan: {last_run}")
+            card_source = option_df if isinstance(option_df, pd.DataFrame) and not option_df.empty else stock_df
+            if isinstance(card_source, pd.DataFrame) and not card_source.empty:
+                card_cols = st.columns(min(3, len(card_source)))
+                for idx, (_, row) in enumerate(card_source.head(3).iterrows()):
+                    with card_cols[idx % len(card_cols)]:
+                        setup_card(row.to_dict())
+            with st.expander("Stock Results", expanded=True):
+                st.dataframe(stock_df, use_container_width=True)
+            with st.expander("Option Ideas", expanded=isinstance(option_df, pd.DataFrame) and not option_df.empty):
+                if isinstance(option_df, pd.DataFrame) and not option_df.empty:
+                    st.dataframe(option_df, use_container_width=True)
+                    st.download_button("Download option ideas", option_df.to_csv(index=False), "option_ideas.csv", "text/csv", key="download_persisted_option_ideas")
+                else:
+                    st.info("No clean option contracts found for the filtered setups.")
+        else:
+            st.info("No scanner results yet. Run the IBKR scanner once and the results will stay here while you navigate.")
+
+elif selected_page == "🔍 Breakdown":
     st.subheader("Ticker Breakdown")
     ticker = st.text_input("Ticker", value="").strip().upper()
     if st.button("Analyze Ticker"):
@@ -1084,7 +1395,7 @@ with tab2:
             st.error(f"Analysis failed: {e}")
             st.caption("Technical details are hidden in the dashboard. Check the terminal/log files if needed.")
 
-with tab3:
+elif selected_page == "💼 Positions":
     st.subheader("Positions")
     st.caption("The dashboard can be closed. The engine keeps running only when `python engine.py` is running on the VPS.")
 
@@ -1156,7 +1467,7 @@ with tab3:
     else:
         st.info("No engine heartbeat yet. Start `python engine.py` to activate health monitoring.")
 
-with tab4:
+elif selected_page == "📊 Performance":
     st.subheader("Performance & Trade Journal")
 
     def _load_trade_log_df() -> pd.DataFrame:
@@ -1308,7 +1619,7 @@ with tab4:
                 st.dataframe(filtered.tail(250), use_container_width=True)
                 st.download_button("Download filtered trade log", filtered.to_csv(index=False), "filtered_trade_log.csv", "text/csv")
 
-with tab5:
+elif selected_page == "📝 Logs":
     st.subheader("Logs")
     col_a, col_b = st.columns(2)
     with col_a:
@@ -1332,7 +1643,7 @@ with tab5:
         st.code(latest_logs[0].read_text(encoding="utf-8")[-5000:])
 
 
-with tab6:
+elif selected_page == "🧠 Market Intelligence":
     if render_market_intelligence_tab is None:
         st.error("Market Intelligence module could not be loaded.")
         st.caption("Make sure modules/news_dashboard.py, modules/news_database.py, and modules/news_analyzer.py exist and compile.")
@@ -1343,7 +1654,7 @@ with tab6:
             st.error(f"Market Intelligence failed: {e}")
             st.caption("Check logs/news_engine.log and confirm data/news.db exists.")
 
-with tab7:
+elif selected_page == "📈 Strategy Lab":
     if render_strategy_lab_tab is None:
         st.error("Strategy Lab module could not be loaded.")
         st.caption("Make sure backtester/ui.py, controller.py, data.py, replay.py, strategy.py, simulator.py, and metrics.py exist and compile.")

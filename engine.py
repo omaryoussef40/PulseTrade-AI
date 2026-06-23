@@ -115,13 +115,19 @@ def run_cycle() -> None:
     candidates: list[dict] = []
     for symbol in watchlist:
         try:
-            result = scan_symbol_ib(ib, symbol, bool(strategy.get("use_rvol_score", False)))
+            result = scan_symbol_ib(
+                ib,
+                symbol,
+                bool(strategy.get("use_rvol_score", False)),
+                str(strategy.get("active_strategy", "pmb")),
+                int(strategy.get("orb_minutes", 15)),
+            )
             if not result:
                 continue
             if not is_top_candidate(
                 result,
                 float(strategy.get("min_score", 70)),
-                float(strategy.get("min_confidence", 75)),
+                0.0,
                 float(strategy.get("min_rvol", 1.5)),
                 float(strategy.get("min_atr", 0.3)),
                 bool(strategy.get("use_rvol_filter", False)),
@@ -153,8 +159,8 @@ def run_cycle() -> None:
         return
 
     df = pd.DataFrame(candidates).sort_values(
-        ["Rank Score", "Confidence", "Score", "RVOL", "Option Score"],
-        ascending=[False, False, False, False, False],
+        ["Rank Score", "Score", "RVOL", "Option Score"],
+        ascending=[False, False, False, False],
     )
     selected = df.head(int(strategy.get("top_n_tickers", 2)))
 
@@ -186,7 +192,7 @@ def run_cycle() -> None:
 
         if telegram.get("send_alerts", False):
             ok = send_telegram_message(tg_cfg, make_alert_message(row.to_dict(), option_clean))
-            log_alert({"timestamp": datetime.now(EASTERN).isoformat(), "symbol": symbol, "signal": row["Signal"], "score": row["Score"], "confidence": row["Confidence"], "telegram_sent": ok})
+            log_alert({"timestamp": datetime.now(EASTERN).isoformat(), "symbol": symbol, "signal": row["Signal"], "score": row["Score"], "grade": row.get("Grade"), "telegram_sent": ok})
 
         if can_trade:
             limit_price = option_full["Mid"] if order.get("type", "LIMIT") == "LIMIT" else None
@@ -206,7 +212,9 @@ def run_cycle() -> None:
                 "estimated_cost": estimated_cost,
                 "status": status,
                 "score": row["Score"],
-                "confidence": row["Confidence"],
+                "confidence": row.get("Confidence"),
+                "grade": row.get("Grade"),
+                "setup_quality": row.get("Setup Quality"),
                 "rank_score": row["Rank Score"],
                 "orb_high": row.get("ORB High"),
                 "orb_low": row.get("ORB Low"),
@@ -244,7 +252,7 @@ def run_cycle() -> None:
                 estimated_cost=estimated_cost,
                 notes="Qualified setup recorded without order placement",
             )
-            app_log(f"{symbol}: signal only | {row['Signal']} | score={row['Score']} | confidence={row['Confidence']}")
+            app_log(f"{symbol}: signal only | {row['Signal']} | score={row['Score']} | grade={row.get('Grade', 'N/A')}")
 
     write_health(last_scan_finish=datetime.now(EASTERN).isoformat(), last_status="Cycle complete", candidates=len(candidates), submitted_orders=submitted, auto_trading=can_trade)
 
