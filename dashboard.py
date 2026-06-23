@@ -54,7 +54,7 @@ APP_DISPLAY_NAME = "PulseTrade AI"
 st.set_page_config(page_title=APP_DISPLAY_NAME, layout="wide")
 st.markdown("""
 <style>
-    .block-container { padding-top: 1.15rem !important; }
+    .block-container { padding-top: 2.75rem !important; }
     div[data-testid="stMetricValue"] { font-size: 1.35rem !important; white-space: nowrap !important; }
     div[data-testid="stMetricLabel"] { font-size: 0.82rem !important; }
     .status-card, .setup-card {
@@ -132,24 +132,32 @@ st.markdown("""
         margin: 0 0 0.8rem 0;
     }
     .compact-status-card {
-        border: 1px solid rgba(250,250,250,0.12);
+        border: 1px solid rgba(250,250,250,0.16);
         border-radius: 12px;
-        padding: 7px 10px;
-        background: rgba(255,255,255,0.032);
-        min-height: 44px;
+        padding: 10px 12px 11px 12px;
+        background: rgba(255,255,255,0.038);
+        min-height: 62px;
+        overflow: visible;
     }
     .compact-status-label {
-        font-size: 0.68rem;
-        letter-spacing: 0.04em;
+        display: block !important;
+        font-size: 0.72rem !important;
+        letter-spacing: 0.055em;
         text-transform: uppercase;
-        color: rgba(250,250,250,0.58);
-        margin-bottom: 2px;
+        color: rgba(250,250,250,0.76) !important;
+        margin-bottom: 6px !important;
+        line-height: 1.15 !important;
+        white-space: nowrap;
+        overflow: visible !important;
+        visibility: visible !important;
+        opacity: 1 !important;
     }
     .compact-status-value {
-        font-size: 0.86rem;
+        display: block !important;
+        font-size: 0.92rem !important;
         font-weight: 800;
-        line-height: 1.15;
-        color: rgba(250,250,250,0.96);
+        line-height: 1.15 !important;
+        color: rgba(250,250,250,0.98) !important;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -157,6 +165,71 @@ st.markdown("""
     @media (max-width: 1100px) {
         .compact-status-wrap { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
     }
+
+    /* Hard override: keep compact status titles visible in Streamlit containers */
+    [class*="compact-status-card"] [class*="compact-status-label"] {
+        display: block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        height: auto !important;
+        max-height: none !important;
+        color: rgba(250,250,250,0.76) !important;
+        font-size: 0.72rem !important;
+    }
+
+    /* Inline status ribbon: prevents Streamlit from clipping the title line */
+    .compact-status-inline {
+        display: flex !important;
+        align-items: center !important;
+        gap: 8px !important;
+        min-height: 42px !important;
+        padding: 8px 10px !important;
+        overflow: visible !important;
+    }
+    .compact-status-label-inline {
+        display: inline-block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        font-size: 0.66rem !important;
+        letter-spacing: 0.045em !important;
+        text-transform: uppercase !important;
+        color: rgba(250,250,250,0.62) !important;
+        line-height: 1 !important;
+        white-space: nowrap !important;
+        flex: 0 0 auto !important;
+    }
+    .compact-status-value-inline {
+        display: inline-block !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        font-size: 0.92rem !important;
+        font-weight: 800 !important;
+        color: rgba(250,250,250,0.98) !important;
+        line-height: 1 !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+    }
+
+    /* Native compact status bar spacing */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background: rgba(255,255,255,0.028);
+        border-color: rgba(250,250,250,0.16) !important;
+        border-radius: 12px !important;
+        overflow: visible !important;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] > div {
+        padding-top: 0.72rem !important;
+        padding-bottom: 0.72rem !important;
+        overflow: visible !important;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] p {
+        margin-top: 0 !important;
+        margin-bottom: 0.35rem !important;
+        line-height: 1.25 !important;
+        overflow: visible !important;
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -553,26 +626,24 @@ def render_status_overview():
     st.caption(f"Operational status: {operational_order_label(cfg, health).replace('🔵 ', '').replace('🟢 ', '').replace('🟡 ', '').replace('🔒 ', '')} | Config status: {trading_status_from_config(cfg)} | Last update: {health.get('updated_at', 'N/A')}")
 
 def compact_status_card(label: str, value: str):
-    """Render one compact health/status item without raw HTML injection issues."""
-    st.markdown(
-        f"""
-        <div class="compact-status-card">
-            <div class="compact-status-label">{label}</div>
-            <div class="compact-status-value">{value}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """Render one compact health/status item using native Streamlit elements.
+
+    This avoids the HTML clipping issue that hid the status titles at the top
+    of the page.
+    """
+    with st.container(border=True):
+        st.caption(label)
+        st.markdown(f"**{value}**")
 
 
 def render_compact_status_bar():
     items = [
-        ("Engine", "🟢 Running" if health.get("engine_running") else "⚪ Unknown"),
-        ("IBKR", "🟢 Connected" if health.get("ib_connected") else "⚪ Unknown"),
-        ("Market", "🟢 Open" if is_market_open_now(cfg) else "🔴 Closed"),
-        ("Mode", str(cfg.get("account_mode", "Simulation"))),
-        ("Orders", operational_order_label(cfg, health)),
-        ("Next", next_action_label(cfg, health)),
+        ("Engine Status", "🟢 Running" if health.get("engine_running") else "⚪ Unknown"),
+        ("IBKR Status", "🟢 Connected" if health.get("ib_connected") else "⚪ Unknown"),
+        ("Market Condition", "🟢 Open" if is_market_open_now(cfg) else "🔴 Closed"),
+        ("Account Mode", str(cfg.get("account_mode", "Simulation"))),
+        ("Order Status", operational_order_label(cfg, health)),
+        ("Next Action", next_action_label(cfg, health)),
     ]
     cols = st.columns(6)
     for col, (label, value) in zip(cols, items):
@@ -581,6 +652,8 @@ def render_compact_status_bar():
 
 
 def render_app_header():
+    # Small spacer keeps the status cards clear of the Streamlit top toolbar.
+    st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
     render_compact_status_bar()
     st.markdown(f"<h1 class='app-title'>{APP_DISPLAY_NAME}</h1>", unsafe_allow_html=True)
     st.markdown("<div class='app-subtitle'>IBKR-powered options scanner, strategy lab, and trading dashboard</div>", unsafe_allow_html=True)
