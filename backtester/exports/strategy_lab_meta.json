@@ -1,26 +1,26 @@
 {
   "version": "v0.9.6-pmb-v2",
-  "started_at": "2026-06-23T02:32:31",
-  "completed_at": "2026-06-23T02:33:05",
+  "started_at": "2026-06-24T17:59:09",
+  "completed_at": "2026-06-24T17:59:40",
   "status": "COMPLETE",
   "symbols": [
-    "TSM"
+    "UBER"
   ],
   "period": "30d",
   "interval": "5m",
   "data_source": "IBKR",
   "provider": "IBKR",
-  "candles": 2340,
-  "replay_events": 2340,
-  "signals": 14,
-  "trades": 14,
-  "decisions": 14,
+  "candles": 2280,
+  "replay_events": 2280,
+  "signals": 15,
+  "trades": 15,
+  "decisions": 15,
   "strategies": [
     "PMB"
   ],
   "settings": {
     "symbols": [
-      "TSM"
+      "UBER"
     ],
     "period": "30d",
     "interval": "5m",
@@ -34,13 +34,13 @@
     "min_atr": 0.3,
     "use_rvol_filter": false,
     "use_rvol_score": false,
-    "starting_capital": 10000.0,
+    "starting_capital": 100000.0,
     "max_trades_per_day": 2,
     "sizing_method": "percent_equity",
     "position_allocation_pct": 20.0,
     "max_daily_exposure_pct": 40.0,
-    "max_spend_per_trade": 2000.0,
-    "max_daily_capital": 4000.0,
+    "max_spend_per_trade": 20000.0,
+    "max_daily_capital": 40000.0,
     "max_contracts": 0,
     "stop_loss_pct": 20.0,
     "take_profit_pct": 30.0,
