@@ -17,6 +17,7 @@
     "enabled": true,
     "place_orders": true,
     "confirm_order_risk": true,
+    "require_trade_approval": true,
     "live_confirm_text": "",
     "scan_interval_seconds": 60,
     "market_timezone": "America/New_York",
@@ -31,16 +32,16 @@
     "use_rvol_score": false,
     "use_rvol_ranking": false,
     "min_atr": 0.3,
-    "top_n_tickers": 2,
+    "top_n_tickers": 3,
     "active_strategy": "pmb",
     "orb_minutes": 15,
-    "first_signal_minutes": 20
+    "first_signal_minutes": 15
   },
   "risk": {
-    "account_size": 100000,
+    "account_size": 100000.0,
     "max_trades_per_day": 2,
-    "max_spend_per_trade": 40000,
-    "max_daily_capital": 100000,
+    "max_spend_per_trade": 20000.0,
+    "max_daily_capital": 40000.0,
     "max_contracts": 20,
     "stop_loss_pct": 20.0,
     "take_profit_pct": 30.0,
@@ -56,14 +57,36 @@
     "type": "LIMIT"
   },
   "watchlist": [
-    "TSM",
-    "MRVL",
-    "MU"
+    "UBER",
+    "MU",
+    "MRVL"
   ],
   "news": {
     "benzinga_api_key": "bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74",
     "poll_interval_seconds": 30,
     "only_watchlist_alerts": true,
     "min_impact_for_alert": 70
+  },
+  "strategy_lab": {
+    "symbols": [
+      "UBER",
+      "MU",
+      "MRVL"
+    ],
+    "selected_strategies": [
+      "PMB"
+    ],
+    "period": "30d",
+    "interval": "5m",
+    "max_symbols": 3,
+    "force_refresh": false,
+    "data_source": "IBKR",
+    "orb_minutes": 15,
+    "first_signal_minutes": 15,
+    "min_session_bars": 4,
+    "visual_updates": true,
+    "premium_pct_ui": 0.25,
+    "slippage_pct": 2.0,
+    "allow_same_symbol": true
   }
 }

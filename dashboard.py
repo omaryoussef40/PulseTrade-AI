@@ -4,9 +4,16 @@
 from __future__ import annotations
 
 import os
+import html
 import json
+import socket
+import subprocess
+import sys
+import threading
+import time
 import traceback
 from datetime import datetime, timedelta, time as dtime
+from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -14,12 +21,25 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 from bot_core import *
-from engine import run_cycle
+from engine import (
+    make_approval_id,
+    process_telegram_order_callbacks,
+    read_pending_approvals,
+    run_cycle,
+    send_order_approval_message,
+    write_pending_approvals,
+)
 
 try:
     from modules.news_dashboard import render_market_intelligence_tab
 except Exception:
     render_market_intelligence_tab = None
+
+try:
+    from modules.news_control import get_news_engine_status, start_news_engine
+except Exception:
+    get_news_engine_status = None
+    start_news_engine = None
 
 try:
     from modules.news_bridge import get_catalyst_map, render_catalyst_html
@@ -54,7 +74,7 @@ APP_DISPLAY_NAME = "PulseTrade AI"
 st.set_page_config(page_title=APP_DISPLAY_NAME, layout="wide")
 st.markdown("""
 <style>
-    .block-container { padding-top: 2.75rem !important; }
+    .block-container { padding-top: 2.75rem !important; padding-bottom: 7.25rem !important; }
     div[data-testid="stMetricValue"] { font-size: 1.35rem !important; white-space: nowrap !important; }
     div[data-testid="stMetricLabel"] { font-size: 0.82rem !important; }
     .status-card, .setup-card {
@@ -82,6 +102,9 @@ st.markdown("""
     section[data-testid="stSidebar"] div[role="radiogroup"] label {
         border: 1px solid rgba(250,250,250,0.12);
         border-radius: 12px;
+        width: 100%;
+        min-width: 100%;
+        box-sizing: border-box;
         padding: 10px 12px;
         margin-bottom: 8px;
         background: rgba(255,255,255,0.035);
@@ -115,6 +138,38 @@ st.markdown("""
     div.stButton > button:active {
         transform: translateY(0);
     }
+    div.stButton > button,
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stNumberInput"] input,
+    div[data-testid="stTextArea"] textarea,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+    div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div,
+    div[data-testid="stDateInput"] input,
+    div[data-testid="stTimeInput"] input,
+    div[data-testid="stFileUploader"] section,
+    div[data-testid="stExpander"] details {
+        border: 1px solid rgba(31,41,55,0.24) !important;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.06) !important;
+    }
+    div.stButton > button:hover,
+    div[data-testid="stTextInput"] input:hover,
+    div[data-testid="stNumberInput"] input:hover,
+    div[data-testid="stTextArea"] textarea:hover,
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div:hover,
+    div[data-testid="stMultiSelect"] div[data-baseweb="select"] > div:hover,
+    div[data-testid="stDateInput"] input:hover,
+    div[data-testid="stTimeInput"] input:hover,
+    div[data-testid="stExpander"] details:hover {
+        border-color: rgba(239,68,68,0.55) !important;
+    }
+    div[data-testid="stTextInput"] input:focus,
+    div[data-testid="stNumberInput"] input:focus,
+    div[data-testid="stTextArea"] textarea:focus,
+    div[data-testid="stDateInput"] input:focus,
+    div[data-testid="stTimeInput"] input:focus {
+        border-color: rgba(239,68,68,0.72) !important;
+        box-shadow: 0 0 0 1px rgba(239,68,68,0.22) !important;
+    }
 
     /* Compact global status ribbon */
     .app-title {
@@ -128,24 +183,38 @@ st.markdown("""
         font-size: 0.86rem;
         margin-bottom: 1.05rem;
     }
-    .compact-status-wrap {
-        margin: 0 0 0.8rem 0;
+    .fixed-status-dock {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 999;
+        background: rgba(11,15,22,0.96);
+        border-top: 1px solid rgba(250,250,250,0.12);
+        box-shadow: 0 -10px 30px rgba(0,0,0,0.32);
+    }
+    .fixed-status-inner {
+        margin-left: 22rem;
+        padding: 10px 2.4rem 12px 2.4rem;
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 10px;
     }
     .compact-status-card {
         border: 1px solid rgba(250,250,250,0.16);
-        border-radius: 12px;
-        padding: 10px 12px 11px 12px;
+        border-radius: 10px;
+        padding: 8px 10px;
         background: rgba(255,255,255,0.038);
-        min-height: 62px;
+        min-height: 50px;
         overflow: visible;
     }
     .compact-status-label {
         display: block !important;
-        font-size: 0.72rem !important;
-        letter-spacing: 0.055em;
+        font-size: 0.68rem !important;
+        letter-spacing: 0.03em;
         text-transform: uppercase;
         color: rgba(250,250,250,0.76) !important;
-        margin-bottom: 6px !important;
+        margin-bottom: 4px !important;
         line-height: 1.15 !important;
         white-space: nowrap;
         overflow: visible !important;
@@ -154,13 +223,21 @@ st.markdown("""
     }
     .compact-status-value {
         display: block !important;
-        font-size: 0.92rem !important;
+        font-size: 0.86rem !important;
         font-weight: 800;
         line-height: 1.15 !important;
         color: rgba(250,250,250,0.98) !important;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+    }
+    @media (max-width: 900px) {
+        .fixed-status-inner {
+            margin-left: 0;
+            padding: 8px 10px 10px 10px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .block-container { padding-bottom: 14rem !important; }
     }
     @media (max-width: 1100px) {
         .compact-status-wrap { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
@@ -402,11 +479,13 @@ def fetch_ibkr_account_summary(ib_cfg: IBConfig) -> dict:
 
 def render_ibkr_account_summary(summary: dict):
     """Render professional account overview cards."""
-    if not summary:
-        return
+    summary = summary or {}
 
     st.markdown("### IBKR Account Summary")
-    st.caption(f"Last synced: {summary.get('fetched_at', 'N/A')} | Account: {summary.get('account_id', 'N/A')}")
+    status = "Connected" if summary.get("connected") else "Disconnected"
+    st.caption(f"Status: {status} | Last synced: {summary.get('fetched_at', 'N/A')} | Account: {summary.get('account_id', 'N/A')}")
+    if summary.get("error"):
+        st.error(str(summary.get("error")))
 
     cur = summary.get("currency", "USD")
     a1, a2, a3, a4 = st.columns(4)
@@ -437,6 +516,7 @@ def render_platform_settings():
         cfg["automation"]["enabled"] = st.checkbox("Enable engine automation", value=bool(cfg["automation"].get("enabled", False)))
         cfg["automation"]["place_orders"] = st.checkbox("Allow engine to place orders", value=bool(cfg["automation"].get("place_orders", False)))
         cfg["automation"]["confirm_order_risk"] = st.checkbox("I understand this can place IBKR orders", value=bool(cfg["automation"].get("confirm_order_risk", False)))
+        cfg["automation"]["require_trade_approval"] = st.checkbox("Require Telegram approval before entry orders", value=bool(cfg["automation"].get("require_trade_approval", False)))
         if cfg["account_mode"] == "Live":
             st.error("LIVE mode selected. Orders can use real money if all confirmations are enabled.")
             cfg["automation"]["live_confirm_text"] = st.text_input("Type TRADE LIVE to unlock live orders", value=str(cfg["automation"].get("live_confirm_text", "")))
@@ -520,7 +600,7 @@ with st.sidebar:
     selected_page = st.radio(
         "Menu",
         [
-            "📊 Performance",
+            "📊 Performance & Trade Journal",
             "💼 Positions",
             "📈 Strategy Lab",
             "🧠 Market Intelligence",
@@ -561,25 +641,346 @@ except Exception:
 
 health = read_health()
 
-# Automatically connect/sync IBKR account summary on dashboard startup.
-# If TWS/IB Gateway is not open yet, the dashboard remains usable and will retry
-# on the next Streamlit refresh or manual reconnect.
-try:
-    if not st.session_state.get("ibkr_account_summary"):
-        summary = fetch_ibkr_account_summary(ib_cfg)
+def live_ibkr_ping(ib_cfg: IBConfig, timeout_seconds: float = 1.5) -> bool:
+    """Fast dashboard-safe IBKR socket check.
+
+    This intentionally does not call ib_insync/connect_ib from Streamlit, because
+    ib_insync can raise "Timeout should be used inside a task" inside the
+    Streamlit runtime. A successful socket connection means TWS/IB Gateway is
+    listening on the configured host/port now.
+    """
+    try:
+        with socket.create_connection((ib_cfg.host, int(ib_cfg.port)), timeout=timeout_seconds):
+            return True
+    except Exception:
+        return False
+
+health["ib_connected"] = live_ibkr_ping(ib_cfg)
+if not health["ib_connected"]:
+    st.session_state["ibkr_connected"] = False
+    if st.session_state.get("ibkr_account_summary", {}).get("connected"):
+        st.session_state["ibkr_account_summary"] = {
+            **st.session_state["ibkr_account_summary"],
+            "connected": False,
+            "error": f"IBKR is not reachable at {ib_cfg.host}:{ib_cfg.port}.",
+        }
+
+
+def sync_ibkr_account_status(force: bool = False) -> dict:
+    connected_now = live_ibkr_ping(ib_cfg)
+    if not connected_now:
+        cached = st.session_state.get("ibkr_account_summary") or {}
+        summary = {
+            **cached,
+            "account_id": cached.get("account_id") or ib_cfg.account or "Auto / All",
+            "currency": cached.get("currency") or "USD",
+            "connected": False,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            "error": f"IBKR is not reachable at {ib_cfg.host}:{ib_cfg.port}. Open IB Gateway/TWS and confirm the API port.",
+        }
+        st.session_state["ibkr_account_summary"] = summary
+        st.session_state["ibkr_connected"] = False
+        health["ib_connected"] = False
+        write_health(ib_connected=False, last_status="IBKR disconnected", last_error=summary["error"])
+        return summary
+
+    if not force and st.session_state.get("ibkr_account_summary", {}).get("connected"):
+        health["ib_connected"] = True
+        st.session_state["ibkr_connected"] = True
+        return st.session_state["ibkr_account_summary"]
+
+    try:
+        summary = fetch_ibkr_account_summary_dict(ib_cfg)
+        summary["connected"] = True
+        summary.setdefault("fetched_at", datetime.now().isoformat(timespec="seconds"))
         st.session_state["ibkr_account_summary"] = summary
         st.session_state["ibkr_connected"] = True
         st.session_state.pop("ibkr_auto_connect_error", None)
-        write_health(ib_connected=True, last_status="Dashboard auto-connected + account synced")
-except Exception as _auto_ibkr_error:
-    st.session_state["ibkr_connected"] = False
-    st.session_state["ibkr_auto_connect_error"] = str(_auto_ibkr_error)
+        health["ib_connected"] = True
+        write_health(ib_connected=True, last_status="Account summary synced")
+        return summary
+    except Exception as e:
+        summary = {
+            "account_id": ib_cfg.account or "Auto / All",
+            "currency": "USD",
+            "connected": False,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            "error": f"IBKR account summary failed: {e}",
+        }
+        st.session_state["ibkr_account_summary"] = summary
+        st.session_state["ibkr_connected"] = False
+        st.session_state["ibkr_auto_connect_error"] = str(e)
+        health["ib_connected"] = False
+        write_health(ib_connected=False, last_status="Account summary failed", last_error=str(e))
+        return summary
 
-if st.session_state.get("ibkr_connected"):
-    health["ib_connected"] = True
-    health["last_status"] = "Dashboard connected to IBKR"
-if st.session_state.get("ibkr_account_summary"):
-    health["ib_connected"] = True
+
+def schedule_ibkr_reconnect_refresh() -> None:
+    if not health.get("ib_connected"):
+        st_autorefresh(interval=10_000, key="ibkr_reconnect_refresh")
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+ENGINE_PID_FILE = PROJECT_ROOT / "data" / "trading_engine.pid"
+ENGINE_LOG_FILE = PROJECT_ROOT / "logs" / "engine_stdout.log"
+ENGINE_FILE = PROJECT_ROOT / "engine.py"
+STATUS_ALERT_STATE_FILE = PROJECT_ROOT / "data" / "status_alert_state.json"
+STATUS_ALERT_COOLDOWN_SECONDS = 300
+
+
+def _is_pid_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+
+def _read_engine_pid() -> int | None:
+    try:
+        if not ENGINE_PID_FILE.exists():
+            return None
+        raw = ENGINE_PID_FILE.read_text(encoding="utf-8").strip()
+        return int(raw) if raw else None
+    except Exception:
+        return None
+
+
+def get_trading_engine_process_status() -> tuple[bool, str]:
+    pid = _read_engine_pid()
+    if pid is None:
+        return False, "No trading engine PID file."
+    if _is_pid_running(pid):
+        return True, f"Trading engine running as PID {pid}."
+    try:
+        ENGINE_PID_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+    return False, "Stale trading engine PID removed."
+
+
+def _read_status_alert_state() -> dict:
+    try:
+        if not STATUS_ALERT_STATE_FILE.exists():
+            return {}
+        with STATUS_ALERT_STATE_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_status_alert_state(state: dict) -> None:
+    try:
+        STATUS_ALERT_STATE_FILE.parent.mkdir(exist_ok=True)
+        with STATUS_ALERT_STATE_FILE.open("w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, default=str)
+    except Exception:
+        pass
+
+
+def maybe_send_status_alerts(status_cfg: dict, status_health: dict, engine_running: bool) -> None:
+    tg = status_cfg.get("telegram", {}) if isinstance(status_cfg.get("telegram", {}), dict) else {}
+    tg_cfg_local = TelegramConfig(bot_token=tg.get("bot_token", ""), chat_id=tg.get("chat_id", ""))
+    if not tg_cfg_local.bot_token or not tg_cfg_local.chat_id:
+        return
+
+    now = datetime.now(EASTERN)
+    state = _read_status_alert_state()
+    checks = {
+        "ibkr_disconnected": {
+            "bad": not bool(status_health.get("ib_connected")),
+            "alert": "🚨 <b>PulseTrade Urgent</b>\n\nIBKR is disconnected.",
+            "recovery": "✅ <b>PulseTrade Status</b>\n\nIBKR connection restored.",
+        },
+        "engine_not_running": {
+            "bad": not bool(engine_running),
+            "alert": "🚨 <b>PulseTrade Urgent</b>\n\nTrading engine is not running.",
+            "recovery": "✅ <b>PulseTrade Status</b>\n\nTrading engine is running again.",
+        },
+    }
+
+    changed = False
+    for key, check in checks.items():
+        item = state.get(key, {}) if isinstance(state.get(key), dict) else {}
+        was_bad = bool(item.get("active", False))
+        last_alert_at = item.get("last_alert_at")
+        seconds_since_alert = STATUS_ALERT_COOLDOWN_SECONDS + 1
+        try:
+            seconds_since_alert = (now - datetime.fromisoformat(str(last_alert_at))).total_seconds()
+        except Exception:
+            pass
+
+        if check["bad"]:
+            if not was_bad or seconds_since_alert >= STATUS_ALERT_COOLDOWN_SECONDS:
+                send_telegram_message(tg_cfg_local, check["alert"])
+                item["last_alert_at"] = now.isoformat()
+            item["active"] = True
+            changed = True
+        elif was_bad:
+            send_telegram_message(tg_cfg_local, check["recovery"])
+            item["active"] = False
+            item["recovered_at"] = now.isoformat()
+            changed = True
+
+        state[key] = item
+
+    if changed:
+        _write_status_alert_state(state)
+
+
+def start_trading_engine_once() -> None:
+    if st.session_state.get("trading_engine_auto_start_checked"):
+        return
+    st.session_state["trading_engine_auto_start_checked"] = True
+
+    running, message = get_trading_engine_process_status()
+    if running:
+        st.session_state["trading_engine_auto_start_status"] = message
+        return
+    if not ENGINE_FILE.exists():
+        st.session_state["trading_engine_auto_start_status"] = f"Missing file: {ENGINE_FILE}"
+        return
+
+    try:
+        ENGINE_PID_FILE.parent.mkdir(exist_ok=True)
+        ENGINE_LOG_FILE.parent.mkdir(exist_ok=True)
+        log_handle = ENGINE_LOG_FILE.open("a", encoding="utf-8")
+        log_handle.write("\n--- Starting PulseTrade AI trading engine from dashboard ---\n")
+        log_handle.flush()
+        kwargs = {
+            "cwd": str(PROJECT_ROOT),
+            "stdout": log_handle,
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        if os.name == "posix":
+            kwargs["start_new_session"] = True
+        elif os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+        process = subprocess.Popen([sys.executable, str(ENGINE_FILE)], **kwargs)
+        ENGINE_PID_FILE.write_text(str(process.pid), encoding="utf-8")
+        st.session_state["trading_engine_auto_start_status"] = f"Trading engine started as PID {process.pid}."
+    except Exception as exc:
+        st.session_state["trading_engine_auto_start_status"] = f"Trading engine auto-start failed: {exc}"
+
+
+def auto_start_news_engine_once() -> None:
+    if st.session_state.get("news_engine_auto_start_checked"):
+        return
+    st.session_state["news_engine_auto_start_checked"] = True
+
+    news_cfg = cfg.get("news", {}) if isinstance(cfg.get("news", {}), dict) else {}
+    if not bool(news_cfg.get("enabled", True)):
+        st.session_state["news_engine_auto_start_status"] = "News engine auto-start disabled in config."
+        return
+    if get_news_engine_status is None or start_news_engine is None:
+        st.session_state["news_engine_auto_start_status"] = "News engine controls unavailable."
+        return
+
+    try:
+        status = get_news_engine_status()
+        if not status.running:
+            status = start_news_engine()
+        st.session_state["news_engine_auto_start_status"] = status.message
+    except Exception as exc:
+        st.session_state["news_engine_auto_start_status"] = f"News engine auto-start failed: {exc}"
+
+
+def start_telegram_decision_worker() -> None:
+    if st.session_state.get("telegram_decision_worker_started"):
+        return
+    st.session_state["telegram_decision_worker_started"] = True
+
+    def worker() -> None:
+        while True:
+            try:
+                current_cfg = load_config()
+                current_ib_cfg = IBConfig(
+                    host=current_cfg["ib"].get("host", "127.0.0.1"),
+                    port=ib_port_from_config(current_cfg),
+                    client_id=int(current_cfg["ib"].get("client_id", 11)),
+                    account=current_cfg["ib"].get("account") or None,
+                    readonly=bool(current_cfg["ib"].get("readonly", False)),
+                )
+                current_tg_cfg = TelegramConfig(
+                    bot_token=current_cfg["telegram"].get("bot_token", ""),
+                    chat_id=current_cfg["telegram"].get("chat_id", ""),
+                )
+                pending = [o for o in read_pending_approvals() if str(o.get("status", "")).lower() in ["pending", "sent"]]
+                if pending:
+                    has_live_order = any(not o.get("test_order") for o in pending)
+                    ib_connected_now = live_ibkr_ping(current_ib_cfg)
+                    ib = connect_ib(current_ib_cfg) if has_live_order and ib_connected_now else None
+                    try:
+                        can_trade = orders_unlocked_from_config(current_cfg) and ib_connected_now
+                        process_telegram_order_callbacks(ib, current_ib_cfg, current_tg_cfg, can_trade)
+                    finally:
+                        try:
+                            if ib:
+                                ib.disconnect()
+                        except Exception:
+                            pass
+            except Exception as exc:
+                app_log(f"Telegram decision worker error: {exc}", "WARN")
+            time.sleep(2)
+
+    threading.Thread(target=worker, daemon=True, name="telegram-decision-worker").start()
+
+
+def load_manual_option_defaults(symbol: str, signal: str, dte_target: int) -> dict:
+    ib = connect_ib(ib_cfg)
+    try:
+        stock = qualify_stock(ib, symbol)
+        stock_market = get_snapshot_mid(ib, stock)
+        stock_price = stock_market.get("Mid")
+        if stock_price is None or pd.isna(stock_price) or float(stock_price) <= 0:
+            stock_price = stock_market.get("Last")
+        if stock_price is None or pd.isna(stock_price) or float(stock_price) <= 0:
+            raise ValueError(f"No live stock price available for {symbol}.")
+
+        expiry, strikes = get_option_expiry_and_strikes(ib, symbol, dte_target)
+        if not expiry or not strikes:
+            raise ValueError(f"No option chain found for {symbol}.")
+
+        strike = min(strikes, key=lambda value: abs(float(value) - float(stock_price)))
+        right = "C" if signal == "CALL" else "P"
+        contract = Option(symbol, expiry, float(strike), right, "SMART", currency="USD", multiplier="100")
+        qualified = ib.qualifyContracts(contract)
+        if qualified:
+            contract = qualified[0]
+        option_market = get_snapshot_mid(ib, contract)
+        mid = option_market.get("Mid")
+        quote_warning = ""
+        if mid is None or pd.isna(mid) or float(mid) <= 0:
+            mid = 0.0
+            quote_warning = (
+                f"No live option quote returned for {symbol} {expiry} {strike:g} {signal}. "
+                "This is common outside market hours or on illiquid contracts."
+            )
+
+        return {
+            "expiry": expiry,
+            "strike": float(strike),
+            "mid": round(float(mid), 2),
+            "limit": round(float(mid), 2),
+            "underlying": round(float(stock_price), 2),
+            "bid": None if pd.isna(option_market.get("Bid")) else round(float(option_market.get("Bid")), 2),
+            "ask": None if pd.isna(option_market.get("Ask")) else round(float(option_market.get("Ask")), 2),
+            "warning": quote_warning,
+        }
+    finally:
+        try:
+            ib.disconnect()
+        except Exception:
+            pass
 
 
 def operational_order_label(config: dict, health_state: dict) -> str:
@@ -614,7 +1015,7 @@ def render_status_overview():
     with header_cols[0]:
         status_card("ENGINE", "🟢 Running" if health.get("engine_running") else "⚪ Unknown")
     with header_cols[1]:
-        status_card("IBKR", "🟢 Connected" if health.get("ib_connected") else "⚪ Unknown")
+        status_card("IBKR", "🟢 Connected" if health.get("ib_connected") else "🔴 Disconnected")
     with header_cols[2]:
         status_card("MARKET", "🟢 Open" if is_market_open_now(cfg) else "🔴 Closed")
     with header_cols[3]:
@@ -637,31 +1038,49 @@ def compact_status_card(label: str, value: str):
 
 
 def render_compact_status_bar():
+    status_cfg = load_config()
+    status_health = read_health()
+    engine_process_running, _engine_process_message = get_trading_engine_process_status()
+    status_health["engine_running"] = engine_process_running
+    status_health["ib_connected"] = live_ibkr_ping(ib_cfg)
+    maybe_send_status_alerts(status_cfg, status_health, engine_process_running)
     items = [
-        ("Engine Status", "🟢 Running" if health.get("engine_running") else "⚪ Unknown"),
-        ("IBKR Status", "🟢 Connected" if health.get("ib_connected") else "⚪ Unknown"),
-        ("Market Condition", "🟢 Open" if is_market_open_now(cfg) else "🔴 Closed"),
-        ("Account Mode", str(cfg.get("account_mode", "Simulation"))),
-        ("Order Status", operational_order_label(cfg, health)),
-        ("Next Action", next_action_label(cfg, health)),
+        ("Engine Status", "🟢 Running" if status_health.get("engine_running") else "⚪ Unknown"),
+        ("IBKR Status", "🟢 Connected" if status_health.get("ib_connected") else "🔴 Disconnected"),
+        ("Market Condition", "🟢 Open" if is_market_open_now(status_cfg) else "🔴 Closed"),
+        ("Account Mode", str(status_cfg.get("account_mode", "Simulation"))),
+        ("Order Status", operational_order_label(status_cfg, status_health)),
+        ("Next Action", next_action_label(status_cfg, status_health)),
     ]
-    cols = st.columns(6)
-    for col, (label, value) in zip(cols, items):
-        with col:
-            compact_status_card(label, value)
+    cards = "".join(
+        "<div class='compact-status-card'>"
+        f"<span class='compact-status-label'>{html.escape(label)}</span>"
+        f"<span class='compact-status-value'>{html.escape(value)}</span>"
+        "</div>"
+        for label, value in items
+    )
+    st.markdown(
+        f"<div class='fixed-status-dock'><div class='fixed-status-inner'>{cards}</div></div>",
+        unsafe_allow_html=True,
+    )
 
 
-def render_app_header():
-    # Small spacer keeps the status cards clear of the Streamlit top toolbar.
-    st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-    render_compact_status_bar()
-    st.markdown(f"<h1 class='app-title'>{APP_DISPLAY_NAME}</h1>", unsafe_allow_html=True)
-    st.markdown("<div class='app-subtitle'>IBKR-powered options scanner, strategy lab, and trading dashboard</div>", unsafe_allow_html=True)
+_status_fragment = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
+
+
+if _status_fragment is not None:
+    @_status_fragment(run_every="5s")
+    def render_app_header():
+        render_compact_status_bar()
+else:
+    def render_app_header():
+        render_compact_status_bar()
 
 
 def render_account_status_tab():
     st.subheader("IBKR Account Status")
     st.caption("Auto-connects on dashboard startup. Use these controls only when TWS/IB Gateway was restarted or account data needs a manual refresh.")
+    account_summary = sync_ibkr_account_status()
 
     with st.expander("⚙️ Platform Settings", expanded=False):
         render_platform_settings()
@@ -671,33 +1090,29 @@ def render_account_status_tab():
     control_cols = st.columns(4)
     with control_cols[0]:
         if st.button("Reconnect IBKR", use_container_width=True):
-            try:
-                summary = fetch_ibkr_account_summary(ib_cfg)
-                st.session_state["ibkr_account_summary"] = summary
-                st.session_state["ibkr_connected"] = True
-                write_health(ib_connected=True, last_status="Dashboard connected + account synced")
-                st.rerun()
-            except Exception as e:
-                st.session_state["ibkr_connected"] = False
-                st.session_state.pop("ibkr_account_summary", None)
-                write_health(ib_connected=False, last_status="Dashboard IBKR connection failed", last_error=str(e))
-                st.error(f"IBKR connection failed: {e}")
+            account_summary = sync_ibkr_account_status(force=True)
+            if account_summary.get("connected"):
+                st.success("IBKR connected and account details synced.")
+            else:
+                st.error(account_summary.get("error", "IBKR connection failed."))
+            st.rerun()
 
     with control_cols[1]:
         if st.button("Refresh Account", use_container_width=True):
-            try:
-                summary = fetch_ibkr_account_summary(ib_cfg)
-                st.session_state["ibkr_account_summary"] = summary
-                st.session_state["ibkr_connected"] = True
-                write_health(ib_connected=True, last_status="Account summary synced")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Account summary failed: {e}")
+            account_summary = sync_ibkr_account_status(force=True)
+            if account_summary.get("connected"):
+                st.success("Account summary synced.")
+            else:
+                st.error(account_summary.get("error", "Account summary failed."))
+            st.rerun()
 
     with control_cols[2]:
         if st.button("Test Telegram", use_container_width=True):
             ok = send_telegram_message(tg_cfg, "AutoTrader Telegram test message.")
-            st.success("Telegram sent") if ok else st.error("Telegram failed")
+            if ok:
+                st.success("Telegram sent")
+            else:
+                st.error("Telegram failed")
 
     with control_cols[3]:
         if st.button("Run One Engine Cycle Now", use_container_width=True):
@@ -708,25 +1123,25 @@ def render_account_status_tab():
                 st.error(f"Engine cycle failed: {e}")
                 st.caption("Technical details are hidden in the dashboard. Check the terminal/log files if needed.")
 
-    if not st.session_state.get("ibkr_account_summary") and st.session_state.get("ibkr_auto_connect_error"):
+    if not account_summary.get("connected") and st.session_state.get("ibkr_auto_connect_error"):
         st.warning(f"IBKR auto-connect pending: {st.session_state.get('ibkr_auto_connect_error')}")
 
-    render_ibkr_account_summary(st.session_state.get("ibkr_account_summary", {}))
+    render_ibkr_account_summary(account_summary)
 
-    with st.expander("Connection details", expanded=False):
-        details = {
-            "Host": ib_cfg.host,
-            "Port": ib_cfg.port,
-            "Client ID": ib_cfg.client_id,
-            "Configured Account": ib_cfg.account or "Auto / All",
-            "Read-only": ib_cfg.readonly,
-            "Account Mode": cfg.get("account_mode", "Simulation"),
-            "Trading Status": trading_status_from_config(cfg),
-            "Engine Status": "Running" if health.get("engine_running") else "Unknown",
-            "IBKR Status": "Connected" if health.get("ib_connected") else "Unknown",
-            "Last Health Update": health.get("updated_at", "N/A"),
-        }
-        st.json(details)
+    st.markdown("### Connection Details")
+    details = {
+        "Host": ib_cfg.host,
+        "Port": ib_cfg.port,
+        "Client ID": ib_cfg.client_id,
+        "Configured Account": ib_cfg.account or "Auto / All",
+        "Read-only": ib_cfg.readonly,
+        "Account Mode": cfg.get("account_mode", "Simulation"),
+        "Trading Status": trading_status_from_config(cfg),
+        "Engine Status": "Running" if health.get("engine_running") else "Unknown",
+        "IBKR Status": "Connected" if health.get("ib_connected") else "Disconnected",
+        "Last Health Update": health.get("updated_at", "N/A"),
+    }
+    st.json(details)
 
 
 
@@ -1346,7 +1761,79 @@ def render_yahoo_backtester_tab(config: dict, default_symbols: list[str]):
     st.info("Current phase: Yahoo replay now simulates approximate 7-DTE option entries/exits and P/L. Next phase: improve analytics, trade explorer, and parameter testing.")
 
 
+def run_ibkr_scanner_ui(scan_cfg: dict, scan_symbols: list[str]):
+    rows, option_rows = [], []
+    progress = st.progress(0)
+    try:
+        scan_ib_cfg = IBConfig(
+            host=scan_cfg["ib"].get("host", "127.0.0.1"),
+            port=ib_port_from_config(scan_cfg),
+            client_id=int(scan_cfg["ib"].get("client_id", 11)),
+            account=scan_cfg["ib"].get("account") or None,
+            readonly=bool(scan_cfg["ib"].get("readonly", False)),
+        )
+        ib = connect_ib(scan_ib_cfg)
+        for i, symbol in enumerate(scan_symbols):
+            try:
+                result = scan_symbol_ib(ib, symbol, bool(scan_cfg["strategy"].get("use_rvol_score", False)))
+                if result:
+                    rows.append(clean_for_table(result))
+                    if is_top_candidate(
+                        result,
+                        float(scan_cfg["strategy"].get("min_score", 70)),
+                        float(scan_cfg["strategy"].get("min_confidence", 75)),
+                        float(scan_cfg["strategy"].get("min_rvol", 1.5)),
+                        float(scan_cfg["strategy"].get("min_atr", 0.3)),
+                        bool(scan_cfg["strategy"].get("use_rvol_filter", False)),
+                    ):
+                        option = recommend_option_ib(ib, symbol, result["Signal"], result["Price"], int(scan_cfg["strategy"].get("option_dte", 7)))
+                        if option:
+                            option_clean = {k: v for k, v in option.items() if k != "Contract"}
+                            option_rows.append({"Symbol": symbol, "Signal": result["Signal"], "Score": result["Score"], "Confidence": result["Confidence"], **option_clean})
+            except Exception as e:
+                st.warning(f"{symbol}: {e}")
+            progress.progress((i + 1) / max(len(scan_symbols), 1))
+
+        stock_df = pd.DataFrame(rows)
+        if not stock_df.empty:
+            stock_df = stock_df.sort_values(["Score", "Confidence", "RVOL", "ATR %"], ascending=[False, False, False, False])
+
+        option_df = pd.DataFrame(option_rows)
+        if not option_df.empty:
+            option_df = option_df.sort_values(["Score", "Option Score"], ascending=[False, False])
+
+        st.session_state["scanner_stock_df"] = stock_df
+        st.session_state["scanner_option_df"] = option_df
+        st.session_state["scanner_last_run"] = datetime.now().isoformat(timespec="seconds")
+
+        st.markdown("### Top Opportunities")
+        card_source = option_df if not option_df.empty else stock_df
+        if card_source.empty:
+            st.info("No candidates passed your filters.")
+        else:
+            card_cols = st.columns(min(3, len(card_source)))
+            for idx, (_, row) in enumerate(card_source.head(3).iterrows()):
+                with card_cols[idx % len(card_cols)]:
+                    setup_card(row.to_dict())
+
+        with st.expander("Stock Results", expanded=True):
+            st.dataframe(stock_df, use_container_width=True)
+        with st.expander("Option Ideas", expanded=not option_df.empty):
+            if not option_df.empty:
+                st.dataframe(option_df, use_container_width=True)
+                st.download_button("Download option ideas", option_df.to_csv(index=False), "option_ideas.csv", "text/csv")
+            else:
+                st.info("No clean option contracts found for the filtered setups.")
+    except Exception as e:
+        clean_ui_error("Scanner failed", e)
+
+
 # Global compact terminal header shown on every page.
+start_trading_engine_once()
+auto_start_news_engine_once()
+if selected_page == "🏦 Account Status":
+    sync_ibkr_account_status(force=True)
+    schedule_ibkr_reconnect_refresh()
 render_app_header()
 
 # Page routing from sidebar navigation
@@ -1359,63 +1846,7 @@ elif selected_page == "📈 Scanner":
     st.caption("Scan the full watchlist, rank the best setups, and review option ideas. Fresh Benzinga catalysts are shown inside setup cards when available.")
     run_scanner_clicked = st.button("▶ Run IBKR Scanner", use_container_width=True)
     if run_scanner_clicked:
-        rows, option_rows = [], []
-        progress = st.progress(0)
-        try:
-            ib = connect_ib(ib_cfg)
-            for i, symbol in enumerate(symbols):
-                try:
-                    result = scan_symbol_ib(ib, symbol, bool(cfg["strategy"].get("use_rvol_score", False)))
-                    if result:
-                        rows.append(clean_for_table(result))
-                        if is_top_candidate(
-                            result,
-                            float(cfg["strategy"].get("min_score", 70)),
-                            float(cfg["strategy"].get("min_confidence", 75)),
-                            float(cfg["strategy"].get("min_rvol", 1.5)),
-                            float(cfg["strategy"].get("min_atr", 0.3)),
-                            bool(cfg["strategy"].get("use_rvol_filter", False)),
-                        ):
-                            option = recommend_option_ib(ib, symbol, result["Signal"], result["Price"], int(cfg["strategy"].get("option_dte", 7)))
-                            if option:
-                                option_clean = {k: v for k, v in option.items() if k != "Contract"}
-                                option_rows.append({"Symbol": symbol, "Signal": result["Signal"], "Score": result["Score"], "Confidence": result["Confidence"], **option_clean})
-                except Exception as e:
-                    st.warning(f"{symbol}: {e}")
-                progress.progress((i + 1) / max(len(symbols), 1))
-
-            stock_df = pd.DataFrame(rows)
-            if not stock_df.empty:
-                stock_df = stock_df.sort_values(["Score", "Confidence", "RVOL", "ATR %"], ascending=[False, False, False, False])
-
-            option_df = pd.DataFrame(option_rows)
-            if not option_df.empty:
-                option_df = option_df.sort_values(["Score", "Option Score"], ascending=[False, False])
-
-            st.session_state["scanner_stock_df"] = stock_df
-            st.session_state["scanner_option_df"] = option_df
-            st.session_state["scanner_last_run"] = datetime.now().isoformat(timespec="seconds")
-
-            st.markdown("### Top Opportunities")
-            card_source = option_df if not option_df.empty else stock_df
-            if card_source.empty:
-                st.info("No candidates passed your filters.")
-            else:
-                card_cols = st.columns(min(3, len(card_source)))
-                for idx, (_, row) in enumerate(card_source.head(3).iterrows()):
-                    with card_cols[idx % len(card_cols)]:
-                        setup_card(row.to_dict())
-
-            with st.expander("Stock Results", expanded=True):
-                st.dataframe(stock_df, use_container_width=True)
-            with st.expander("Option Ideas", expanded=not option_df.empty):
-                if not option_df.empty:
-                    st.dataframe(option_df, use_container_width=True)
-                    st.download_button("Download option ideas", option_df.to_csv(index=False), "option_ideas.csv", "text/csv")
-                else:
-                    st.info("No clean option contracts found for the filtered setups.")
-        except Exception as e:
-            clean_ui_error("Scanner failed", e)
+        run_ibkr_scanner_ui(cfg, symbols)
 
     if not run_scanner_clicked:
         stock_df = st.session_state.get("scanner_stock_df", pd.DataFrame())
@@ -1469,8 +1900,9 @@ elif selected_page == "🔍 Breakdown":
             st.caption("Technical details are hidden in the dashboard. Check the terminal/log files if needed.")
 
 elif selected_page == "💼 Positions":
+    start_telegram_decision_worker()
     st.subheader("Positions")
-    st.caption("The dashboard can be closed. The engine keeps running only when `python engine.py` is running on the VPS.")
+    st.caption("The dashboard starts the trading engine automatically. Order placement still follows the automation and safety settings.")
 
     mode = cfg.get("account_mode", "Simulation")
     trading_status = trading_status_from_config(cfg)
@@ -1480,45 +1912,27 @@ elif selected_page == "💼 Positions":
     risk_confirmed = bool(cfg.get("automation", {}).get("confirm_order_risk", False))
     automation_enabled = bool(cfg.get("automation", {}).get("enabled", False))
 
-    st.markdown("### Order Safety")
-    safety_cols = st.columns(4)
-    with safety_cols[0]:
-        status_card("Mode", mode)
-    with safety_cols[1]:
-        status_card("Trading Status", trading_status)
-    with safety_cols[2]:
-        status_card("Orders", operational_order_label(cfg, health))
-    with safety_cols[3]:
-        status_card("Automation", "✅ Enabled" if automation_enabled else "⏸ Off")
+    st.markdown("### Status")
+    health_now = read_health()
+    engine_process_running, _engine_message = get_trading_engine_process_status()
+    compact_cols = st.columns(8)
+    compact_cols[0].metric("Engine", "Running" if engine_process_running else "Stopped")
+    compact_cols[1].metric("IBKR", "Connected" if live_ibkr_ping(ib_cfg) else "Disconnected")
+    compact_cols[2].metric("Mode", mode)
+    compact_cols[3].metric("Orders", operational_order_label(cfg, health))
+    compact_cols[4].metric("Automation", "On" if automation_enabled else "Off")
+    compact_cols[5].metric("Place", "Allowed" if place_orders else "Disabled")
+    compact_cols[6].metric("Risk", "Confirmed" if risk_confirmed else "No")
+    compact_cols[7].metric("Read-only", "On" if readonly else "Off")
 
-    safety_cols2 = st.columns(4)
-    with safety_cols2[0]:
-        status_card("Place Orders", "✅ Allowed" if place_orders else "❌ Disabled")
-    with safety_cols2[1]:
-        status_card("Risk Confirmed", "✅ Yes" if risk_confirmed else "❌ No")
-    with safety_cols2[2]:
-        status_card("Read-only", "✅ On" if readonly else "❌ Off")
-    with safety_cols2[3]:
-        status_card("IB Port", str(ib_cfg.port))
-
-    if st.button("Manage Open Positions Now", use_container_width=True):
-        try:
-            ib = connect_ib(ib_cfg)
-            r = cfg["risk"]
-            events = manage_open_positions(
-                ib=ib,
-                account=ib_cfg.account,
-                stop_loss_pct=float(r.get("stop_loss_pct", 20.0)),
-                take_profit_pct=float(r.get("take_profit_pct", 30.0)),
-                breakeven_trigger_pct=float(r.get("breakeven_trigger_pct", 15.0)),
-                trailing_trigger_pct=float(r.get("trailing_trigger_pct", 25.0)),
-                trailing_stop_pct=float(r.get("trailing_stop_pct", 10.0)),
-                force_exit_time=dtime(int(r.get("force_exit_hour", 15)), int(r.get("force_exit_minute", 55))),
-                allow_live_orders=orders_unlocked_from_config(cfg),
-            )
-            st.dataframe(pd.DataFrame(events), use_container_width=True) if events else st.info("No active positions to manage.")
-        except Exception as e:
-            clean_ui_error("Position management failed", e)
+    with st.expander("Status details", expanded=False):
+        st.json({
+            "Trading Status": trading_status,
+            "IB Port": ib_cfg.port,
+            "Last Engine Status": health_now.get("last_status", "N/A") if health_now else "N/A",
+            "Candidates": health_now.get("candidates", 0) if health_now else 0,
+            "Health": health_now or {},
+        })
 
     st.markdown("### Active Positions")
     active_positions = read_active_positions()
@@ -1527,20 +1941,222 @@ elif selected_page == "💼 Positions":
     else:
         st.info("No open positions. Engine is waiting for a valid signal.")
 
-    st.markdown("### Engine Health")
-    health_now = read_health()
-    if health_now:
-        hcols = st.columns(4)
-        hcols[0].metric("Engine", "Running" if health_now.get("engine_running") else "Unknown")
-        hcols[1].metric("IBKR", "Connected" if health_now.get("ib_connected") else "Unknown")
-        hcols[2].metric("Last Status", str(health_now.get("last_status", "N/A"))[:24])
-        hcols[3].metric("Candidates", str(health_now.get("candidates", 0)))
-        with st.expander("Health details"):
-            st.json(health_now)
-    else:
-        st.info("No engine heartbeat yet. Start `python engine.py` to activate health monitoring.")
+    def is_recent_pending_approval(order: dict) -> bool:
+        if str(order.get("status", "")).lower() not in ["pending", "sent"]:
+            return False
+        try:
+            created_at = datetime.fromisoformat(str(order.get("created_at")))
+            return (datetime.now(EASTERN) - created_at).total_seconds() <= 120
+        except Exception:
+            return False
 
-elif selected_page == "📊 Performance":
+    pending_telegram_orders = [o for o in read_pending_approvals() if is_recent_pending_approval(o)]
+    if pending_telegram_orders:
+        st_autorefresh(interval=1_000, key="telegram_order_decision_refresh")
+        try:
+            ib_connected_now = live_ibkr_ping(ib_cfg)
+            ib = connect_ib(ib_cfg) if ib_connected_now else None
+            processed = process_telegram_order_callbacks(ib, ib_cfg, tg_cfg, orders_unlocked_from_config(cfg) and ib_connected_now)
+            if processed:
+                st.success(f"Processed {processed} Telegram decision(s).")
+        except Exception as e:
+            if "Read timed out" not in str(e):
+                st.warning(f"Telegram decision auto-check failed: {e}")
+
+    st.markdown("### Manual Order Approval")
+    with st.container(border=True):
+        st.session_state.setdefault("manual_order_expiry", "")
+        st.session_state.setdefault("manual_order_strike", 0.0)
+        st.session_state.setdefault("manual_order_limit", 0.0)
+        st.session_state.setdefault("manual_order_mid", 0.0)
+
+        m1, m2, m3, m4 = st.columns(4)
+        manual_symbol = m1.text_input("Symbol", value="SPY", key="manual_order_symbol").strip().upper()
+        manual_signal = m2.selectbox("Option side", ["CALL", "PUT"], key="manual_order_signal")
+        manual_dte = m3.selectbox("Expiry target", [7, 14, 30, 45], format_func=lambda days: f"{days} DTE", key="manual_order_dte")
+        m4.markdown("<div style='height:1.72rem'></div>", unsafe_allow_html=True)
+        if m4.button("Load IBKR Defaults", use_container_width=True):
+            try:
+                defaults = load_manual_option_defaults(manual_symbol, manual_signal, int(manual_dte))
+                st.session_state["manual_order_expiry"] = defaults["expiry"]
+                st.session_state["manual_order_strike"] = defaults["strike"]
+                st.session_state["manual_order_mid"] = defaults["mid"]
+                st.session_state["manual_order_limit"] = defaults["limit"]
+                st.success(
+                    f"Loaded {manual_symbol} {manual_signal}: "
+                    f"{defaults['expiry']} {defaults['strike']:g} | mid ${defaults['mid']:.2f}"
+                )
+                if defaults.get("warning"):
+                    st.warning(defaults["warning"])
+            except Exception as e:
+                st.error(f"Could not load IBKR option defaults: {e}")
+
+        m5, m6, m7, m8 = st.columns(4)
+        manual_expiry = m5.text_input("Resolved expiry", key="manual_order_expiry", disabled=True).strip()
+        manual_strike = m6.number_input("ATM strike", min_value=0.0, step=0.5, key="manual_order_strike")
+        manual_mid = m7.number_input("Estimated mid", min_value=0.0, step=0.05, key="manual_order_mid")
+        manual_limit = m8.number_input("Limit price", min_value=0.0, step=0.05, key="manual_order_limit")
+
+        m9, m10 = st.columns(2)
+        manual_qty = m9.number_input("Quantity", value=1, min_value=1, step=1, key="manual_order_qty")
+        manual_order_type = m10.selectbox("Order type", ["LIMIT", "MARKET"], key="manual_order_type")
+
+        def approval_status_label(order: dict) -> str:
+            status = str(order.get("status", "unknown")).lower()
+            symbol = order.get("symbol", "N/A")
+            signal = order.get("signal", "N/A")
+            if status in ["pending", "sent"]:
+                return f"⏳ {symbol} {signal} awaiting Telegram decision"
+            if status == "test_confirmed":
+                return f"✅ {symbol} test approved from Telegram"
+            if status == "submitted":
+                return f"✅ {symbol} {signal} approved and submitted"
+            if status == "rejected":
+                return f"❌ {symbol} {signal} rejected from Telegram"
+            if status == "failed":
+                return f"⚠️ {symbol} {signal} approval failed"
+            return f"{symbol} {signal}: {status}"
+
+        action_cols = st.columns(3)
+        with action_cols[0]:
+            if st.button("Send Manual Order Approval", use_container_width=True):
+                if not manual_symbol or not manual_expiry or manual_strike <= 0:
+                    st.error("Enter symbol, expiry, and strike before sending approval.")
+                elif manual_order_type == "LIMIT" and manual_limit <= 0:
+                    st.error("Limit orders need a limit price greater than zero.")
+                else:
+                    option_label = f"{manual_symbol} {manual_expiry} {manual_strike:g} {manual_signal}"
+                    pending = {
+                        "id": make_approval_id(manual_symbol, manual_signal),
+                        "status": "pending",
+                        "created_at": datetime.now(EASTERN).isoformat(),
+                        "symbol": manual_symbol,
+                        "signal": manual_signal,
+                        "option": option_label,
+                        "expiry": manual_expiry,
+                        "strike": float(manual_strike),
+                        "type": manual_signal,
+                        "quantity": int(manual_qty),
+                        "mid": float(manual_mid or manual_limit or 0),
+                        "estimated_cost": round(float(manual_qty) * float(manual_mid or manual_limit or 0) * 100, 2),
+                        "order_type": manual_order_type,
+                        "limit_price": float(manual_limit) if manual_order_type == "LIMIT" else None,
+                        "account_mode": mode,
+                        "score": "MANUAL",
+                        "grade": "Manual",
+                        "setup_quality": "Manual order",
+                        "rank_score": 0,
+                        "reasons": "Manual order entered from Positions tab.",
+                        "raw_signal": {"Symbol": manual_symbol, "Signal": manual_signal},
+                        "option_data": {"Option": option_label, "Expiry": manual_expiry, "Strike": float(manual_strike), "Type": manual_signal, "Mid": float(manual_mid or manual_limit or 0)},
+                    }
+                    orders = read_pending_approvals()
+                    orders.append(pending)
+                    write_pending_approvals(orders)
+                    try:
+                        sent = send_order_approval_message(tg_cfg, pending)
+                        if sent:
+                            st.success(f"Manual approval sent: {pending['id']}")
+                        else:
+                            st.error("Telegram token/chat ID missing.")
+                    except Exception as e:
+                        st.error(f"Telegram approval failed: {e}")
+
+        with action_cols[1]:
+            if st.button("Send Telegram Test", use_container_width=True):
+                test_symbol = manual_symbol or "TEST"
+                test_order = {
+                    "id": make_approval_id(test_symbol, "TEST"),
+                    "status": "pending",
+                    "created_at": datetime.now(EASTERN).isoformat(),
+                    "symbol": test_symbol,
+                    "signal": "TEST",
+                    "option": "Telegram approval test",
+                    "expiry": manual_expiry or datetime.now(EASTERN).strftime("%Y%m%d"),
+                    "strike": float(manual_strike or 1),
+                    "type": "CALL",
+                    "quantity": 1,
+                    "mid": 0,
+                    "estimated_cost": 0,
+                    "order_type": "TEST",
+                    "limit_price": None,
+                    "account_mode": mode,
+                    "score": "TEST",
+                    "grade": "Test",
+                    "setup_quality": "Telegram button test",
+                    "rank_score": 0,
+                    "reasons": "This is a Telegram Confirm/Reject test. Confirm will not submit an IBKR order.",
+                    "test_order": True,
+                    "raw_signal": {"Symbol": test_symbol, "Signal": "TEST"},
+                    "option_data": {},
+                }
+                orders = read_pending_approvals()
+                orders.append(test_order)
+                write_pending_approvals(orders)
+                try:
+                    sent = send_order_approval_message(tg_cfg, test_order)
+                    if sent:
+                        st.success(f"Telegram test sent: {test_order['id']}")
+                    else:
+                        st.error("Telegram token/chat ID missing.")
+                except Exception as e:
+                    st.error(f"Telegram test failed: {e}")
+
+        with action_cols[2]:
+            st.caption("Telegram Decision Status")
+            approvals = read_pending_approvals()
+            latest_approval = approvals[-1] if approvals else {}
+            if latest_approval:
+                st.markdown(f"**{approval_status_label(latest_approval)}**")
+                st.caption(f"Order ID: {latest_approval.get('id', 'N/A')}")
+            else:
+                st.info("No Telegram approvals sent yet.")
+
+            recent = approvals[-5:]
+            if recent:
+                st.dataframe(
+                    pd.DataFrame([
+                        {
+                            "symbol": o.get("symbol"),
+                            "side": o.get("signal"),
+                            "status": o.get("status"),
+                            "created": o.get("created_at"),
+                        }
+                        for o in reversed(recent)
+                    ]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+    if st.button("Manage Open Positions Now", use_container_width=True):
+        try:
+            if not read_active_positions():
+                st.info("No active positions to manage.")
+            else:
+                ib = connect_ib(ib_cfg)
+                try:
+                    r = cfg["risk"]
+                    events = manage_open_positions(
+                        ib=ib,
+                        account=ib_cfg.account,
+                        stop_loss_pct=float(r.get("stop_loss_pct", 20.0)),
+                        take_profit_pct=float(r.get("take_profit_pct", 30.0)),
+                        breakeven_trigger_pct=float(r.get("breakeven_trigger_pct", 15.0)),
+                        trailing_trigger_pct=float(r.get("trailing_trigger_pct", 25.0)),
+                        trailing_stop_pct=float(r.get("trailing_stop_pct", 10.0)),
+                        force_exit_time=dtime(int(r.get("force_exit_hour", 15)), int(r.get("force_exit_minute", 55))),
+                        allow_live_orders=orders_unlocked_from_config(cfg),
+                    )
+                finally:
+                    try:
+                        ib.disconnect()
+                    except Exception:
+                        pass
+                st.dataframe(pd.DataFrame(events), use_container_width=True) if events else st.info("No active positions to manage.")
+        except Exception as e:
+            clean_ui_error("Position management failed", e)
+
+elif selected_page == "📊 Performance & Trade Journal":
     st.subheader("Performance & Trade Journal")
 
     def _load_trade_log_df() -> pd.DataFrame:

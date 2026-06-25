@@ -1,0 +1,8 @@
+{
+  "ibkr_disconnected": {
+    "last_alert_at": "2026-06-25T00:53:33.099340-04:00",
+    "active": false,
+    "recovered_at": "2026-06-25T00:54:13.096711-04:00"
+  },
+  "engine_not_running": {}
+}

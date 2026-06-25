@@ -1,10 +1,11 @@
 {
   "engine_running": true,
   "market_open": false,
-  "last_status": "Dashboard auto-connected + account synced",
+  "last_status": "Waiting for market hours",
   "mode": "Paper",
-  "updated_at": "2026-06-23T00:35:19.152288-04:00",
-  "started_at": "2026-06-19T03:14:03.574312-04:00",
+  "updated_at": "2026-06-25T02:31:37.741458-04:00",
+  "started_at": "2026-06-25T00:47:36.944422-04:00",
   "ib_connected": true,
-  "auto_trading": false
+  "auto_trading": false,
+  "last_error": "IBKR is not reachable at 127.0.0.1:7497. Open IB Gateway/TWS and confirm the API port."
 }
