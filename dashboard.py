@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 import html
 import json
 import socket
@@ -565,8 +566,18 @@ def render_platform_settings():
             st.caption("RVOL is informational only and will not block trades.")
 
     with st.expander("Watchlist", expanded=False):
-        wl_text = st.text_area("Symbols", value=", ".join(cfg.get("watchlist", WATCHLIST)), height=120)
-        cfg["watchlist"] = [x.strip().upper() for x in wl_text.replace("\n", ",").split(",") if x.strip()]
+        current_watchlist = [str(x).strip().upper() for x in cfg.get("watchlist", WATCHLIST) if str(x).strip()]
+        current_watchlist_set = set(current_watchlist)
+        selected_watchlist = st.multiselect(
+            "Preset tickers",
+            WATCHLIST,
+            default=[ticker for ticker in WATCHLIST if ticker in current_watchlist_set],
+            key="platform_watchlist_presets",
+        )
+        extra_watchlist_default = ", ".join([s for s in current_watchlist if s not in set(WATCHLIST)])
+        extra_watchlist_text = st.text_input("Add tickers", value=extra_watchlist_default, key="platform_watchlist_extra")
+        extra_watchlist = [x.strip().upper() for x in extra_watchlist_text.replace("\n", ",").split(",") if x.strip()]
+        cfg["watchlist"] = selected_watchlist + [x for x in extra_watchlist if x not in selected_watchlist]
 
     st.divider()
     st.caption("Connection Settings")
@@ -1761,9 +1772,65 @@ def render_yahoo_backtester_tab(config: dict, default_symbols: list[str]):
     st.info("Current phase: Yahoo replay now simulates approximate 7-DTE option entries/exits and P/L. Next phase: improve analytics, trade explorer, and parameter testing.")
 
 
-def run_ibkr_scanner_ui(scan_cfg: dict, scan_symbols: list[str]):
+def scanner_result_paths() -> tuple[Path, Path, Path]:
+    root = Path(__file__).resolve().parent
+    data_dir = root / "data"
+    export_dir = root / "exports"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
+    return (
+        data_dir / "scanner_job_status.json",
+        export_dir / "scanner_stock_results.csv",
+        export_dir / "scanner_option_ideas.csv",
+    )
+
+
+def read_scanner_job_status() -> dict:
+    status_file, _stock_file, _option_file = scanner_result_paths()
+    try:
+        if status_file.exists():
+            return json.loads(status_file.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def write_scanner_job_status(status: dict) -> None:
+    status_file, _stock_file, _option_file = scanner_result_paths()
+    try:
+        status_file.write_text(json.dumps(status, indent=2, default=str), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def load_saved_scanner_results() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    status_file, stock_file, option_file = scanner_result_paths()
+    status = read_scanner_job_status()
+    stock_df = pd.DataFrame()
+    option_df = pd.DataFrame()
+    try:
+        if stock_file.exists():
+            stock_df = pd.read_csv(stock_file)
+    except Exception:
+        stock_df = pd.DataFrame()
+    try:
+        if option_file.exists():
+            option_df = pd.read_csv(option_file)
+    except Exception:
+        option_df = pd.DataFrame()
+    return stock_df, option_df, status
+
+
+def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
+    _status_file, stock_file, option_file = scanner_result_paths()
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    write_scanner_job_status({
+        "status": "running",
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "symbols": list(scan_symbols),
+        "message": "Scanner running",
+    })
     rows, option_rows = [], []
-    progress = st.progress(0)
     try:
         scan_ib_cfg = IBConfig(
             host=scan_cfg["ib"].get("host", "127.0.0.1"),
@@ -1791,8 +1858,15 @@ def run_ibkr_scanner_ui(scan_cfg: dict, scan_symbols: list[str]):
                             option_clean = {k: v for k, v in option.items() if k != "Contract"}
                             option_rows.append({"Symbol": symbol, "Signal": result["Signal"], "Score": result["Score"], "Confidence": result["Confidence"], **option_clean})
             except Exception as e:
-                st.warning(f"{symbol}: {e}")
-            progress.progress((i + 1) / max(len(scan_symbols), 1))
+                rows.append({"Symbol": symbol, "Signal": "ERROR", "Score": 0, "Confidence": 0, "RVOL": 0, "ATR %": 0, "Reasons": str(e)})
+            write_scanner_job_status({
+                "status": "running",
+                "started_at": read_scanner_job_status().get("started_at"),
+                "symbols": list(scan_symbols),
+                "completed": i + 1,
+                "total": len(scan_symbols),
+                "message": f"Scanning {symbol}",
+            })
 
         stock_df = pd.DataFrame(rows)
         if not stock_df.empty:
@@ -1802,30 +1876,37 @@ def run_ibkr_scanner_ui(scan_cfg: dict, scan_symbols: list[str]):
         if not option_df.empty:
             option_df = option_df.sort_values(["Score", "Option Score"], ascending=[False, False])
 
-        st.session_state["scanner_stock_df"] = stock_df
-        st.session_state["scanner_option_df"] = option_df
-        st.session_state["scanner_last_run"] = datetime.now().isoformat(timespec="seconds")
-
-        st.markdown("### Top Opportunities")
-        card_source = option_df if not option_df.empty else stock_df
-        if card_source.empty:
-            st.info("No candidates passed your filters.")
-        else:
-            card_cols = st.columns(min(3, len(card_source)))
-            for idx, (_, row) in enumerate(card_source.head(3).iterrows()):
-                with card_cols[idx % len(card_cols)]:
-                    setup_card(row.to_dict())
-
-        with st.expander("Stock Results", expanded=True):
-            st.dataframe(stock_df, use_container_width=True)
-        with st.expander("Option Ideas", expanded=not option_df.empty):
-            if not option_df.empty:
-                st.dataframe(option_df, use_container_width=True)
-                st.download_button("Download option ideas", option_df.to_csv(index=False), "option_ideas.csv", "text/csv")
-            else:
-                st.info("No clean option contracts found for the filtered setups.")
+        stock_df.to_csv(stock_file, index=False)
+        option_df.to_csv(option_file, index=False)
+        write_scanner_job_status({
+            "status": "complete",
+            "started_at": read_scanner_job_status().get("started_at"),
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "symbols": list(scan_symbols),
+            "completed": len(scan_symbols),
+            "total": len(scan_symbols),
+            "stock_rows": len(stock_df),
+            "option_rows": len(option_df),
+            "message": "Scanner complete",
+        })
     except Exception as e:
-        clean_ui_error("Scanner failed", e)
+        write_scanner_job_status({
+            "status": "error",
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "symbols": list(scan_symbols),
+            "message": str(e),
+        })
+
+
+def run_ibkr_scanner_ui(scan_cfg: dict, scan_symbols: list[str]):
+    status = read_scanner_job_status()
+    if status.get("status") == "running":
+        st.info(f"Scanner is already running: {status.get('completed', 0)} / {status.get('total', len(scan_symbols))} symbols.")
+        st_autorefresh(interval=2_000, key="scanner_job_refresh")
+        return
+    threading.Thread(target=run_ibkr_scanner_job, args=(json.loads(json.dumps(scan_cfg, default=str)), list(scan_symbols)), daemon=True, name="ibkr-scanner-job").start()
+    st.success("Scanner started in the background. You can switch tabs and come back for results.")
+    st_autorefresh(interval=2_000, key="scanner_job_refresh_started")
 
 
 # Global compact terminal header shown on every page.
@@ -1848,30 +1929,34 @@ elif selected_page == "📈 Scanner":
     if run_scanner_clicked:
         run_ibkr_scanner_ui(cfg, symbols)
 
-    if not run_scanner_clicked:
-        stock_df = st.session_state.get("scanner_stock_df", pd.DataFrame())
-        option_df = st.session_state.get("scanner_option_df", pd.DataFrame())
-        last_run = st.session_state.get("scanner_last_run")
-        if (isinstance(stock_df, pd.DataFrame) and not stock_df.empty) or (isinstance(option_df, pd.DataFrame) and not option_df.empty):
-            st.markdown("### Last Scanner Results")
-            if last_run:
-                st.caption(f"Last scan: {last_run}")
-            card_source = option_df if isinstance(option_df, pd.DataFrame) and not option_df.empty else stock_df
-            if isinstance(card_source, pd.DataFrame) and not card_source.empty:
-                card_cols = st.columns(min(3, len(card_source)))
-                for idx, (_, row) in enumerate(card_source.head(3).iterrows()):
-                    with card_cols[idx % len(card_cols)]:
-                        setup_card(row.to_dict())
-            with st.expander("Stock Results", expanded=True):
-                st.dataframe(stock_df, use_container_width=True)
-            with st.expander("Option Ideas", expanded=isinstance(option_df, pd.DataFrame) and not option_df.empty):
-                if isinstance(option_df, pd.DataFrame) and not option_df.empty:
-                    st.dataframe(option_df, use_container_width=True)
-                    st.download_button("Download option ideas", option_df.to_csv(index=False), "option_ideas.csv", "text/csv", key="download_persisted_option_ideas")
-                else:
-                    st.info("No clean option contracts found for the filtered setups.")
-        else:
-            st.info("No scanner results yet. Run the IBKR scanner once and the results will stay here while you navigate.")
+    stock_df, option_df, scanner_job_status = load_saved_scanner_results()
+    if scanner_job_status.get("status") == "running":
+        st.info(f"Scanner running in background: {scanner_job_status.get('completed', 0)} / {scanner_job_status.get('total', len(symbols))} symbols.")
+        st_autorefresh(interval=2_000, key="scanner_job_refresh_display")
+    elif scanner_job_status.get("status") == "error":
+        st.error(f"Scanner failed: {scanner_job_status.get('message', 'Unknown error')}")
+
+    if (isinstance(stock_df, pd.DataFrame) and not stock_df.empty) or (isinstance(option_df, pd.DataFrame) and not option_df.empty):
+        st.markdown("### Last Scanner Results")
+        last_run = scanner_job_status.get("finished_at") or scanner_job_status.get("started_at")
+        if last_run:
+            st.caption(f"Last scan: {last_run}")
+        card_source = option_df if isinstance(option_df, pd.DataFrame) and not option_df.empty else stock_df
+        if isinstance(card_source, pd.DataFrame) and not card_source.empty:
+            card_cols = st.columns(min(3, len(card_source)))
+            for idx, (_, row) in enumerate(card_source.head(3).iterrows()):
+                with card_cols[idx % len(card_cols)]:
+                    setup_card(row.to_dict())
+        with st.expander("Stock Results", expanded=True):
+            st.dataframe(stock_df, use_container_width=True)
+        with st.expander("Option Ideas", expanded=isinstance(option_df, pd.DataFrame) and not option_df.empty):
+            if isinstance(option_df, pd.DataFrame) and not option_df.empty:
+                st.dataframe(option_df, use_container_width=True)
+                st.download_button("Download option ideas", option_df.to_csv(index=False), "option_ideas.csv", "text/csv", key="download_persisted_option_ideas")
+            else:
+                st.info("No clean option contracts found for the filtered setups.")
+    elif scanner_job_status.get("status") != "running":
+        st.info("No scanner results yet. Run the IBKR scanner once and the results will stay here while you navigate.")
 
 elif selected_page == "🔍 Breakdown":
     st.subheader("Ticker Breakdown")

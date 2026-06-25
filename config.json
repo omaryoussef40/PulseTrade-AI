@@ -38,10 +38,10 @@
     "first_signal_minutes": 15
   },
   "risk": {
-    "account_size": 100000.0,
+    "account_size": 100000,
     "max_trades_per_day": 2,
-    "max_spend_per_trade": 20000.0,
-    "max_daily_capital": 40000.0,
+    "max_spend_per_trade": 20000,
+    "max_daily_capital": 40000,
     "max_contracts": 20,
     "stop_loss_pct": 20.0,
     "take_profit_pct": 30.0,
@@ -57,9 +57,7 @@
     "type": "LIMIT"
   },
   "watchlist": [
-    "UBER",
-    "MU",
-    "MRVL"
+    "SOFI"
   ],
   "news": {
     "benzinga_api_key": "bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74",
@@ -69,9 +67,7 @@
   },
   "strategy_lab": {
     "symbols": [
-      "UBER",
-      "MU",
-      "MRVL"
+      "SOFI"
     ],
     "selected_strategies": [
       "PMB"
@@ -81,9 +77,9 @@
     "max_symbols": 3,
     "force_refresh": false,
     "data_source": "IBKR",
-    "orb_minutes": 15,
-    "first_signal_minutes": 15,
-    "min_session_bars": 4,
+    "orb_minutes": 30,
+    "first_signal_minutes": 30,
+    "min_session_bars": 7,
     "visual_updates": true,
     "premium_pct_ui": 0.25,
     "slippage_pct": 2.0,

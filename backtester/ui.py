@@ -16,8 +16,11 @@ import streamlit as st
 from .data import YFINANCE_AVAILABLE, YahooDataClient
 
 try:
-    from bot_core import save_config
+    from bot_core import WATCHLIST, save_config
 except Exception:  # pragma: no cover
+    WATCHLIST = [
+        "SPY", "QQQ", "IWM", "NVDA", "AAPL", "MSFT", "META", "AMZN", "GOOGL", "TSLA", "AMD", "PLTR", "COIN", "MSTR", "AVGO", "SMCI", "MU", "ARM", "TSM", "MRVL", "JPM", "GS", "BAC", "NFLX", "UBER", "XOM", "COST", "RBLX", "HOOD", "SOFI", "RKLB", "HIMS", "CRWD"
+    ]
     save_config = None
 
 try:
@@ -34,6 +37,10 @@ def _parse_symbols(text: str, max_symbols: int) -> list[str]:
     return [s.strip().upper() for s in str(text).replace("\n", ",").split(",") if s.strip()][: int(max_symbols)]
 
 
+def _parse_extra_symbols(text: str) -> list[str]:
+    return [s.strip().upper() for s in str(text).replace("\n", ",").split(",") if s.strip()]
+
+
 def _chart_equity(trades: pd.DataFrame):
     fig = go.Figure()
     if trades is not None and not trades.empty and "equity" in trades.columns:
@@ -45,6 +52,29 @@ def _chart_equity(trades: pd.DataFrame):
         ))
     fig.update_layout(height=390, title="Strategy Lab Equity Curve", xaxis_title="Exit Time", yaxis_title="Equity USD")
     return fig
+
+
+def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbols: list[str], selected_strategies: list[str], period: str, interval: str, max_symbols: int, force_refresh: bool, data_source: str, orb_minutes: int, first_signal_minutes: int, min_session_bars: int, visual_updates: bool, premium_pct_ui: float, slippage_pct: float, allow_same_symbol: bool) -> None:
+    config.setdefault("strategy_lab", {})
+    config["watchlist"] = list(selected_symbols)
+    config["strategy_lab"] = {
+        "symbols": list(selected_symbols),
+        "selected_strategies": list(selected_strategies),
+        "period": str(period),
+        "interval": str(interval),
+        "max_symbols": int(max_symbols),
+        "force_refresh": bool(force_refresh),
+        "data_source": str(data_source),
+        "orb_minutes": int(orb_minutes),
+        "first_signal_minutes": int(first_signal_minutes),
+        "min_session_bars": int(min_session_bars),
+        "visual_updates": bool(visual_updates),
+        "premium_pct_ui": float(premium_pct_ui),
+        "slippage_pct": float(slippage_pct),
+        "allow_same_symbol": bool(allow_same_symbol),
+    }
+    if save_config is not None:
+        save_config(config)
 
 
 def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
@@ -59,7 +89,7 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
 
     current_max_symbols = int(st.session_state.get("sl_max_symbols", int(lab_cfg.get("max_symbols", default_max_symbols))))
     saved_symbols = lab_cfg.get("symbols") or default_symbols
-    default_text = ", ".join(saved_symbols[:current_max_symbols]) if saved_symbols else "SPY, QQQ, NVDA, TSLA, AMD"
+    default_text = ", ".join(saved_symbols) if saved_symbols else "SPY, QQQ, NVDA, TSLA, AMD"
     source_options = available_market_data_sources() if callable(available_market_data_sources) else ["IBKR", "Yahoo"]
     default_source = str(lab_cfg.get("data_source", "IBKR"))
     default_source_index = source_options.index(default_source) if default_source in source_options else 0
@@ -90,8 +120,18 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
 
     with setting_cols[1]:
         with st.expander("📈 Symbols", expanded=False):
-            symbols_text = st.text_area("Symbols", value=default_text, height=145, key="sl_symbols")
-            symbols = _parse_symbols(symbols_text, current_max_symbols)
+            saved_symbol_set = set(_parse_extra_symbols(default_text))
+            selected_presets = st.multiselect(
+                "Preset tickers",
+                WATCHLIST,
+                default=[ticker for ticker in WATCHLIST if ticker in saved_symbol_set],
+                key="sl_symbol_presets",
+            )
+            extra_default = ", ".join([s for s in saved_symbol_set if s not in set(WATCHLIST)])
+            extra_symbols_text = st.text_input("Add tickers", value=extra_default, key="sl_extra_symbols")
+            selected_all = selected_presets + [s for s in _parse_extra_symbols(extra_symbols_text) if s not in selected_presets]
+            st.session_state["sl_selected_all_symbols"] = selected_all
+            symbols = selected_all[:current_max_symbols]
             st.caption(f"Using {len(symbols)} of {current_max_symbols}")
 
     with setting_cols[2]:
@@ -107,7 +147,9 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
     # Re-apply Max Symbols after Backtest Setup renders. If Max Symbols was changed,
     # Streamlit will rerun and the Symbols accordion will reflect the new value.
     max_symbols = int(st.session_state.get("sl_max_symbols", default_max_symbols))
-    symbols = _parse_symbols(st.session_state.get("sl_symbols", ""), max_symbols)
+    selected_presets_state = list(st.session_state.get("sl_symbol_presets", []))
+    selected_all_symbols = selected_presets_state + [s for s in _parse_extra_symbols(st.session_state.get("sl_extra_symbols", "")) if s not in selected_presets_state]
+    symbols = selected_all_symbols[:max_symbols]
     if str(data_source).upper() == "IBKR":
         st.caption("Strategy Lab uses IBKR historical candles. Keep TWS/IB Gateway open.")
     elif not YFINANCE_AVAILABLE:
@@ -189,32 +231,12 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         selected_strategies=tuple(selected_strategies),
         data_source=str(data_source),
     )
+    _save_strategy_lab_settings(config, symbols, selected_all_symbols, selected_strategies, period, interval, max_symbols, force_refresh, data_source, orb_minutes, first_signal_minutes, min_session_bars, visual_updates, premium_pct_ui, slippage_pct, allow_same_symbol)
 
     if st.button("Run Backtest", use_container_width=True, key="sl_run"):
         if not symbols:
             st.warning("Add at least one symbol.")
         else:
-            config.setdefault("strategy", {})
-            config.setdefault("risk", {})
-            config["watchlist"] = list(symbols)
-            config["strategy_lab"] = {
-                "symbols": list(symbols),
-                "selected_strategies": list(selected_strategies),
-                "period": str(period),
-                "interval": str(interval),
-                "max_symbols": int(max_symbols),
-                "force_refresh": bool(force_refresh),
-                "data_source": str(data_source),
-                "orb_minutes": int(orb_minutes),
-                "first_signal_minutes": int(first_signal_minutes),
-                "min_session_bars": int(min_session_bars),
-                "visual_updates": bool(visual_updates),
-                "premium_pct_ui": float(premium_pct_ui),
-                "slippage_pct": float(slippage_pct),
-                "allow_same_symbol": bool(allow_same_symbol),
-            }
-            if save_config is not None:
-                save_config(config)
             st.session_state["bt_job_running"] = True
             progress = st.progress(0)
             status = st.empty()
