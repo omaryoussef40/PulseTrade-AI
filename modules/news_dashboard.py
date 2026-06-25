@@ -35,10 +35,8 @@ import plotly.graph_objects as go
 
 try:
     import streamlit as st
-    from streamlit_autorefresh import st_autorefresh
 except Exception:  # Allows py_compile in non-Streamlit environments.
     st = None  # type: ignore
-    st_autorefresh = None  # type: ignore
 
 
 THIS_FILE = Path(__file__).resolve()
@@ -623,8 +621,6 @@ def render_market_intelligence_tab(db_path: str | Path = DEFAULT_DB_PATH) -> Non
         raise RuntimeError("Streamlit is required to render this dashboard module.")
 
     st.markdown(MARKET_INTELLIGENCE_CSS, unsafe_allow_html=True)
-    if st_autorefresh is not None:
-        st_autorefresh(interval=30_000, key="market_intelligence_refresh")
     st.subheader("Market Intelligence")
     st.caption("Benzinga news feed, catalyst detection, watchlist hits, impact scoring, and news history.")
 

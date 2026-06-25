@@ -1,11 +1,10 @@
 {
   "status": "complete",
-  "started_at": "2026-06-25T13:58:21",
-  "finished_at": "2026-06-25T14:01:07",
+  "started_at": "2026-06-25T23:31:46",
+  "finished_at": "2026-06-25T23:34:42",
   "symbols": [
     "SPY",
     "QQQ",
-    "IWM",
     "NVDA",
     "AAPL",
     "MSFT",
@@ -32,14 +31,13 @@
     "COST",
     "RBLX",
     "HOOD",
-    "SOFI",
     "RKLB",
     "HIMS",
     "CRWD"
   ],
-  "completed": 33,
-  "total": 33,
-  "stock_rows": 33,
-  "option_rows": 0,
+  "completed": 31,
+  "total": 31,
+  "stock_rows": 31,
+  "option_rows": 4,
   "message": "Scanner complete"
 }

@@ -355,7 +355,7 @@ def run_cycle() -> None:
     app_log(f"Cycle started | mode={mode} | port={ib_cfg.port} | symbols={len(watchlist)}")
 
     ib = connect_ib(ib_cfg)
-    write_health(ib_connected=bool(ib.isConnected()), last_scan_start=datetime.now(EASTERN).isoformat(), last_status="Connected")
+    write_health(ib_connected=bool(ib.isConnected()), last_scan_start=datetime.now(EASTERN).isoformat(), last_status="Connected", last_error="")
     can_trade = orders_unlocked_from_config(cfg)
     if can_trade:
         app_log("Order placement is ARMED for this cycle.", "WARN")
@@ -435,6 +435,10 @@ def run_cycle() -> None:
     if not candidates:
         write_health(last_scan_finish=datetime.now(EASTERN).isoformat(), last_status="No candidates", candidates=0)
         app_log("No candidates passed filters.")
+        try:
+            ib.disconnect()
+        except Exception:
+            pass
         return
 
     df = pd.DataFrame(candidates).sort_values(
@@ -571,7 +575,11 @@ def run_cycle() -> None:
             )
             app_log(f"{symbol}: signal only | {row['Signal']} | score={row['Score']} | grade={row.get('Grade', 'N/A')}")
 
-    write_health(last_scan_finish=datetime.now(EASTERN).isoformat(), last_status="Cycle complete", candidates=len(candidates), submitted_orders=submitted, auto_trading=can_trade)
+    write_health(last_scan_finish=datetime.now(EASTERN).isoformat(), last_status="Cycle complete", candidates=len(candidates), submitted_orders=submitted, auto_trading=can_trade, last_error="")
+    try:
+        ib.disconnect()
+    except Exception:
+        pass
 
 
 def main() -> None:

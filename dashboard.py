@@ -74,7 +74,7 @@ except Exception:
 
 APP_DISPLAY_NAME = "PulseTrade AI"
 st.set_page_config(page_title=APP_DISPLAY_NAME, layout="wide")
-st.markdown("""
+getattr(st, "html", lambda body: st.markdown(body, unsafe_allow_html=True))("""
 <style>
     .block-container { padding-top: 2.75rem !important; padding-bottom: 7.25rem !important; }
     div[data-testid="stMetricValue"] { font-size: 1.35rem !important; white-space: nowrap !important; }
@@ -323,7 +323,7 @@ st.markdown("""
     }
 
 </style>
-""", unsafe_allow_html=True)
+""")
 
 
 cfg = load_config()
@@ -591,16 +591,21 @@ def render_platform_settings():
     with st.expander("Watchlist", expanded=False):
         current_watchlist = [str(x).strip().upper() for x in cfg.get("watchlist", WATCHLIST) if str(x).strip()]
         current_watchlist_set = set(current_watchlist)
+        preset_watchlist_default = [ticker for ticker in WATCHLIST if ticker in current_watchlist_set]
+        extra_watchlist_default = ", ".join([s for s in current_watchlist if s not in set(WATCHLIST)])
+        if "platform_watchlist_presets" not in st.session_state:
+            st.session_state["platform_watchlist_presets"] = preset_watchlist_default
+        if "platform_watchlist_extra" not in st.session_state:
+            st.session_state["platform_watchlist_extra"] = extra_watchlist_default
         selected_watchlist = st.multiselect(
             "Preset tickers",
             WATCHLIST,
-            default=[ticker for ticker in WATCHLIST if ticker in current_watchlist_set],
             key="platform_watchlist_presets",
         )
-        extra_watchlist_default = ", ".join([s for s in current_watchlist if s not in set(WATCHLIST)])
-        extra_watchlist_text = st.text_input("Add tickers", value=extra_watchlist_default, key="platform_watchlist_extra")
+        extra_watchlist_text = st.text_input("Add tickers", key="platform_watchlist_extra")
         extra_watchlist = [x.strip().upper() for x in extra_watchlist_text.replace("\n", ",").split(",") if x.strip()]
         cfg["watchlist"] = selected_watchlist + [x for x in extra_watchlist if x not in selected_watchlist]
+        cfg.setdefault("strategy_lab", {})["symbols"] = list(cfg["watchlist"])
 
     st.divider()
     st.caption("Connection Settings")
@@ -869,14 +874,13 @@ def maybe_send_status_alerts(status_cfg: dict, status_health: dict, engine_runni
 
 
 def start_trading_engine_once() -> None:
-    if st.session_state.get("trading_engine_auto_start_checked"):
-        return
-    st.session_state["trading_engine_auto_start_checked"] = True
-
     running, message = get_trading_engine_process_status()
     if running:
         st.session_state["trading_engine_auto_start_status"] = message
         return
+    if st.session_state.get("trading_engine_auto_start_checked") and "Stale" not in message and "No trading engine" not in message:
+        return
+    st.session_state["trading_engine_auto_start_checked"] = True
     if not ENGINE_FILE.exists():
         st.session_state["trading_engine_auto_start_status"] = f"Missing file: {ENGINE_FILE}"
         return
@@ -1825,6 +1829,10 @@ def write_scanner_job_status(status: dict) -> None:
         pass
 
 
+def display_exception_message(exc: Exception) -> str:
+    return str(exc) or type(exc).__name__
+
+
 def load_saved_scanner_results() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     status_file, stock_file, option_file = scanner_result_paths()
     status = read_scanner_job_status()
@@ -1853,11 +1861,12 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
         "message": "Scanner running",
     })
     rows, option_rows = [], []
+    ib = None
     try:
         scan_ib_cfg = IBConfig(
             host=scan_cfg["ib"].get("host", "127.0.0.1"),
             port=ib_port_from_config(scan_cfg),
-            client_id=int(scan_cfg["ib"].get("client_id", 11)),
+            client_id=int(scan_cfg["ib"].get("client_id", 11)) + 100,
             account=scan_cfg["ib"].get("account") or None,
             readonly=bool(scan_cfg["ib"].get("readonly", False)),
         )
@@ -1880,7 +1889,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
                             option_clean = {k: v for k, v in option.items() if k != "Contract"}
                             option_rows.append({"Symbol": symbol, "Signal": result["Signal"], "Score": result["Score"], "Confidence": result["Confidence"], **option_clean})
             except Exception as e:
-                rows.append({"Symbol": symbol, "Signal": "ERROR", "Score": 0, "Confidence": 0, "RVOL": 0, "ATR %": 0, "Reasons": str(e)})
+                rows.append({"Symbol": symbol, "Signal": "ERROR", "Score": 0, "Confidence": 0, "RVOL": 0, "ATR %": 0, "Reasons": display_exception_message(e)})
             write_scanner_job_status({
                 "status": "running",
                 "started_at": read_scanner_job_status().get("started_at"),
@@ -1916,8 +1925,14 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
             "status": "error",
             "finished_at": datetime.now().isoformat(timespec="seconds"),
             "symbols": list(scan_symbols),
-            "message": str(e),
+            "message": display_exception_message(e),
         })
+    finally:
+        try:
+            if ib and ib.isConnected():
+                ib.disconnect()
+        except Exception:
+            pass
 
 
 def run_ibkr_scanner_ui(scan_cfg: dict, scan_symbols: list[str]):
@@ -1987,8 +2002,16 @@ elif selected_page == "📈 Scanner & Breakdown":
         st.caption("Analyze one ticker using the same scanner logic.")
         ticker = st.text_input("Ticker", value="", label_visibility="collapsed").strip().upper()
         if st.button("Analyze Ticker", use_container_width=True):
+            ib = None
             try:
-                ib = connect_ib(ib_cfg)
+                breakdown_ib_cfg = IBConfig(
+                    host=ib_cfg.host,
+                    port=ib_cfg.port,
+                    client_id=ib_cfg.client_id + 101,
+                    account=ib_cfg.account,
+                    readonly=ib_cfg.readonly,
+                )
+                ib = connect_ib(breakdown_ib_cfg)
                 breakdown = scan_symbol_ib(ib, ticker, bool(cfg["strategy"].get("use_rvol_score", False)))
                 if not breakdown:
                     st.error("No breakdown available.")
@@ -2004,8 +2027,14 @@ elif selected_page == "📈 Scanner & Breakdown":
                         st.write(f"✓ {reason}")
                     st.dataframe(pd.DataFrame([clean_for_table(breakdown)]), use_container_width=True)
             except Exception as e:
-                st.error(f"Analysis failed: {e}")
+                st.error(f"Analysis failed: {display_exception_message(e)}")
                 st.caption("Technical details are hidden in the dashboard. Check the terminal/log files if needed.")
+            finally:
+                try:
+                    if ib and ib.isConnected():
+                        ib.disconnect()
+                except Exception:
+                    pass
 
 elif selected_page == "💼 Positions":
     start_telegram_decision_worker()
