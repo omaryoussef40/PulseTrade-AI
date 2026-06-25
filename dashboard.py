@@ -7,6 +7,7 @@ import os
 import asyncio
 import html
 import json
+import re
 import socket
 import subprocess
 import sys
@@ -78,7 +79,7 @@ st.markdown("""
     .block-container { padding-top: 2.75rem !important; padding-bottom: 7.25rem !important; }
     div[data-testid="stMetricValue"] { font-size: 1.35rem !important; white-space: nowrap !important; }
     div[data-testid="stMetricLabel"] { font-size: 0.82rem !important; }
-    .status-card, .setup-card {
+    .status-card {
         border: 1px solid rgba(250,250,250,0.14);
         border-radius: 14px;
         padding: 14px 16px;
@@ -86,15 +87,28 @@ st.markdown("""
         min-height: 96px;
         margin-bottom: 10px;
     }
-    .setup-card-call { border-left: 5px solid #22c55e; }
-    .setup-card-put { border-left: 5px solid #ef4444; }
+    .setup-card {
+        border: 1px solid rgba(31,41,55,0.16);
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: #ffffff;
+        color: #111827;
+        min-height: 0;
+        margin-bottom: 6px;
+    }
+    .setup-card-call { border-left: 5px solid #16a34a; background: rgba(22,163,74,0.08); }
+    .setup-card-put { border-left: 5px solid #dc2626; background: rgba(220,38,38,0.08); }
+    .setup-card-wait { border-left: 5px solid #f59e0b; background: rgba(245,158,11,0.12); }
     .status-label, .setup-label { font-size: 0.78rem; color: rgba(250,250,250,0.68); margin-bottom: 6px; }
+    .setup-label { color: #4b5563; }
     .status-value { font-size: 1.22rem; font-weight: 700; line-height: 1.15; }
-    .setup-symbol { font-size: 1.40rem; font-weight: 800; margin-bottom: 2px; }
-    .setup-badge { font-size: 0.82rem; font-weight: 700; border-radius: 999px; padding: 4px 9px; display: inline-block; margin-bottom: 8px; }
-    .badge-call { color: #22c55e; background: rgba(34,197,94,0.12); }
-    .badge-put { color: #ef4444; background: rgba(239,68,68,0.12); }
-    .small-muted { color: rgba(250,250,250,0.65); font-size: 0.82rem; }
+    .setup-symbol { font-size: 1.04rem; font-weight: 800; margin-bottom: 1px; color: #111827; }
+    .setup-badge { font-size: 0.70rem; font-weight: 800; border-radius: 999px; padding: 2px 7px; display: inline-block; margin-bottom: 5px; }
+    .badge-call { color: #166534; background: rgba(22,163,74,0.16); }
+    .badge-put { color: #991b1b; background: rgba(220,38,38,0.16); }
+    .badge-wait { color: #92400e; background: rgba(245,158,11,0.20); }
+    .setup-card b { color: #111827; }
+    .small-muted { color: #4b5563; font-size: 0.74rem; }
 
     /* Cleaner sidebar navigation */
     section[data-testid="stSidebar"] {
@@ -325,13 +339,23 @@ def status_card(label: str, value: str):
     """, unsafe_allow_html=True)
 
 
+def clean_card_text(value, limit: int | None = None) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]*$", " ", text)
+    text = re.sub(r"<[^>]*>", " ", text)
+    text = " ".join(text.replace(" | ", " • ").split())
+    if limit:
+        text = text[:limit]
+    return html.escape(text)
+
+
 def setup_card(row: dict):
-    signal = str(row.get("Signal", "WAIT"))
+    signal = str(row.get("Signal", "WAIT")).upper()
     symbol = str(row.get("Symbol", "")).upper()
-    card_cls = "setup-card-call" if signal == "CALL" else "setup-card-put" if signal == "PUT" else ""
-    badge_cls = "badge-call" if signal == "CALL" else "badge-put" if signal == "PUT" else ""
-    reasons = str(row.get("Reasons", "")).replace(" | ", " • ")
+    card_cls = "setup-card-call" if signal == "CALL" else "setup-card-put" if signal == "PUT" else "setup-card-wait"
+    badge_cls = "badge-call" if signal == "CALL" else "badge-put" if signal == "PUT" else "badge-wait"
     quality = setup_quality_label(row.get("Score"), row.get("Confidence")) if "setup_quality_label" in globals() else "Setup"
+    quality = clean_card_text(quality)
     catalyst_html = ""
     try:
         catalyst = NEWS_CATALYSTS.get(symbol) if isinstance(NEWS_CATALYSTS, dict) else None
@@ -340,17 +364,16 @@ def setup_card(row: dict):
         catalyst_html = ""
     st.markdown(f"""
     <div class='setup-card {card_cls}'>
-        <div class='setup-symbol'>{row.get('Symbol', '')}</div>
-        <span class='setup-badge {badge_cls}'>{signal}</span>
+        <div class='setup-symbol'>{html.escape(symbol)}</div>
+        <span class='setup-badge {badge_cls}'>{html.escape(signal)}</span>
         <div class='small-muted'>{quality}</div>
-        <div style='margin-top:10px; display:grid; grid-template-columns:1fr 1fr; gap:8px;'>
-            <div><div class='setup-label'>Score</div><b>{row.get('Score', 'N/A')}</b></div>
-            <div><div class='setup-label'>Confidence</div><b>{row.get('Confidence', 'N/A')}</b></div>
-            <div><div class='setup-label'>RVOL</div><b>{row.get('RVOL', 'N/A')}</b></div>
-            <div><div class='setup-label'>ATR %</div><b>{row.get('ATR %', 'N/A')}</b></div>
+        <div style='margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:6px;'>
+            <div><div class='setup-label'>Score</div><b>{clean_card_text(row.get('Score', 'N/A'))}</b></div>
+            <div><div class='setup-label'>Confidence</div><b>{clean_card_text(row.get('Confidence', 'N/A'))}</b></div>
+            <div><div class='setup-label'>RVOL</div><b>{clean_card_text(row.get('RVOL', 'N/A'))}</b></div>
+            <div><div class='setup-label'>ATR %</div><b>{clean_card_text(row.get('ATR %', 'N/A'))}</b></div>
         </div>
         {catalyst_html}
-        <div class='small-muted' style='margin-top:10px;'>{reasons[:160]}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -615,8 +638,7 @@ with st.sidebar:
             "💼 Positions",
             "📈 Strategy Lab",
             "🧠 Market Intelligence",
-            "📈 Scanner",
-            "🔍 Breakdown",
+            "📈 Scanner & Breakdown",
             "🏦 Account Status",
             "📝 Logs",
         ],
@@ -1922,67 +1944,68 @@ render_app_header()
 if selected_page == "🏦 Account Status":
     render_account_status_tab()
 
-elif selected_page == "📈 Scanner":
-    st.subheader("Scanner")
-    st.caption("Scan the full watchlist, rank the best setups, and review option ideas. Fresh Benzinga catalysts are shown inside setup cards when available.")
-    run_scanner_clicked = st.button("▶ Run IBKR Scanner", use_container_width=True)
-    if run_scanner_clicked:
-        run_ibkr_scanner_ui(cfg, symbols)
+elif selected_page == "📈 Scanner & Breakdown":
+    scan_col, breakdown_col = st.columns([1, 1])
+    with scan_col:
+        st.subheader("Scanner")
+        st.caption("Scan the full watchlist, rank the best setups, and review option ideas.")
+        run_scanner_clicked = st.button("▶ Run IBKR Scanner", use_container_width=True)
+        if run_scanner_clicked:
+            run_ibkr_scanner_ui(cfg, symbols)
 
-    stock_df, option_df, scanner_job_status = load_saved_scanner_results()
-    if scanner_job_status.get("status") == "running":
-        st.info(f"Scanner running in background: {scanner_job_status.get('completed', 0)} / {scanner_job_status.get('total', len(symbols))} symbols.")
-        st_autorefresh(interval=2_000, key="scanner_job_refresh_display")
-    elif scanner_job_status.get("status") == "error":
-        st.error(f"Scanner failed: {scanner_job_status.get('message', 'Unknown error')}")
+        stock_df, option_df, scanner_job_status = load_saved_scanner_results()
+        if scanner_job_status.get("status") == "running":
+            st.info(f"Scanner running in background: {scanner_job_status.get('completed', 0)} / {scanner_job_status.get('total', len(symbols))} symbols.")
+            st_autorefresh(interval=2_000, key="scanner_job_refresh_display")
+        elif scanner_job_status.get("status") == "error":
+            st.error(f"Scanner failed: {scanner_job_status.get('message', 'Unknown error')}")
 
-    if (isinstance(stock_df, pd.DataFrame) and not stock_df.empty) or (isinstance(option_df, pd.DataFrame) and not option_df.empty):
-        st.markdown("### Last Scanner Results")
-        last_run = scanner_job_status.get("finished_at") or scanner_job_status.get("started_at")
-        if last_run:
-            st.caption(f"Last scan: {last_run}")
-        card_source = option_df if isinstance(option_df, pd.DataFrame) and not option_df.empty else stock_df
-        if isinstance(card_source, pd.DataFrame) and not card_source.empty:
-            card_cols = st.columns(min(3, len(card_source)))
-            for idx, (_, row) in enumerate(card_source.head(3).iterrows()):
-                with card_cols[idx % len(card_cols)]:
-                    setup_card(row.to_dict())
-        with st.expander("Stock Results", expanded=True):
-            st.dataframe(stock_df, use_container_width=True)
-        with st.expander("Option Ideas", expanded=isinstance(option_df, pd.DataFrame) and not option_df.empty):
-            if isinstance(option_df, pd.DataFrame) and not option_df.empty:
-                st.dataframe(option_df, use_container_width=True)
-                st.download_button("Download option ideas", option_df.to_csv(index=False), "option_ideas.csv", "text/csv", key="download_persisted_option_ideas")
-            else:
-                st.info("No clean option contracts found for the filtered setups.")
-    elif scanner_job_status.get("status") != "running":
-        st.info("No scanner results yet. Run the IBKR scanner once and the results will stay here while you navigate.")
+        if (isinstance(stock_df, pd.DataFrame) and not stock_df.empty) or (isinstance(option_df, pd.DataFrame) and not option_df.empty):
+            st.markdown("### Last Scanner Results")
+            last_run = scanner_job_status.get("finished_at") or scanner_job_status.get("started_at")
+            if last_run:
+                st.caption(f"Last scan: {last_run}")
+            card_source = option_df if isinstance(option_df, pd.DataFrame) and not option_df.empty else stock_df
+            if isinstance(card_source, pd.DataFrame) and not card_source.empty:
+                card_cols = st.columns(min(2, len(card_source)))
+                for idx, (_, row) in enumerate(card_source.head(4).iterrows()):
+                    with card_cols[idx % len(card_cols)]:
+                        setup_card(row.to_dict())
+            with st.expander("Stock Results", expanded=True):
+                st.dataframe(stock_df, use_container_width=True)
+            with st.expander("Option Ideas", expanded=isinstance(option_df, pd.DataFrame) and not option_df.empty):
+                if isinstance(option_df, pd.DataFrame) and not option_df.empty:
+                    st.dataframe(option_df, use_container_width=True)
+                    st.download_button("Download option ideas", option_df.to_csv(index=False), "option_ideas.csv", "text/csv", key="download_persisted_option_ideas")
+                else:
+                    st.info("No clean option contracts found for the filtered setups.")
+        elif scanner_job_status.get("status") != "running":
+            st.info("No scanner results yet. Run the IBKR scanner once and the results will stay here while you navigate.")
 
-elif selected_page == "🔍 Breakdown":
-    st.subheader("Ticker Breakdown")
-    ticker = st.text_input("Ticker", value="").strip().upper()
-    if st.button("Analyze Ticker"):
-        try:
-            ib = connect_ib(ib_cfg)
-            breakdown = scan_symbol_ib(ib, ticker, bool(cfg["strategy"].get("use_rvol_score", False)))
-            if not breakdown:
-                st.error("No breakdown available.")
-            else:
-                left, right = st.columns([2, 1])
-                with left:
+    with breakdown_col:
+        st.subheader("Ticker Breakdown")
+        st.caption("Analyze one ticker using the same scanner logic.")
+        ticker = st.text_input("Ticker", value="", label_visibility="collapsed").strip().upper()
+        if st.button("Analyze Ticker", use_container_width=True):
+            try:
+                ib = connect_ib(ib_cfg)
+                breakdown = scan_symbol_ib(ib, ticker, bool(cfg["strategy"].get("use_rvol_score", False)))
+                if not breakdown:
+                    st.error("No breakdown available.")
+                else:
                     st.plotly_chart(make_chart(ticker, breakdown), use_container_width=True)
-                    st.dataframe(pd.DataFrame([clean_for_table(breakdown)]), use_container_width=True)
-                with right:
-                    st.metric("Signal", signal_badge(breakdown["Signal"]))
-                    st.metric("Score", breakdown["Score"])
-                    st.metric("Confidence", breakdown["Confidence"])
-                    st.metric("RVOL", breakdown["RVOL"])
+                    b1, b2, b3, b4 = st.columns(4)
+                    b1.metric("Signal", signal_badge(breakdown["Signal"]))
+                    b2.metric("Score", breakdown["Score"])
+                    b3.metric("Confidence", breakdown["Confidence"])
+                    b4.metric("RVOL", breakdown["RVOL"])
                     st.write("Why:")
                     for reason in breakdown["Reasons"].split(" | "):
                         st.write(f"✓ {reason}")
-        except Exception as e:
-            st.error(f"Analysis failed: {e}")
-            st.caption("Technical details are hidden in the dashboard. Check the terminal/log files if needed.")
+                    st.dataframe(pd.DataFrame([clean_for_table(breakdown)]), use_container_width=True)
+            except Exception as e:
+                st.error(f"Analysis failed: {e}")
+                st.caption("Technical details are hidden in the dashboard. Check the terminal/log files if needed.")
 
 elif selected_page == "💼 Positions":
     start_telegram_decision_worker()

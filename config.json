@@ -38,10 +38,10 @@
     "first_signal_minutes": 15
   },
   "risk": {
-    "account_size": 100000,
+    "account_size": 10000,
     "max_trades_per_day": 2,
-    "max_spend_per_trade": 20000,
-    "max_daily_capital": 40000,
+    "max_spend_per_trade": 3000,
+    "max_daily_capital": 5000,
     "max_contracts": 20,
     "stop_loss_pct": 20.0,
     "take_profit_pct": 30.0,

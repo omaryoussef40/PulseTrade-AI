@@ -246,14 +246,14 @@ def render_catalyst_html(catalyst: TickerCatalyst | None) -> str:
     cats = ", ".join(catalyst.categories[:2]) if catalyst.categories else "news"
     cats = html.escape(cats)
     url = html.escape(catalyst.url, quote=True)
-    open_link = f"<a href='{url}' target='_blank' style='color:rgba(250,250,250,.75); text-decoration:none;'>Open</a>" if url else ""
+    open_link = f"<a href='{url}' target='_blank' style='color:#075985; text-decoration:none; font-weight:700;'>Open</a>" if url else ""
 
     return (
-        f"<div style='margin-top:10px; padding:10px 11px; border-left:4px solid {border}; "
-        f"background:rgba(255,255,255,0.045); border-radius:12px;'>"
-        f"<div style='font-size:.76rem; color:rgba(250,250,250,.70); font-weight:700;'>🔥 {label} • Impact {int(catalyst.impact_score)} • {age}</div>"
-        f"<div style='font-size:.82rem; line-height:1.25; margin-top:4px; color:rgba(250,250,250,.88);'>{headline}</div>"
-        f"<div style='font-size:.72rem; color:rgba(250,250,250,.55); margin-top:5px;'>{cats} {open_link}</div>"
+        f"<div style='margin-top:8px; padding:8px 9px; border-left:4px solid {border}; "
+        f"background:rgba(255,255,255,0.72); border:1px solid rgba(31,41,55,0.12); border-radius:8px;'>"
+        f"<div style='font-size:.68rem; color:#374151; font-weight:800;'>Catalyst • Impact {int(catalyst.impact_score)} • {age}</div>"
+        f"<div style='font-size:.74rem; line-height:1.25; margin-top:4px; color:#111827; font-weight:650;'>{headline}</div>"
+        f"<div style='font-size:.66rem; color:#4b5563; margin-top:5px;'>{cats} {open_link}</div>"
         f"</div>"
     )
 
