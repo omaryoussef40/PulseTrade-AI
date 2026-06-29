@@ -6714,3 +6714,1530 @@ requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', po
 2026-06-25T20:40:05.955846+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
 2026-06-25T20:40:36.567903+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
 2026-06-25T20:41:07.136363+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+
+--- Starting PulseTrade AI news engine ---
+2026-06-28T06:17:33.257598+00:00 | INFO | News engine started.
+2026-06-28T06:17:35.986784+00:00 | INFO | Poll complete | seen=25 inserted=25 duplicates=0 hits=16 alerts=5
+2026-06-28T06:18:06.522995+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:18:37.220955+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:19:07.883134+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:19:38.006346+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:20:08.107223+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:20:38.206236+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:21:08.570656+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:21:38.684142+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:22:08.793877+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:22:38.883350+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:23:08.989083+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:23:39.094742+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:24:09.181842+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:24:39.288989+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:25:09.495918+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:25:39.609393+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:26:09.700400+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:26:39.814536+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:27:09.946552+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:27:40.122375+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:28:10.210002+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:28:40.328923+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T06:29:10.415438+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T07:20:16.929489+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 294, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+http.client.RemoteDisconnected: Remote end closed connection without response
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 38, in reraise
+    raise value.with_traceback(tb)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 294, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+urllib3.exceptions.ProtocolError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 711, in send
+    raise ConnectionError(err, request=request)
+requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+2026-06-28T07:29:58.422682+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T08:19:09.396209+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 294, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+http.client.RemoteDisconnected: Remote end closed connection without response
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 38, in reraise
+    raise value.with_traceback(tb)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 294, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+urllib3.exceptions.ProtocolError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 711, in send
+    raise ConnectionError(err, request=request)
+requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+2026-06-28T08:30:55.541789+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T09:31:33.515263+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T09:32:04.239980+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T09:58:52.719841+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T10:17:14.862474+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T11:33:26.379625+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 294, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+http.client.RemoteDisconnected: Remote end closed connection without response
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 38, in reraise
+    raise value.with_traceback(tb)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 294, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+urllib3.exceptions.ProtocolError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 711, in send
+    raise ConnectionError(err, request=request)
+requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+2026-06-28T11:33:57.193773+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T12:34:39.223009+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T12:35:09.632644+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T13:34:46.818608+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T14:27:14.101182+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T14:36:03.004300+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T15:36:30.416497+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T15:37:00.554025+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T16:03:19.417183+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T16:52:48.251930+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T17:38:07.233392+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T18:11:38.705166+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T18:12:09.283323+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T18:12:43.625284+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T18:13:18.841769+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T18:13:49.131471+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T18:39:06.368150+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T19:11:50.927615+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T19:12:21.896359+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T19:12:59.674228+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T19:39:50.249919+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T19:40:20.595523+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T20:40:49.352219+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T20:41:19.789354+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T21:42:01.978295+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T21:59:32.618629+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T22:00:03.347689+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T22:42:58.402176+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T22:59:38.898958+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T23:00:09.044128+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T23:20:40.521976+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-28T23:35:22.008586+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T23:35:52.522508+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-28T23:44:12.917822+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-29T00:44:40.374434+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T00:45:10.534933+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T01:01:35.292506+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-29T01:39:33.612802+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T01:40:03.804284+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T01:45:49.830543+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T01:46:19.980191+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T02:25:00.343696+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-29T02:46:45.652045+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T02:47:15.799680+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T02:56:09.036207+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-29T02:56:39.770364+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T02:57:10.420853+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T02:57:41.041699+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T02:58:11.572258+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T02:58:42.236810+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T02:59:12.793163+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T02:59:43.311957+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:00:13.985312+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:00:44.649586+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:01:18.834236+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:01:48.947493+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:02:19.055225+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:02:49.175006+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:03:19.282731+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:03:49.411889+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:04:19.529682+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:04:49.650481+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:05:20.192571+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:05:50.710824+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:06:21.236935+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
