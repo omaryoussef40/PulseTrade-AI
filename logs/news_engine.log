@@ -9885,5 +9885,702 @@ requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', po
 2026-06-29T03:05:20.382774+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
 2026-06-29T03:05:50.710824+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
 2026-06-29T03:05:50.964641+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
-2026-06-29T03:06:21.236271+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
-2026-06-29T03:06:21.236935+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:14:33.598234+00:00 | INFO | News engine started.
+2026-06-29T03:14:33.970305+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:15:04.106989+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:15:28.028625+00:00 | INFO | News engine started.
+2026-06-29T03:15:29.151808+00:00 | INFO | Poll complete | seen=25 inserted=1 duplicates=24 hits=1 alerts=1
+2026-06-29T03:15:59.709406+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:16:30.229614+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:17:00.922993+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:17:31.575925+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:18:02.100913+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:18:32.663544+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:19:03.296680+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:19:33.840803+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:20:04.377007+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:20:34.882213+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:21:05.383334+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:21:35.886195+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:22:06.525754+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:22:37.021923+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:23:07.535118+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:23:38.169706+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:24:08.896008+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:24:39.613160+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:25:10.276068+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:25:40.780812+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:26:11.366123+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:26:41.894214+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:27:12.533140+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:27:43.075088+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:28:13.675017+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:28:44.183226+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:29:14.875451+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:29:45.480317+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:30:16.133864+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:30:46.671247+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:31:17.425308+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:31:47.961685+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:32:18.640325+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:32:49.406973+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:33:20.114581+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:33:50.817402+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:34:21.357506+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:34:52.093487+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:35:22.808238+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:35:53.467457+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:36:24.232207+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:36:54.439684+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:37:25.051449+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:37:55.602152+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:38:26.284041+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:38:56.777627+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:39:27.321445+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:39:57.902373+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:40:28.573441+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:40:59.328767+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:41:30.005810+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:42:00.603047+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:42:31.283409+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:43:01.653730+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:43:32.170779+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:44:02.698089+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:44:33.368079+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:45:03.906658+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:45:34.575993+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:46:05.184575+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:46:35.716891+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:47:06.455528+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:47:37.103352+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:48:07.634194+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:48:38.296629+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:49:08.822672+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:49:39.504667+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:50:09.910030+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:50:40.434685+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:51:11.074796+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:51:41.576826+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:52:12.103768+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:52:42.768963+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:53:13.214130+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:53:43.826772+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:54:14.615731+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:54:44.870902+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:55:15.419842+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:55:45.944420+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:56:16.644058+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:56:47.308015+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:57:18.007507+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:57:48.534240+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:58:19.105517+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:58:49.639361+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:59:20.177045+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T03:59:50.849901+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:00:21.402706+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:00:51.942682+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:01:22.476099+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:01:53.015611+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:02:23.551021+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:02:54.125923+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:03:24.740128+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:03:55.274719+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:04:25.800936+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:04:56.435652+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:05:26.934098+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:05:57.439730+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:06:28.091045+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:06:58.698573+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:07:29.217287+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:07:59.642742+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:08:30.165638+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:09:00.698462+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:09:31.313539+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:10:01.681438+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:10:32.213789+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:11:02.825512+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:11:33.386728+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:12:04.163993+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:12:34.764580+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:13:05.332337+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:13:35.858221+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:14:06.414950+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:14:36.933881+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:15:07.477910+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:15:38.197788+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:16:08.846016+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:16:39.461332+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:17:10.114017+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:17:40.812370+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:18:11.468635+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:18:42.117464+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:19:12.766837+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:19:43.426129+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:20:14.125690+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:20:44.291627+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:21:15.106890+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:21:45.758805+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:22:16.463433+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:22:47.011385+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:23:17.905255+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:23:48.566198+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:24:19.228622+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:24:49.747995+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:25:20.266328+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:25:50.796258+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:26:21.328743+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:26:51.980619+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:27:22.630849+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:27:53.195247+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:28:23.750202+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:28:54.394471+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:29:25.106524+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:29:55.783926+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:30:26.483662+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:30:57.158960+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:31:27.833625+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:31:58.511235+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:32:29.108012+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:32:59.639283+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:33:30.518511+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:34:00.657149+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:34:31.306303+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:35:01.865660+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:35:32.384353+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:36:02.921777+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:36:33.447998+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:37:04.066910+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:37:34.843747+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:38:05.708506+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:38:36.232702+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:39:06.926734+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:39:37.468061+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:40:08.041413+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:40:38.568783+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:41:09.223978+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:41:39.779318+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:42:10.310556+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:42:40.843732+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:43:11.366299+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:43:41.985772+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:44:12.534031+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:44:43.054556+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:45:13.773699+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:45:44.303896+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:46:14.995698+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:46:45.607827+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:47:16.263353+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T04:47:46.788740+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T06:09:54.512370+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 294, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+http.client.RemoteDisconnected: Remote end closed connection without response
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 38, in reraise
+    raise value.with_traceback(tb)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 294, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+urllib3.exceptions.ProtocolError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 711, in send
+    raise ConnectionError(err, request=request)
+requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+
+2026-06-29T06:49:02.966190+00:00 | INFO | Poll complete | seen=25 inserted=3 duplicates=22 hits=2 alerts=1
+2026-06-29T06:49:33.535419+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:16:11.631195+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-29T07:16:42.375807+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:17:12.994086+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:17:43.513271+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:18:14.039016+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:18:44.599662+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:19:15.113162+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:19:45.643957+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:20:16.303522+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:20:46.969385+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:21:17.562537+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:21:48.312194+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:22:18.911761+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:22:49.776974+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:23:20.316972+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:23:51.101521+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:24:21.716272+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:24:52.385306+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:25:22.938875+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:25:53.683309+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:26:24.400830+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:26:55.014640+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:27:25.761562+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:27:56.348436+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:28:26.948511+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:28:57.702809+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:29:28.375399+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:29:58.684741+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:30:29.369630+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:30:59.886958+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:31:30.413413+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:32:00.939981+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:32:31.468084+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:33:02.088473+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:33:32.627274+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:34:03.319451+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:34:34.113072+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:35:04.645326+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:35:35.289005+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:36:05.815840+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:36:36.532613+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:37:07.212247+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:37:37.872798+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:38:08.556900+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:38:39.195843+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:39:09.939088+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:39:40.395475+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:40:10.990817+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:40:41.512129+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:41:12.089820+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:41:42.612470+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:42:13.236259+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:42:43.757145+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:43:14.295028+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:43:45.001817+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:44:15.516074+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:44:46.040069+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:45:16.567096+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:45:47.252201+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:46:21.450728+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:46:51.979347+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:47:22.508957+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:47:53.145990+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:48:23.808608+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:48:54.544969+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:49:25.391663+00:00 | INFO | Poll complete | seen=25 inserted=1 duplicates=24 hits=1 alerts=1
+2026-06-29T07:49:55.916245+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:50:26.649756+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:50:57.320515+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:51:30.903046+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:52:01.043937+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:52:31.180848+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:53:01.313817+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:53:31.462891+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:54:01.605598+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:54:33.585806+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:55:03.733030+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:55:33.875781+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:56:04.420034+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:56:35.152259+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:57:05.682283+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:57:36.234931+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:58:06.846780+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:58:37.401605+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:59:07.947712+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T07:59:38.494682+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:00:09.065747+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:00:41.475278+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:01:11.629635+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:01:42.173349+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:02:12.459645+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:02:43.065424+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:03:13.810939+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:03:44.347920+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:04:14.893565+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:04:45.605960+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:05:16.340572+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:05:46.903853+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:06:17.439398+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:06:48.063794+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:07:18.779006+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:07:49.468751+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:08:20.145412+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:08:50.688182+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:09:21.256967+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:09:51.902311+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:10:22.516040+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:10:53.078180+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:11:23.737862+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:11:54.638962+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:12:25.110215+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:12:56.023373+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:13:26.480065+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:13:57.010520+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:14:27.593219+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:14:58.140411+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:15:28.694949+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:15:59.236541+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:16:29.941034+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:17:00.502503+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:17:31.038090+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:18:01.576118+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:18:32.117875+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:19:02.656289+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:19:33.196813+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:20:03.743115+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:20:34.275427+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:21:04.907814+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:21:35.455935+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:22:06.089517+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:22:36.645564+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:23:07.675284+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:23:38.226184+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:24:08.880056+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:24:39.613295+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:25:10.416744+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:25:40.979820+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:26:11.606056+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:26:42.222636+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:27:12.749812+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:27:43.366402+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:28:14.093587+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:28:44.612271+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:29:15.553499+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:29:46.096898+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:30:16.638009+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:30:47.354072+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:31:17.897107+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:31:48.429020+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:32:18.984407+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:32:49.518507+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:33:20.153457+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:33:50.538221+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:34:21.080445+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:34:51.619660+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:35:22.172874+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:35:52.718026+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:36:23.250463+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:36:53.778741+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:37:24.321334+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:50:33.827054+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-29T08:51:04.573046+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:51:35.118878+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:52:05.678181+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:52:36.336506+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:53:06.816761+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:53:37.365139+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:54:07.981450+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:54:38.594536+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:55:09.142417+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:55:39.871225+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:56:10.492405+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:56:41.122422+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:57:11.675585+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:57:42.215320+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:58:12.758873+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:58:43.293569+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:59:13.853187+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T08:59:44.403278+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:00:14.943584+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:00:45.480792+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:01:16.228968+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:01:46.816109+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:02:17.369768+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:02:47.999677+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:03:18.721266+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:03:49.258055+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:04:19.901446+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:04:50.442658+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:05:20.988827+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:05:51.537831+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:06:22.083905+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:06:52.737951+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:07:45.020262+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:19:28.181102+00:00 | ERROR | News poll failed:
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 325, in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/client.py", line 286, in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 706, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1314, in recv_into
+    return self.read(nbytes, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/ssl.py", line 1166, in read
+    return self._sslobj.read(len, buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 696, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+              ^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/retry.py", line 498, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/util/util.py", line 39, in reraise
+    raise value
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 536, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py", line 367, in _raise_timeout
+    raise ReadTimeoutError(
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 703, in poll_once
+    raw_items = self.client.fetch_news(
+                ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/modules/news_engine.py", line 568, in fetch_news
+    response = self.session.get(BENZINGA_NEWS_URL, params=params, timeout=self.timeout_seconds)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 671, in get
+    return self.request("GET", url, params=params, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 651, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/sessions.py", line 784, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/omaryoussef/Downloads/PULSETRADE/PulseTrade-AI/.venv/lib/python3.11/site-packages/requests/adapters.py", line 742, in send
+    raise ReadTimeout(e, request=request)
+requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.benzinga.com', port=443): Read timed out. (read timeout=15)
+
+2026-06-29T09:19:59.991731+00:00 | INFO | Poll complete | seen=25 inserted=2 duplicates=23 hits=1 alerts=1
+2026-06-29T09:20:30.947446+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:21:01.567485+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:21:32.255289+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:22:02.832435+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:22:33.410188+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:23:04.269618+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:23:36.191639+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:24:07.112025+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:24:37.676549+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:25:08.296927+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:25:39.672737+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:26:10.673291+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:26:41.846873+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:27:13.005817+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:27:44.200512+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:28:14.917760+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:28:45.091149+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:29:15.219489+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:29:45.386570+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:30:16.317230+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:30:46.981836+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:31:18.081460+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:31:48.854003+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:32:19.019213+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:32:49.165120+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:33:19.728074+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:33:50.343448+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0
+2026-06-29T09:34:21.107180+00:00 | INFO | Poll complete | seen=25 inserted=0 duplicates=25 hits=0 alerts=0

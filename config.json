@@ -57,10 +57,10 @@
     "type": "LIMIT"
   },
   "watchlist": [
-    "AAPL",
-    "AMZN",
     "NVDA",
+    "AAPL",
     "MSFT",
+    "AMZN",
     "TSLA",
     "AMD",
     "MU",
@@ -74,10 +74,10 @@
   },
   "strategy_lab": {
     "symbols": [
-      "AAPL",
-      "AMZN",
       "NVDA",
+      "AAPL",
       "MSFT",
+      "AMZN",
       "TSLA",
       "AMD",
       "MU",
@@ -87,16 +87,19 @@
       "PMB"
     ],
     "period": "30d",
-    "interval": "5m",
+    "interval": "30m",
     "max_symbols": 10,
-    "force_refresh": true,
-    "data_source": "IBKR",
-    "orb_minutes": 15,
-    "first_signal_minutes": 15,
-    "min_session_bars": 4,
+    "force_refresh": false,
+    "data_source": "Yahoo",
+    "orb_minutes": 30,
+    "first_signal_minutes": 30,
+    "min_session_bars": 7,
     "visual_updates": true,
     "premium_pct_ui": 0.25,
     "slippage_pct": 2.0,
     "allow_same_symbol": true
+  },
+  "dashboard": {
+    "auto_start_engines": true
   }
 }

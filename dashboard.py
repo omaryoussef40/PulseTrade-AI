@@ -529,6 +529,11 @@ def save_and_rerun(new_cfg: dict):
     save_config(new_cfg)
 
 
+def dashboard_auto_start_enabled(config: dict) -> bool:
+    dashboard_cfg = config.get("dashboard", {}) if isinstance(config.get("dashboard", {}), dict) else {}
+    return bool(dashboard_cfg.get("auto_start_engines", False))
+
+
 def render_platform_settings():
     st.markdown("### Platform Settings")
     st.caption("These settings were previously in the left control panel. They now live here so the sidebar can be used only for navigation.")
@@ -536,7 +541,9 @@ def render_platform_settings():
     st.header("Control Panel")
 
     with st.expander("Automation Safety", expanded=False):
+        dashboard_cfg = cfg.setdefault("dashboard", {})
         cfg["account_mode"] = st.radio("Trading account mode", ["Simulation", "Paper", "Live"], index=["Simulation", "Paper", "Live"].index(cfg.get("account_mode", "Simulation")), horizontal=True)
+        dashboard_cfg["auto_start_engines"] = st.checkbox("Auto-start engine/news from dashboard", value=dashboard_auto_start_enabled(cfg))
         cfg["automation"]["enabled"] = st.checkbox("Enable engine automation", value=bool(cfg["automation"].get("enabled", False)))
         cfg["automation"]["place_orders"] = st.checkbox("Allow engine to place orders", value=bool(cfg["automation"].get("place_orders", False)))
         cfg["automation"]["confirm_order_risk"] = st.checkbox("I understand this can place IBKR orders", value=bool(cfg["automation"].get("confirm_order_risk", False)))
@@ -565,6 +572,16 @@ def render_platform_settings():
 
     with st.expander("Trade Management", expanded=False):
         r = cfg["risk"]
+        s = cfg["strategy"]
+        current_orb_minutes = int(s.get("orb_minutes", 15))
+        if current_orb_minutes not in [15, 30]:
+            current_orb_minutes = 15
+        s["orb_minutes"] = st.selectbox(
+            "ORB window",
+            [15, 30],
+            index=[15, 30].index(current_orb_minutes),
+            format_func=lambda minutes: f"{minutes} minutes",
+        )
         r["stop_loss_pct"] = st.number_input("Option stop loss %", value=float(r.get("stop_loss_pct", 20.0)), min_value=1.0, max_value=90.0, step=1.0)
         r["take_profit_pct"] = st.number_input("Option take profit %", value=float(r.get("take_profit_pct", 30.0)), min_value=1.0, max_value=300.0, step=1.0)
         r["breakeven_trigger_pct"] = st.number_input("Move stop to breakeven at +%", value=float(r.get("breakeven_trigger_pct", 15.0)), min_value=1.0, max_value=200.0, step=1.0)
@@ -670,16 +687,41 @@ ib_cfg = IBConfig(
 tg_cfg = TelegramConfig(bot_token=cfg["telegram"].get("bot_token", ""), chat_id=cfg["telegram"].get("chat_id", ""))
 symbols = cfg.get("watchlist", WATCHLIST)
 
-# Read recent Benzinga catalysts once per dashboard refresh.
-# This is UI-only and does not affect order placement.
-try:
-    NEWS_CATALYSTS = get_catalyst_map(symbols, min_impact=70, lookback_hours=24) if get_catalyst_map else {}
-except Exception:
-    NEWS_CATALYSTS = {}
+@st.cache_data(ttl=180, show_spinner=False)
+def cached_catalyst_map(symbols_key: tuple[str, ...], min_impact: int = 70, lookback_hours: int = 24) -> dict:
+    if get_catalyst_map is None:
+        return {}
+    try:
+        return get_catalyst_map(list(symbols_key), min_impact=min_impact, lookback_hours=lookback_hours)
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def cached_socket_ping(host: str, port: int, timeout_seconds: float) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout_seconds):
+            return True
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def cached_account_summary(host: str, port: int, client_id: int, account: str | None, readonly: bool) -> dict:
+    summary_cfg = IBConfig(host=host, port=port, client_id=client_id, account=account, readonly=readonly)
+    return fetch_ibkr_account_summary_dict(summary_cfg)
+
+
+# News catalysts are used only on scanner cards. Loading them for every page
+# caused repeated SQLite work on normal navigation.
+NEWS_CATALYSTS = {}
+if selected_page == "📈 Scanner & Breakdown":
+    symbols_key = tuple(str(symbol).strip().upper() for symbol in symbols if str(symbol).strip())
+    NEWS_CATALYSTS = cached_catalyst_map(symbols_key, min_impact=70, lookback_hours=24)
 
 health = read_health()
 
-def live_ibkr_ping(ib_cfg: IBConfig, timeout_seconds: float = 1.5) -> bool:
+def live_ibkr_ping(ib_cfg: IBConfig, timeout_seconds: float = 0.4) -> bool:
     """Fast dashboard-safe IBKR socket check.
 
     This intentionally does not call ib_insync/connect_ib from Streamlit, because
@@ -687,11 +729,7 @@ def live_ibkr_ping(ib_cfg: IBConfig, timeout_seconds: float = 1.5) -> bool:
     Streamlit runtime. A successful socket connection means TWS/IB Gateway is
     listening on the configured host/port now.
     """
-    try:
-        with socket.create_connection((ib_cfg.host, int(ib_cfg.port)), timeout=timeout_seconds):
-            return True
-    except Exception:
-        return False
+    return cached_socket_ping(ib_cfg.host, int(ib_cfg.port), float(timeout_seconds))
 
 health["ib_connected"] = live_ibkr_ping(ib_cfg)
 if not health["ib_connected"]:
@@ -728,7 +766,16 @@ def sync_ibkr_account_status(force: bool = False) -> dict:
         return st.session_state["ibkr_account_summary"]
 
     try:
-        summary = fetch_ibkr_account_summary_dict(ib_cfg)
+        if force:
+            summary = fetch_ibkr_account_summary_dict(ib_cfg)
+        else:
+            summary = cached_account_summary(
+                ib_cfg.host,
+                int(ib_cfg.port),
+                int(ib_cfg.client_id),
+                ib_cfg.account,
+                bool(ib_cfg.readonly),
+            )
         summary["connected"] = True
         summary.setdefault("fetched_at", datetime.now().isoformat(timespec="seconds"))
         st.session_state["ibkr_account_summary"] = summary
@@ -1873,7 +1920,13 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
         ib = connect_ib(scan_ib_cfg)
         for i, symbol in enumerate(scan_symbols):
             try:
-                result = scan_symbol_ib(ib, symbol, bool(scan_cfg["strategy"].get("use_rvol_score", False)))
+                result = scan_symbol_ib(
+                    ib,
+                    symbol,
+                    bool(scan_cfg["strategy"].get("use_rvol_score", False)),
+                    str(scan_cfg["strategy"].get("active_strategy", "pmb")),
+                    int(scan_cfg["strategy"].get("orb_minutes", 15)),
+                )
                 if result:
                     rows.append(clean_for_table(result))
                     if is_top_candidate(
@@ -1947,10 +2000,11 @@ def run_ibkr_scanner_ui(scan_cfg: dict, scan_symbols: list[str]):
 
 
 # Global compact terminal header shown on every page.
-start_trading_engine_once()
-auto_start_news_engine_once()
+if dashboard_auto_start_enabled(cfg):
+    start_trading_engine_once()
+    auto_start_news_engine_once()
 if selected_page == "🏦 Account Status":
-    sync_ibkr_account_status(force=True)
+    sync_ibkr_account_status(force=False)
     schedule_ibkr_reconnect_refresh()
 render_app_header()
 
@@ -2012,7 +2066,13 @@ elif selected_page == "📈 Scanner & Breakdown":
                     readonly=ib_cfg.readonly,
                 )
                 ib = connect_ib(breakdown_ib_cfg)
-                breakdown = scan_symbol_ib(ib, ticker, bool(cfg["strategy"].get("use_rvol_score", False)))
+                breakdown = scan_symbol_ib(
+                    ib,
+                    ticker,
+                    bool(cfg["strategy"].get("use_rvol_score", False)),
+                    str(cfg["strategy"].get("active_strategy", "pmb")),
+                    int(cfg["strategy"].get("orb_minutes", 15)),
+                )
                 if not breakdown:
                     st.error("No breakdown available.")
                 else:
