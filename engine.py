@@ -378,7 +378,17 @@ def run_cycle() -> None:
         app_log(f"Managed open positions | events={len(management_events)}")
 
     consecutive_losses, realized_pnl_today = get_today_loss_stats()
-    max_daily_loss = -abs(float(risk.get("account_size", 1000)) * float(risk.get("max_daily_drawdown_pct", 5.0)) / 100)
+    account_size = max(float(risk.get("account_size", 1000) or 1000), 1.0)
+    max_spend_per_trade = float(risk.get("max_spend_per_trade", 250))
+    max_daily_capital = float(risk.get("max_daily_capital", 500))
+    max_spend_pct = float(risk.get("max_spend_per_trade_pct", 0) or 0)
+    max_daily_capital_pct = float(risk.get("max_daily_capital_pct", 0) or 0)
+    if max_spend_pct > 0:
+        max_spend_per_trade = account_size * max_spend_pct / 100.0
+    if max_daily_capital_pct > 0:
+        max_daily_capital = account_size * max_daily_capital_pct / 100.0
+
+    max_daily_loss = -abs(account_size * float(risk.get("max_daily_drawdown_pct", 5.0)) / 100)
     if consecutive_losses >= int(risk.get("max_consecutive_losses", 2)) or realized_pnl_today <= max_daily_loss:
         app_log(f"Risk lock active | consecutive_losses={consecutive_losses} | pnl={realized_pnl_today}", "WARN")
         can_trade = False
@@ -414,7 +424,7 @@ def run_cycle() -> None:
                 continue
 
             opt = recommend_option_ib(ib, symbol, result["Signal"], result["Price"], int(strategy.get("option_dte", 7)))
-            qty = calculate_contract_quantity(float(opt["Mid"]), float(risk.get("max_spend_per_trade", 250)), int(risk.get("max_contracts", 2))) if opt else 0
+            qty = calculate_contract_quantity(float(opt["Mid"]), max_spend_per_trade, int(risk.get("max_contracts", 2))) if opt else 0
             estimated_cost = round(qty * float(opt["Mid"]) * 100, 2) if opt and qty else 0.0
             option_clean = {k: v for k, v in opt.items() if k != "Contract"} if opt else None
 
@@ -449,7 +459,7 @@ def run_cycle() -> None:
 
     current_trade_count, current_deployed = get_today_trade_stats()
     remaining_trades = max(0, int(risk.get("max_trades_per_day", 2)) - current_trade_count)
-    remaining_capital = max(0.0, float(risk.get("max_daily_capital", 500)) - current_deployed)
+    remaining_capital = max(0.0, max_daily_capital - current_deployed)
     active_symbols = {p.get("symbol") for p in read_active_positions()}
 
     submitted = 0

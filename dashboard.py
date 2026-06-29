@@ -468,6 +468,15 @@ def _money_value(value, currency: str = "USD") -> str:
         return f"{currency} {value}" if value not in [None, ""] else "N/A"
 
 
+def _number_or_none(value) -> float | None:
+    try:
+        if value in [None, ""]:
+            return None
+        return float(str(value).replace(",", ""))
+    except Exception:
+        return None
+
+
 def fetch_ibkr_account_summary(ib_cfg: IBConfig) -> dict:
     """Fetch key account fields directly from IBKR/TWS."""
     ib = connect_ib(ib_cfg)
@@ -561,11 +570,47 @@ def render_platform_settings():
     with st.expander("Position Controls", expanded=False):
         r = cfg["risk"]
         s = cfg["strategy"]
-        r["account_size"] = st.number_input("Account size USD", value=int(r.get("account_size", 1000)), min_value=100, step=100)
+        buying_power = _number_or_none((st.session_state.get("ibkr_account_summary") or {}).get("BuyingPower"))
+        use_buying_power = st.checkbox("Use full IBKR buying power as account size", value=bool(r.get("use_ibkr_buying_power", False)))
+        r["use_ibkr_buying_power"] = bool(use_buying_power)
+        if use_buying_power and buying_power is None:
+            try:
+                summary = cached_account_summary(
+                    ib_cfg.host,
+                    int(ib_cfg.port),
+                    int(ib_cfg.client_id),
+                    ib_cfg.account,
+                    bool(ib_cfg.readonly),
+                )
+                summary["connected"] = True
+                summary.setdefault("fetched_at", datetime.now().isoformat(timespec="seconds"))
+                st.session_state["ibkr_account_summary"] = summary
+                buying_power = _number_or_none(summary.get("BuyingPower"))
+            except Exception as exc:
+                st.caption(f"IBKR buying power is not available yet, using saved account size. {exc}")
+
+        if use_buying_power and buying_power is not None:
+            r["account_size"] = round(float(buying_power), 2)
+            st.number_input("Account size USD", value=float(r["account_size"]), min_value=0.0, step=100.0, disabled=True)
+            st.caption(f"Using IBKR BuyingPower: ${float(buying_power):,.2f}")
+        else:
+            r["account_size"] = st.number_input("Account size USD", value=float(r.get("account_size", 1000)), min_value=100.0, step=100.0)
+
+        account_size = max(float(r.get("account_size", 1000) or 1000), 1.0)
         r["max_trades_per_day"] = st.number_input("Max trades per day", value=int(r.get("max_trades_per_day", 2)), min_value=1, max_value=10, step=1)
         s["top_n_tickers"] = st.number_input("Trade only top N tickers", value=int(s.get("top_n_tickers", 2)), min_value=1, max_value=10, step=1)
-        r["max_spend_per_trade"] = st.number_input("Max amount spent per trade USD", value=int(r.get("max_spend_per_trade", 250)), min_value=50, step=50)
-        r["max_daily_capital"] = st.number_input("Max daily capital used USD", value=int(r.get("max_daily_capital", 500)), min_value=50, step=50)
+        default_trade_pct = float(r.get("max_spend_per_trade_pct", 0) or 0)
+        if default_trade_pct <= 0:
+            default_trade_pct = round(float(r.get("max_spend_per_trade", 250)) / account_size * 100, 2)
+        default_daily_pct = float(r.get("max_daily_capital_pct", 0) or 0)
+        if default_daily_pct <= 0:
+            default_daily_pct = round(float(r.get("max_daily_capital", 500)) / account_size * 100, 2)
+
+        r["max_spend_per_trade_pct"] = st.number_input("Max amount per trade % of account", value=float(default_trade_pct), min_value=0.1, max_value=100.0, step=0.5)
+        r["max_daily_capital_pct"] = st.number_input("Max daily capital % of account", value=float(default_daily_pct), min_value=0.1, max_value=100.0, step=0.5)
+        r["max_spend_per_trade"] = round(account_size * float(r["max_spend_per_trade_pct"]) / 100.0, 2)
+        r["max_daily_capital"] = round(account_size * float(r["max_daily_capital_pct"]) / 100.0, 2)
+        st.caption(f"Calculated limits: ${r['max_spend_per_trade']:,.2f} per trade | ${r['max_daily_capital']:,.2f} max daily capital")
         r["max_contracts"] = st.number_input("Max contracts per trade", value=int(r.get("max_contracts", 2)), min_value=1, max_value=20, step=1)
         today_trade_count, today_deployed_capital = get_today_trade_stats()
         st.caption(f"Today: {today_trade_count} trades | ${today_deployed_capital:,.2f} deployed")

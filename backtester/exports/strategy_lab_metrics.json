@@ -1,1 +1,19 @@
-{}
+{
+  "total_trades": 61,
+  "net_pnl": 19873.5,
+  "ending_equity": 23873.5,
+  "return_pct": 496.84,
+  "win_rate": 44.3,
+  "profit_factor": 2.52,
+  "max_drawdown": -2057.3,
+  "avg_trade": 325.8,
+  "avg_win": 1219.59,
+  "avg_loss": -383.99,
+  "largest_win": 3994.3,
+  "largest_loss": -1678.9,
+  "commissions": 2216.5,
+  "total_decisions": 133,
+  "traded_signals": 61,
+  "rejected_signals": 68,
+  "skipped_signals": 4
+}
