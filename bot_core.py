@@ -43,6 +43,7 @@ try:
         MarketOrder,
         LimitOrder,
         StopOrder,
+        ExecutionFilter,
         util,
     )
     IB_AVAILABLE = True
@@ -215,6 +216,24 @@ def fetch_ibkr_account_summary_dict(cfg: IBConfig) -> dict:
     )
     try:
         return provider.account_summary()
+    finally:
+        provider.disconnect()
+
+
+def fetch_ibkr_positions_list(cfg: IBConfig) -> list[dict]:
+    """Return live broker positions through market_data.py for dashboard display."""
+    provider = IBKRMarketDataProvider(
+        MarketDataConfig(
+            host=cfg.host,
+            port=cfg.port,
+            client_id=cfg.client_id,
+            account=cfg.account,
+            readonly=True,
+            timezone=EASTERN,
+        )
+    )
+    try:
+        return provider.positions()
     finally:
         provider.disconnect()
 
@@ -663,14 +682,199 @@ def place_option_order(
         order.account = account
 
     trade = ib.placeOrder(option_contract, order)
-    ib.sleep(1)
+    for _ in range(8):
+        ib.sleep(1)
+        status = str(getattr(trade.orderStatus, "status", "") or "")
+        filled = float(getattr(trade.orderStatus, "filled", 0) or 0)
+        remaining = float(getattr(trade.orderStatus, "remaining", quantity) or 0)
+        if filled >= quantity or status.lower() in {"filled", "cancelled", "canceled", "apicancelled", "inactive"}:
+            break
+        if filled > 0 and remaining <= 0:
+            break
     return trade
+
+
+def trade_fill_details(trade, requested_quantity: int, fallback_price: float | None = None) -> dict:
+    """Normalize IBKR order status using fills first, then status text."""
+    order_status = getattr(trade, "orderStatus", None)
+    raw_status = str(getattr(order_status, "status", "") or "")
+    filled_qty = float(getattr(order_status, "filled", 0) or 0)
+    remaining_qty = float(getattr(order_status, "remaining", max(int(requested_quantity), 0)) or 0)
+    avg_fill_price = float(getattr(order_status, "avgFillPrice", 0) or 0)
+
+    fills = list(getattr(trade, "fills", []) or [])
+    if fills:
+        fill_qty = 0.0
+        fill_value = 0.0
+        for fill in fills:
+            execution = getattr(fill, "execution", None)
+            shares = float(getattr(execution, "shares", 0) or 0)
+            price = float(getattr(execution, "price", 0) or 0)
+            fill_qty += shares
+            fill_value += shares * price
+        if fill_qty > 0:
+            filled_qty = max(filled_qty, fill_qty)
+            avg_fill_price = fill_value / fill_qty if fill_value else avg_fill_price
+
+    if filled_qty > 0:
+        status = "Filled" if filled_qty >= int(requested_quantity) or remaining_qty <= 0 else "PartiallyFilled"
+    else:
+        status = raw_status or "Submitted"
+
+    if avg_fill_price <= 0 and fallback_price is not None:
+        avg_fill_price = float(fallback_price or 0)
+
+    return {
+        "status": status,
+        "raw_status": raw_status,
+        "filled_qty": int(filled_qty) if float(filled_qty).is_integer() else filled_qty,
+        "remaining_qty": int(remaining_qty) if float(remaining_qty).is_integer() else remaining_qty,
+        "avg_fill_price": round(float(avg_fill_price), 4) if avg_fill_price else None,
+    }
 
 
 def log_trade(row: dict):
     df = pd.DataFrame([row])
     exists = os.path.exists(TRADE_LOG_FILE)
     df.to_csv(TRADE_LOG_FILE, mode="a", index=False, header=not exists)
+
+
+def sync_today_executions_to_trade_log(ib: IB, account: str | None = None) -> tuple[int, str]:
+    """Import today's IBKR executions into the local journal.
+
+    Gateway exposes same-day executions before Flex statements are available.
+    Rows are grouped by option contract and side so partial fills become one
+    entry/exit row in the performance journal.
+    """
+    if not IB_AVAILABLE:
+        return 0, "IBKR API is not available."
+
+    filt = ExecutionFilter()
+    filt.time = datetime.now(EASTERN).strftime("%Y%m%d 00:00:00")
+    if account:
+        filt.acctCode = account
+
+    fills = ib.reqExecutions(filt)
+    if not fills:
+        return 0, "No IBKR executions found for today."
+
+    grouped: dict[tuple, dict] = {}
+    for fill in fills:
+        contract = getattr(fill, "contract", None)
+        execution = getattr(fill, "execution", None)
+        if contract is None or execution is None:
+            continue
+        if account and getattr(execution, "acctNumber", None) and getattr(execution, "acctNumber", None) != account:
+            continue
+
+        symbol = str(getattr(contract, "symbol", "") or "").upper()
+        sec_type = str(getattr(contract, "secType", "") or "").upper()
+        side = str(getattr(execution, "side", "") or "").upper()
+        if not symbol or side not in {"BOT", "BUY", "SLD", "SELL"}:
+            continue
+
+        con_id = getattr(contract, "conId", None)
+        expiry = str(getattr(contract, "lastTradeDateOrContractMonth", "") or "")
+        strike = getattr(contract, "strike", "")
+        right = str(getattr(contract, "right", "") or "").upper()
+        signal = "CALL" if right.startswith("C") else "PUT" if right.startswith("P") else ""
+        local_symbol = str(getattr(contract, "localSymbol", "") or "")
+        option_label = local_symbol or " ".join(x for x in [symbol, expiry, str(strike), signal] if x)
+        event = "ENTRY" if side in {"BOT", "BUY"} else "EXIT"
+        group_side = "BUY" if event == "ENTRY" else "SELL"
+        key = (con_id or option_label, group_side)
+
+        shares = abs(float(getattr(execution, "shares", 0) or 0))
+        price = float(getattr(execution, "price", 0) or 0)
+        exec_time = getattr(execution, "time", None) or datetime.now(EASTERN)
+        if hasattr(exec_time, "astimezone"):
+            exec_time = exec_time.astimezone(EASTERN)
+
+        row = grouped.setdefault(key, {
+            "timestamp": exec_time,
+            "event": event,
+            "source": "IBKR_EXECUTION",
+            "external_id": f"IBKR_EXEC-{datetime.now(EASTERN).date()}-{key[0]}-{group_side}",
+            "symbol": symbol,
+            "signal": signal,
+            "option": option_label,
+            "expiry": expiry,
+            "strike": strike,
+            "con_id": con_id,
+            "quantity": 0.0,
+            "value": 0.0,
+            "exec_ids": [],
+        })
+        row["quantity"] += shares
+        row["value"] += shares * price
+        row["exec_ids"].append(str(getattr(execution, "execId", "")))
+        if exec_time and exec_time < row["timestamp"]:
+            row["timestamp"] = exec_time
+
+    if not grouped:
+        return 0, "No stock/option executions found for today."
+
+    rows = []
+    entry_price_by_contract = {}
+    for key, item in grouped.items():
+        avg_price = item["value"] / item["quantity"] if item["quantity"] else 0.0
+        if item["event"] == "ENTRY":
+            entry_price_by_contract[key[0]] = avg_price
+        rows.append(item | {
+            "timestamp": item["timestamp"].isoformat() if hasattr(item["timestamp"], "isoformat") else str(item["timestamp"]),
+            "quantity": int(item["quantity"]) if float(item["quantity"]).is_integer() else item["quantity"],
+            "filled_quantity": int(item["quantity"]) if float(item["quantity"]).is_integer() else item["quantity"],
+            "entry_price": round(avg_price, 4) if item["event"] == "ENTRY" else None,
+            "exit_price": round(avg_price, 4) if item["event"] == "EXIT" else None,
+            "limit_price": round(avg_price, 4) if item["event"] == "ENTRY" else None,
+            "realized_pnl": 0.0,
+            "status": "Filled",
+            "broker_status": "Execution",
+            "exec_ids": ",".join(item["exec_ids"]),
+        })
+
+    for row in rows:
+        if row["event"] != "EXIT":
+            continue
+        entry_price = entry_price_by_contract.get((row.get("con_id") or row.get("option")))
+        if entry_price:
+            row["entry_price"] = round(float(entry_price), 4)
+            row["realized_pnl"] = round((float(row["exit_price"]) - float(entry_price)) * float(row["quantity"]) * 100, 2)
+
+    path = _Path(TRADE_LOG_FILE)
+    existing = pd.read_csv(path) if path.exists() else pd.DataFrame()
+    existing_ids = set(existing.get("external_id", pd.Series(dtype=str)).dropna().astype(str).tolist()) if not existing.empty else set()
+    imported = 0
+    new_rows = []
+
+    for row in rows:
+        if row["external_id"] in existing_ids:
+            continue
+        if not existing.empty and row["event"] == "ENTRY" and "timestamp" in existing.columns:
+            existing_ts = pd.to_datetime(existing["timestamp"], errors="coerce")
+            same_day = existing_ts.dt.date == datetime.now(EASTERN).date()
+            same_symbol = existing.get("symbol", pd.Series(dtype=str)).astype(str).str.upper() == row["symbol"]
+            same_event = existing.get("event", pd.Series(dtype=str)).astype(str).str.upper() == "ENTRY"
+            matches = existing[same_day & same_symbol & same_event].index
+            if len(matches):
+                idx = matches[-1]
+                for col, value in row.items():
+                    if col in {"value"}:
+                        continue
+                    existing.loc[idx, col] = value
+                imported += 1
+                existing_ids.add(row["external_id"])
+                continue
+        new_rows.append({k: v for k, v in row.items() if k != "value"})
+        imported += 1
+        existing_ids.add(row["external_id"])
+
+    combined = pd.concat([existing, pd.DataFrame(new_rows)], ignore_index=True, sort=False) if new_rows else existing
+    if not combined.empty and "timestamp" in combined.columns:
+        combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
+        combined = combined.dropna(subset=["timestamp"]).sort_values("timestamp")
+    combined.to_csv(path, index=False)
+    return imported, f"IBKR executions grouped={len(rows)} imported_or_updated={imported}"
 
 
 def read_active_positions() -> list[dict]:
@@ -687,6 +891,11 @@ def read_active_positions() -> list[dict]:
 def write_active_positions(positions: list[dict]):
     with open(ACTIVE_POSITIONS_FILE, "w") as f:
         json.dump(positions, f, indent=2, default=str)
+
+
+def is_filled_order_status(status: str) -> bool:
+    """Return True only when an entry order created a real broker position."""
+    return str(status or "").strip().lower() in {"filled", "partiallyfilled", "partially filled"}
 
 
 def get_today_loss_stats() -> tuple[int, float]:
@@ -732,6 +941,104 @@ def reconstruct_option_contract(pos: dict):
     if pos.get("con_id"):
         contract.conId = int(pos["con_id"])
     return contract
+
+
+def _position_matches_broker_position(pos: dict, broker_pos) -> bool:
+    contract = getattr(broker_pos, "contract", None)
+    if contract is None:
+        return False
+
+    pos_con_id = pos.get("con_id")
+    broker_con_id = getattr(contract, "conId", None)
+    if pos_con_id and broker_con_id and int(pos_con_id) == int(broker_con_id):
+        return True
+
+    right = "C" if str(pos.get("signal", "")).upper() == "CALL" else "P"
+    return (
+        str(getattr(contract, "symbol", "")).upper() == str(pos.get("symbol", "")).upper()
+        and str(getattr(contract, "lastTradeDateOrContractMonth", "")) == str(pos.get("expiry", ""))
+        and float(getattr(contract, "strike", 0) or 0) == float(pos.get("strike", 0) or 0)
+        and str(getattr(contract, "right", "")).upper() == right
+    )
+
+
+def reconcile_active_positions_with_broker(ib: IB, account: str | None = None, log_closures: bool = True) -> list[dict]:
+    """Remove or resize bot-managed positions that no longer exist at IBKR.
+
+    This protects against duplicate exits when a user manually closes a bot
+    position from TWS/IBKR before the dashboard or engine sees it.
+    """
+    local_positions = read_active_positions()
+    if not local_positions:
+        return []
+
+    broker_positions = []
+    for broker_pos in ib.positions():
+        if account and getattr(broker_pos, "account", None) != account:
+            continue
+        try:
+            if float(getattr(broker_pos, "position", 0) or 0) != 0:
+                broker_positions.append(broker_pos)
+        except Exception:
+            continue
+
+    reconciled = []
+    events = []
+    for pos in local_positions:
+        entry_status = str(pos.get("entry_status", ""))
+        if entry_status and not is_filled_order_status(entry_status):
+            events.append({
+                "Symbol": pos.get("symbol"),
+                "Option": pos.get("option"),
+                "Action": "REMOVED",
+                "Reason": "Entry order was not filled",
+                "Status": entry_status,
+            })
+            continue
+
+        matches = [bp for bp in broker_positions if _position_matches_broker_position(pos, bp)]
+        broker_qty = sum(float(getattr(bp, "position", 0) or 0) for bp in matches)
+        local_qty = int(pos.get("quantity", 0) or 0)
+
+        if broker_qty <= 0:
+            events.append({
+                "Symbol": pos.get("symbol"),
+                "Option": pos.get("option"),
+                "Action": "REMOVED",
+                "Reason": "Position not found at IBKR",
+                "Status": "Closed manually or no broker position exists",
+            })
+            if log_closures:
+                log_trade({
+                    "timestamp": datetime.now(EASTERN).isoformat(),
+                    "event": "EXTERNAL_CLOSE",
+                    "symbol": pos.get("symbol"),
+                    "signal": pos.get("signal"),
+                    "option": pos.get("option"),
+                    "quantity": local_qty,
+                    "exit_reason": "Position not found at IBKR",
+                    "entry_price": pos.get("entry_price"),
+                    "exit_price": None,
+                    "realized_pnl": 0.0,
+                    "status": "Closed manually or removed during broker reconciliation",
+                })
+            continue
+
+        if local_qty > 0 and broker_qty < local_qty:
+            pos["quantity"] = int(abs(broker_qty))
+            events.append({
+                "Symbol": pos.get("symbol"),
+                "Option": pos.get("option"),
+                "Action": "RESIZED",
+                "Reason": "IBKR position quantity is lower than bot record",
+                "Local Qty": local_qty,
+                "Broker Qty": int(abs(broker_qty)),
+            })
+        reconciled.append(pos)
+
+    if len(reconciled) != len(local_positions) or events:
+        write_active_positions(reconciled)
+    return events
 
 
 def submit_exit_order(
@@ -781,6 +1088,9 @@ def submit_exit_order(
 
 
 def add_active_position_from_entry(row: dict, option_full: dict, qty: int, entry_price: float, trade_status: str):
+    if not is_filled_order_status(trade_status):
+        return
+
     contract = option_full["Contract"]
     positions = read_active_positions()
     position_id = f"{row['Symbol']}-{option_full['Expiry']}-{option_full['Strike']}-{option_full['Type']}-{datetime.now(EASTERN).strftime('%Y%m%d%H%M%S')}"
@@ -821,9 +1131,14 @@ def manage_open_positions(
     if not positions:
         return []
 
+    reconciliation_events = reconcile_active_positions_with_broker(ib, account=account, log_closures=True)
+    positions = read_active_positions()
+    if not positions:
+        return reconciliation_events
+
     now_et = datetime.now(EASTERN)
     still_active = []
-    events = []
+    events = list(reconciliation_events)
 
     for pos in positions:
         try:
@@ -1150,9 +1465,11 @@ def default_config() -> dict:
         "telegram": {"bot_token": "", "chat_id": "", "send_alerts": False},
         "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 60, "market_timezone": "America/New_York", "scan_only_market_hours": True},
         "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20},
-        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "max_spend_per_trade_pct": 25.0, "max_daily_capital_pct": 50.0, "max_spend_per_trade": 250, "max_daily_capital": 500, "max_contracts": 2, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
+        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "max_spend_per_trade_pct": 25.0, "max_daily_capital_pct": 50.0, "max_spend_per_trade": 250, "max_daily_capital": 500, "max_contracts": 2, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},
         "watchlist": WATCHLIST,
+        "dynamic_watchlist": {"enabled": False, "mode": "Manual", "max_symbols": 5, "refresh_hour": 9, "refresh_minute": 30, "source_universe": WATCHLIST},
+        "ibkr_flex": {"token": "", "trade_query_id": "", "base_url": ""},
     }
 
 

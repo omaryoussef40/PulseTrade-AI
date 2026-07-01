@@ -50,6 +50,26 @@ except Exception:
     render_catalyst_html = None
 
 try:
+    from modules.premarket_watchlist import (
+        build_premarket_watchlist,
+        combined_watchlist,
+        dynamic_config,
+        load_dynamic_payload,
+        normalize_symbols,
+    )
+except Exception:
+    build_premarket_watchlist = None
+    combined_watchlist = None
+    dynamic_config = None
+    load_dynamic_payload = None
+    normalize_symbols = None
+
+try:
+    from modules.ibkr_flex import sync_flex_trades_to_trade_log
+except Exception:
+    sync_flex_trades_to_trade_log = None
+
+try:
     from backtester.data import YahooDataClient, YFINANCE_AVAILABLE
     from backtester.replay import MarketReplayEngine, ReplayConfig, make_replay_log
     from backtester.strategy import scan_replay_history, clean_signal_row
@@ -632,6 +652,8 @@ def render_platform_settings():
         r["breakeven_trigger_pct"] = st.number_input("Move stop to breakeven at +%", value=float(r.get("breakeven_trigger_pct", 15.0)), min_value=1.0, max_value=200.0, step=1.0)
         r["trailing_trigger_pct"] = st.number_input("Activate trailing stop at +%", value=float(r.get("trailing_trigger_pct", 25.0)), min_value=1.0, max_value=300.0, step=1.0)
         r["trailing_stop_pct"] = st.number_input("Trailing stop distance %", value=float(r.get("trailing_stop_pct", 10.0)), min_value=1.0, max_value=90.0, step=1.0)
+        r["entry_cutoff_hour"] = st.number_input("No new entries after hour ET", value=int(r.get("entry_cutoff_hour", 11)), min_value=9, max_value=15, step=1)
+        r["entry_cutoff_minute"] = st.number_input("No new entries after minute ET", value=int(r.get("entry_cutoff_minute", 0)), min_value=0, max_value=59, step=1)
         r["force_exit_hour"] = st.number_input("Force exit hour ET", value=int(r.get("force_exit_hour", 15)), min_value=9, max_value=15, step=1)
         r["force_exit_minute"] = st.number_input("Force exit minute ET", value=int(r.get("force_exit_minute", 55)), min_value=0, max_value=59, step=1)
         r["max_consecutive_losses"] = st.number_input("Stop after consecutive losses", value=int(r.get("max_consecutive_losses", 2)), min_value=1, max_value=10, step=1)
@@ -669,6 +691,58 @@ def render_platform_settings():
         cfg["watchlist"] = selected_watchlist + [x for x in extra_watchlist if x not in selected_watchlist]
         cfg.setdefault("strategy_lab", {})["symbols"] = list(cfg["watchlist"])
 
+        st.divider()
+        st.markdown("#### Dynamic Premarket Watchlist")
+        dynamic = cfg.setdefault("dynamic_watchlist", {})
+        dynamic["enabled"] = st.checkbox("Enable dynamic premarket watchlist", value=bool(dynamic.get("enabled", False)))
+        dynamic["mode"] = st.selectbox(
+            "Dynamic loading mode",
+            ["Manual", "Automatic"],
+            index=1 if str(dynamic.get("mode", "Manual")).lower() == "automatic" else 0,
+        )
+        dynamic["max_symbols"] = int(st.number_input("Dynamic symbols to add", value=int(dynamic.get("max_symbols", 5)), min_value=1, max_value=20, step=1))
+        d1, d2 = st.columns(2)
+        dynamic["refresh_hour"] = int(d1.number_input("Auto build hour ET", value=int(dynamic.get("refresh_hour", 9)), min_value=4, max_value=15, step=1))
+        dynamic["refresh_minute"] = int(d2.number_input("Auto build minute ET", value=int(dynamic.get("refresh_minute", 30)), min_value=0, max_value=59, step=1))
+        default_universe = dynamic.get("source_universe") or cfg.get("watchlist", WATCHLIST)
+        universe_text = st.text_area(
+            "Premarket source universe",
+            value=", ".join(default_universe),
+            height=90,
+            help="The dynamic scanner ranks this list and saves the top premarket movers.",
+        )
+        dynamic["source_universe"] = [x.strip().upper() for x in universe_text.replace("\n", ",").split(",") if x.strip()]
+
+        payload = load_dynamic_payload() if load_dynamic_payload else {}
+        if payload:
+            st.caption(f"Last dynamic build: {payload.get('generated_at', 'N/A')} | Symbols: {', '.join(payload.get('symbols', [])) or 'None'}")
+        if st.button("Build Dynamic Watchlist Now", use_container_width=True):
+            if build_premarket_watchlist is None:
+                st.error("Dynamic watchlist module could not be loaded.")
+            else:
+                dynamic_ib = None
+                try:
+                    dynamic_ib_cfg = IBConfig(
+                        host=ib_cfg.host,
+                        port=ib_cfg.port,
+                        client_id=ib_cfg.client_id + 105,
+                        account=ib_cfg.account,
+                        readonly=True,
+                    )
+                    dynamic_ib = connect_ib(dynamic_ib_cfg)
+                    payload = build_premarket_watchlist(cfg, dynamic_ib)
+                    st.success(f"Dynamic watchlist built: {', '.join(payload.get('symbols', [])) or 'No symbols selected'}")
+                    if payload.get("rows"):
+                        st.dataframe(pd.DataFrame(payload["rows"]).head(int(dynamic.get("max_symbols", 5))), use_container_width=True)
+                except Exception as exc:
+                    st.error(f"Dynamic watchlist build failed: {exc}")
+                finally:
+                    try:
+                        if dynamic_ib and dynamic_ib.isConnected():
+                            dynamic_ib.disconnect()
+                    except Exception:
+                        pass
+
     st.divider()
     st.caption("Connection Settings")
 
@@ -684,6 +758,25 @@ def render_platform_settings():
         ibs["client_id"] = int(st.number_input("Client ID", value=int(ibs.get("client_id", 11)), step=1))
         ibs["account"] = st.text_input("Account ID optional", value=ibs.get("account", ""))
         ibs["readonly"] = st.checkbox("Read-only connection", value=bool(ibs.get("readonly", False)))
+
+    with st.expander("IBKR Flex Historical Sync", expanded=False):
+        flex = cfg.setdefault("ibkr_flex", {})
+        flex["token"] = st.text_input(
+            "Flex Web Service token",
+            value=flex.get("token", os.getenv("IBKR_FLEX_TOKEN", "")),
+            type="password",
+        )
+        flex["trade_query_id"] = st.text_input(
+            "Flex trade query ID",
+            value=flex.get("trade_query_id", os.getenv("IBKR_FLEX_TRADE_QUERY_ID", "")),
+            type="password",
+        )
+        flex["base_url"] = st.text_input(
+            "Flex base URL optional",
+            value=flex.get("base_url", ""),
+            placeholder="Leave blank for IBKR default",
+        )
+        st.caption("Used only for direct historical trade/P&L sync. This does not place orders.")
 
     with st.expander("Telegram", expanded=False):
         tg = cfg["telegram"]
@@ -755,6 +848,12 @@ def cached_socket_ping(host: str, port: int, timeout_seconds: float) -> bool:
 def cached_account_summary(host: str, port: int, client_id: int, account: str | None, readonly: bool) -> dict:
     summary_cfg = IBConfig(host=host, port=port, client_id=client_id, account=account, readonly=readonly)
     return fetch_ibkr_account_summary_dict(summary_cfg)
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def cached_ibkr_positions(host: str, port: int, client_id: int, account: str | None) -> list[dict]:
+    positions_cfg = IBConfig(host=host, port=port, client_id=client_id, account=account, readonly=True)
+    return fetch_ibkr_positions_list(positions_cfg)
 
 
 # News catalysts are used only on scanner cards. Loading them for every page
@@ -2176,12 +2275,68 @@ elif selected_page == "💼 Positions":
             "Health": health_now or {},
         })
 
-    st.markdown("### Active Positions")
+    st.markdown("### Live IBKR Positions")
+    try:
+        broker_positions = cached_ibkr_positions(
+            ib_cfg.host,
+            int(ib_cfg.port),
+            int(ib_cfg.client_id) + 205,
+            ib_cfg.account,
+        )
+        if broker_positions:
+            broker_df = pd.DataFrame(broker_positions)
+            preferred_cols = [
+                "account",
+                "symbol",
+                "localSymbol",
+                "secType",
+                "position",
+                "avgCost",
+                "lastTradeDateOrContractMonth",
+                "strike",
+                "right",
+                "currency",
+            ]
+            shown_cols = [col for col in preferred_cols if col in broker_df.columns]
+            st.dataframe(broker_df[shown_cols] if shown_cols else broker_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No live positions found in IBKR.")
+    except Exception as exc:
+        st.warning(f"Could not fetch live IBKR positions: {display_exception_message(exc)}")
+
+    st.markdown("### Bot-Managed Positions")
     active_positions = read_active_positions()
     if active_positions:
         st.dataframe(pd.DataFrame(active_positions), use_container_width=True)
     else:
-        st.info("No open positions. Engine is waiting for a valid signal.")
+        st.info("No bot-managed positions. Engine is waiting for a valid signal.")
+
+    if st.button("Sync Bot Positions With IBKR", use_container_width=True):
+        sync_ib = None
+        try:
+            sync_ib_cfg = IBConfig(
+                host=ib_cfg.host,
+                port=ib_cfg.port,
+                client_id=ib_cfg.client_id + 206,
+                account=ib_cfg.account,
+                readonly=True,
+            )
+            sync_ib = connect_ib(sync_ib_cfg)
+            sync_events = reconcile_active_positions_with_broker(sync_ib, account=ib_cfg.account, log_closures=True)
+            if sync_events:
+                st.success(f"Reconciled {len(sync_events)} bot-managed position record(s).")
+                st.dataframe(pd.DataFrame(sync_events), use_container_width=True, hide_index=True)
+                st.rerun()
+            else:
+                st.info("Bot-managed positions already match IBKR.")
+        except Exception as exc:
+            st.error(f"Position sync failed: {display_exception_message(exc)}")
+        finally:
+            try:
+                if sync_ib and sync_ib.isConnected():
+                    sync_ib.disconnect()
+            except Exception:
+                pass
 
     def is_recent_pending_approval(order: dict) -> bool:
         if str(order.get("status", "")).lower() not in ["pending", "sent"]:
@@ -2418,6 +2573,56 @@ elif selected_page == "📊 Performance & Trade Journal":
         except Exception:
             return pd.DataFrame()
 
+    with st.expander("IBKR Historical Trade Sync", expanded=False):
+        st.caption("Fetches historical fills/P&L directly from IBKR Flex Web Service and merges new rows into the local trade log.")
+        if st.button("Sync Today's IBKR Executions", use_container_width=True):
+            sync_ib = None
+            try:
+                sync_ib_cfg = IBConfig(
+                    host=ib_cfg.host,
+                    port=ib_cfg.port,
+                    client_id=ib_cfg.client_id + 207,
+                    account=ib_cfg.account,
+                    readonly=True,
+                )
+                sync_ib = connect_ib(sync_ib_cfg)
+                imported, message = sync_today_executions_to_trade_log(sync_ib, account=ib_cfg.account)
+                if imported:
+                    st.success(message)
+                else:
+                    st.info(message)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"IBKR execution sync failed: {display_exception_message(exc)}")
+            finally:
+                try:
+                    if sync_ib and sync_ib.isConnected():
+                        sync_ib.disconnect()
+                except Exception:
+                    pass
+
+        st.divider()
+        flex_cfg = cfg.setdefault("ibkr_flex", {})
+        token_ready = bool(os.getenv("IBKR_FLEX_TOKEN") or flex_cfg.get("token"))
+        query_ready = bool(os.getenv("IBKR_FLEX_TRADE_QUERY_ID") or flex_cfg.get("trade_query_id"))
+        status_text = "Ready" if token_ready and query_ready else "Missing token/query ID"
+        st.caption(f"Flex sync status: {status_text}")
+        if st.button("Sync IBKR Historical Trades", use_container_width=True, disabled=sync_flex_trades_to_trade_log is None):
+            if sync_flex_trades_to_trade_log is None:
+                st.error("IBKR Flex sync module could not be loaded.")
+            elif not token_ready or not query_ready:
+                st.error("Add the Flex token and trade query ID in Platform Settings first.")
+            else:
+                try:
+                    imported, message = sync_flex_trades_to_trade_log(cfg, TRADE_LOG_FILE)
+                    if imported:
+                        st.success(f"Imported {imported} new historical trade rows. {message}")
+                    else:
+                        st.info(message)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"IBKR Flex sync failed: {exc}")
+
     trade_log = _load_trade_log_df()
     replay_df = load_trade_replay() if "load_trade_replay" in globals() else pd.DataFrame()
 
@@ -2483,6 +2688,9 @@ elif selected_page == "📊 Performance & Trade Journal":
                 exits = exits[exits["realized_pnl"] == 0]
 
         entries = filtered[filtered.get("event", pd.Series(dtype=str)).astype(str) == "ENTRY"].copy() if not filtered.empty else pd.DataFrame()
+        if not entries.empty and "status" in entries.columns:
+            inactive_statuses = {"cancelled", "canceled", "apicancelled", "inactive", "rejected"}
+            entries = entries[~entries["status"].fillna("").astype(str).str.lower().isin(inactive_statuses)].copy()
         total_entries = int(len(entries))
         total_exits = int(len(exits))
         realized_pnl = float(exits["realized_pnl"].sum()) if not exits.empty else 0.0
@@ -2528,6 +2736,12 @@ elif selected_page == "📊 Performance & Trade Journal":
                 chart_cols[1].plotly_chart(sym_fig, use_container_width=True)
         else:
             st.info("No closed trades match the selected filters yet.")
+            st.plotly_chart(_empty_fig("Equity Curve Preview", "Realized P/L USD"), use_container_width=True)
+            chart_cols = st.columns(2)
+            with chart_cols[0]:
+                st.plotly_chart(_empty_fig("Daily P/L Preview", "Daily P/L USD"), use_container_width=True)
+            with chart_cols[1]:
+                st.plotly_chart(_empty_fig("Symbol P/L Preview", "P/L USD"), use_container_width=True)
 
         st.markdown("### Trade Replay Journal")
         if replay_filtered.empty:

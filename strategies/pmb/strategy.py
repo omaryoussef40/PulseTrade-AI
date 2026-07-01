@@ -183,77 +183,84 @@ def _score_direction(direction: str, price: float, vwap: float, ema9: float, ema
     vwap_dist = _distance_pct(price, vwap)
     directional_vwap_dist = vwap_dist if is_call else -vwap_dist
     if directional_vwap_dist > 0:
-        points = 5
-        if directional_vwap_dist >= 0.35: points = 10
-        if directional_vwap_dist >= 0.75: points = 15
+        points = 8
+        if directional_vwap_dist >= 0.35: points = 14
+        if directional_vwap_dist >= 0.75: points = 20
         score += points
         reasons.append("Above VWAP" if is_call else "Below VWAP")
-        components.append(f"VWAP {points}/15 ({directional_vwap_dist:.2f}%)")
+        components.append(f"VWAP {points}/20 ({directional_vwap_dist:.2f}%)")
 
     ema_spread_pct = abs(_distance_pct(ema9, ema21))
     ema_ok = ema9 > ema21 if is_call else ema9 < ema21
     if ema_ok:
         points = 8
-        if ema_spread_pct >= 0.08: points = 12
-        if ema_spread_pct >= 0.20: points = 15
+        if ema_spread_pct >= 0.08: points = 14
+        if ema_spread_pct >= 0.20: points = 20
         score += points
         reasons.append("EMA9 above EMA21" if is_call else "EMA9 below EMA21")
-        components.append(f"EMA trend {points}/15 ({ema_spread_pct:.2f}%)")
+        components.append(f"EMA trend {points}/20 ({ema_spread_pct:.2f}%)")
 
     orb_level = orb_high if is_call else orb_low
     orb_dist = _distance_pct(price, orb_level)
     directional_orb_dist = orb_dist if is_call else -orb_dist
     if directional_orb_dist > 0:
-        points = 12
-        if directional_orb_dist >= 0.20: points = 16
-        if directional_orb_dist >= 0.50: points = 20
+        points = 15
+        if directional_orb_dist >= 0.20: points = 20
+        if directional_orb_dist >= 0.50: points = 25
         score += points
         reasons.append("15m ORB breakout up" if is_call else "15m ORB breakdown")
-        components.append(f"15m ORB {points}/20 ({directional_orb_dist:.2f}%)")
+        components.append(f"15m ORB {points}/25 ({directional_orb_dist:.2f}%)")
 
     key_level = pdh if is_call else pdl
     level_dist = _distance_pct(price, key_level)
     directional_level_dist = level_dist if is_call else -level_dist
     if directional_level_dist > 0:
-        points = 12
-        if directional_level_dist >= 0.15: points = 16
-        if directional_level_dist >= 0.40: points = 20
+        points = 15
+        if directional_level_dist >= 0.15: points = 20
+        if directional_level_dist >= 0.40: points = 25
         score += points
         reasons.append("Broke PDH" if is_call else "Broke PDL")
-        components.append(f"{'PDH' if is_call else 'PDL'} break {points}/20 ({directional_level_dist:.2f}%)")
+        components.append(f"{'PDH' if is_call else 'PDL'} break {points}/25 ({directional_level_dist:.2f}%)")
 
     high = float(candle.get("High", price))
     low = float(candle.get("Low", price))
     close = float(candle.get("Close", price))
     candle_range = max(high - low, 0.01)
     close_position = (close - low) / candle_range if is_call else (high - close) / candle_range
+    confirmation_points = 0.0
+    confirmation_components: list[str] = []
     if close_position >= 0.60:
-        points = 5
-        if close_position >= 0.75: points = 8
-        if close_position >= 0.88: points = 10
-        score += points
+        points = 2
+        if close_position >= 0.75: points = 3
+        if close_position >= 0.88: points = 4
+        confirmation_points += points
         reasons.append("Strong breakout candle" if is_call else "Strong breakdown candle")
-        components.append(f"Candle quality {points}/10")
+        confirmation_components.append(f"Candle {points}/4")
 
     if atr_percent >= 0.30:
-        points = 5
-        if atr_percent >= 0.50: points = 10
-        if atr_percent >= 1.00: points = 15
-        score += points
+        points = 2
+        if atr_percent >= 0.50: points = 3
+        if atr_percent >= 1.00: points = 4
+        confirmation_points += points
         reasons.append(f"Good ATR%: {atr_percent:.2f}")
-        components.append(f"ATR {points}/15")
+        confirmation_components.append(f"ATR {points}/4")
 
     if use_rvol_score:
         if rvol >= 2.0:
-            score += 5
+            confirmation_points += 2
             reasons.append(f"RVOL bonus: {rvol:.2f}")
-            components.append("RVOL 5/5")
+            confirmation_components.append("RVOL 2/2")
         elif rvol >= 1.5:
-            score += 3
+            confirmation_points += 1
             reasons.append(f"Light RVOL bonus: {rvol:.2f}")
-            components.append("RVOL 3/5")
+            confirmation_components.append("RVOL 1/2")
     else:
         reasons.append(f"RVOL observed: {rvol:.2f}")
+
+    confirmation_points = min(10.0, confirmation_points)
+    score += confirmation_points
+    if confirmation_components:
+        components.append(f"Confirmation {confirmation_points:g}/10 ({', '.join(confirmation_components)})")
 
     return _clamp(score), reasons, components
 

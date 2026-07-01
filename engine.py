@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from modules.premarket_watchlist import build_premarket_watchlist, combined_watchlist, should_auto_build
 from bot_core import (
     EASTERN,
     IBConfig,
@@ -41,6 +42,7 @@ from bot_core import (
     scan_symbol_ib,
     send_telegram_message,
     save_trade_replay,
+    trade_fill_details,
     write_health,
 )
 
@@ -206,8 +208,11 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict) -> str:
     order_type = str(order.get("order_type") or "LIMIT")
     limit_price = float(order.get("limit_price") or order.get("mid") or 0) if order_type == "LIMIT" else None
     trade = place_option_order(ib, contract, "BUY", qty, order_type, limit_price, ib_cfg.account)
-    status = str(trade.orderStatus.status)
-    entry_price = float(limit_price if limit_price else order.get("mid") or 0)
+    fallback_entry_price = float(limit_price if limit_price else order.get("mid") or 0)
+    fill = trade_fill_details(trade, qty, fallback_entry_price)
+    status = str(fill["status"])
+    filled_qty = int(fill.get("filled_qty") or 0)
+    entry_price = float(fill.get("avg_fill_price") or fallback_entry_price)
     option_full = {
         "Contract": contract,
         "Option": order.get("option"),
@@ -224,10 +229,13 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict) -> str:
         "signal": order.get("signal"),
         "option": order.get("option"),
         "quantity": qty,
+        "filled_quantity": filled_qty,
+        "remaining_quantity": fill.get("remaining_qty"),
         "order_type": order_type,
         "limit_price": entry_price,
         "estimated_cost": order.get("estimated_cost"),
         "status": status,
+        "broker_status": fill.get("raw_status"),
         "score": order.get("score"),
         "confidence": order.get("confidence"),
         "grade": order.get("grade"),
@@ -240,12 +248,13 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict) -> str:
         order.get("option_data") or {},
         event="ENTRY",
         order_status=status,
-        quantity=qty,
+        quantity=filled_qty or qty,
         entry_price=entry_price,
         estimated_cost=order.get("estimated_cost"),
         notes=f"Telegram approval submitted: {order.get('id')}",
     )
-    add_active_position_from_entry(row, option_full, qty, entry_price, status)
+    if filled_qty > 0:
+        add_active_position_from_entry(row, option_full, filled_qty, entry_price, status)
     update_pending_approval(order["id"], status="submitted", submitted_at=datetime.now(EASTERN).isoformat(), broker_status=status)
     return status
 
@@ -320,7 +329,7 @@ def run_cycle() -> None:
     order = cfg.get("order", {})
     telegram = cfg.get("telegram", {})
     automation = cfg.get("automation", {})
-    watchlist = [s.strip().upper() for s in cfg.get("watchlist", []) if str(s).strip()]
+    watchlist = combined_watchlist(cfg)
 
     # Safety gate: the engine can run 24/7, but it will not connect, scan, alert,
     # or trade unless automation is enabled in config.json/dashboard.
@@ -356,6 +365,13 @@ def run_cycle() -> None:
 
     ib = connect_ib(ib_cfg)
     write_health(ib_connected=bool(ib.isConnected()), last_scan_start=datetime.now(EASTERN).isoformat(), last_status="Connected", last_error="")
+    if should_auto_build(cfg):
+        try:
+            payload = build_premarket_watchlist(cfg, ib)
+            watchlist = combined_watchlist(cfg)
+            app_log(f"Dynamic watchlist built | symbols={payload.get('symbols', [])}")
+        except Exception as exc:
+            app_log(f"Dynamic watchlist build failed: {exc}", "WARN")
     can_trade = orders_unlocked_from_config(cfg)
     if can_trade:
         app_log("Order placement is ARMED for this cycle.", "WARN")
@@ -391,6 +407,12 @@ def run_cycle() -> None:
     max_daily_loss = -abs(account_size * float(risk.get("max_daily_drawdown_pct", 5.0)) / 100)
     if consecutive_losses >= int(risk.get("max_consecutive_losses", 2)) or realized_pnl_today <= max_daily_loss:
         app_log(f"Risk lock active | consecutive_losses={consecutive_losses} | pnl={realized_pnl_today}", "WARN")
+        can_trade = False
+
+    entry_cutoff_time = dtime(int(risk.get("entry_cutoff_hour", 11)), int(risk.get("entry_cutoff_minute", 0)))
+    if datetime.now(EASTERN).time() >= entry_cutoff_time:
+        if can_trade:
+            app_log(f"Entry cutoff active after {entry_cutoff_time.strftime('%H:%M')} ET. New orders disabled for this cycle.", "WARN")
         can_trade = False
 
     if automation.get("require_trade_approval", False):
@@ -528,8 +550,11 @@ def run_cycle() -> None:
                 app_log(f"{symbol}: order approval requested | sent={sent} | id={pending.get('id')}")
                 continue
             trade = place_option_order(ib, option_full["Contract"], "BUY", qty, order.get("type", "LIMIT"), limit_price, ib_cfg.account)
-            status = str(trade.orderStatus.status)
-            entry_price = float(limit_price if limit_price else option_full["Mid"])
+            fallback_entry_price = float(limit_price if limit_price else option_full["Mid"])
+            fill = trade_fill_details(trade, qty, fallback_entry_price)
+            status = str(fill["status"])
+            filled_qty = int(fill.get("filled_qty") or 0)
+            entry_price = float(fill.get("avg_fill_price") or fallback_entry_price)
             log_trade({
                 "timestamp": datetime.now(EASTERN).isoformat(),
                 "event": "ENTRY",
@@ -538,10 +563,13 @@ def run_cycle() -> None:
                 "signal": row["Signal"],
                 "option": option_full["Option"],
                 "quantity": qty,
+                "filled_quantity": filled_qty,
+                "remaining_quantity": fill.get("remaining_qty"),
                 "order_type": order.get("type", "LIMIT"),
                 "limit_price": entry_price,
                 "estimated_cost": estimated_cost,
                 "status": status,
+                "broker_status": fill.get("raw_status"),
                 "score": row["Score"],
                 "confidence": row.get("Confidence"),
                 "grade": row.get("Grade"),
@@ -561,12 +589,13 @@ def run_cycle() -> None:
                 option_clean,
                 event="ENTRY",
                 order_status=status,
-                quantity=qty,
+                quantity=filled_qty or qty,
                 entry_price=entry_price,
                 estimated_cost=estimated_cost,
                 notes="Auto trader entry submitted",
             )
-            add_active_position_from_entry(row, option_full, qty, entry_price, status)
+            if filled_qty > 0:
+                add_active_position_from_entry(row, option_full, filled_qty, entry_price, status)
             submitted += 1
             remaining_trades -= 1
             remaining_capital -= estimated_cost
