@@ -1,7 +1,7 @@
 {
   "status": "complete",
-  "started_at": "2026-07-01T16:51:14",
-  "finished_at": "2026-07-01T16:54:51",
+  "started_at": "2026-07-02T07:22:42",
+  "finished_at": "2026-07-02T07:34:47",
   "symbols": [
     "SPY",
     "QQQ",
@@ -39,7 +39,7 @@
   ],
   "completed": 33,
   "total": 33,
-  "stock_rows": 34,
-  "option_rows": 6,
+  "stock_rows": 33,
+  "option_rows": 0,
   "message": "Scanner complete"
 }

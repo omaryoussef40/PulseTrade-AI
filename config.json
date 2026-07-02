@@ -188,9 +188,9 @@
     "selected_strategies": [
       "PMB"
     ],
-    "period": "30d",
-    "interval": "30m",
-    "max_symbols": 10,
+    "period": "7d",
+    "interval": "5m",
+    "max_symbols": 20,
     "force_refresh": false,
     "data_source": "Yahoo",
     "orb_minutes": 30,
