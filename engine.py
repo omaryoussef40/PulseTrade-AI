@@ -53,6 +53,16 @@ PENDING_APPROVALS_FILE = EXPORT_DIR / "pending_order_approvals.json"
 TELEGRAM_APPROVAL_STATE_FILE = EXPORT_DIR / "telegram_approval_state.json"
 
 
+def scan_result_session_date(result: dict):
+    raw = str(result.get("ORB Confirmation Time", "")).strip()
+    if len(raw) < 10:
+        return None
+    try:
+        return datetime.fromisoformat(raw[:10]).date()
+    except Exception:
+        return None
+
+
 def read_json_file(path: Path, default):
     try:
         if not path.exists():
@@ -435,6 +445,11 @@ def run_cycle() -> None:
             )
             if not result:
                 continue
+            session_date = scan_result_session_date(result)
+            today_et = datetime.now(EASTERN).date()
+            if session_date != today_et:
+                app_log(f"{symbol}: skipped stale scan result | session={session_date} | today={today_et}", "WARN")
+                continue
             if not is_top_candidate(
                 result,
                 float(strategy.get("min_score", 70)),
@@ -477,7 +492,7 @@ def run_cycle() -> None:
         ["Rank Score", "Score", "RVOL", "Option Score"],
         ascending=[False, False, False, False],
     )
-    selected = df.head(int(strategy.get("top_n_tickers", 2)))
+    max_selected = int(strategy.get("top_n_tickers", 2))
 
     current_trade_count, current_deployed = get_today_trade_stats()
     remaining_trades = max(0, int(risk.get("max_trades_per_day", 2)) - current_trade_count)
@@ -485,7 +500,8 @@ def run_cycle() -> None:
     active_symbols = {p.get("symbol") for p in read_active_positions()}
 
     submitted = 0
-    for _, row in selected.iterrows():
+    selected_count = 0
+    for _, row in df.iterrows():
         symbol = row["Symbol"]
         option_full = row["_option_full"]
         option_clean = row["_option_clean"]
@@ -493,17 +509,22 @@ def run_cycle() -> None:
         estimated_cost = float(row["Estimated Cost"] or 0)
 
         if qty <= 0 or option_full is None:
-            app_log(f"{symbol}: skipped no affordable clean option")
+            mid = row.get("Mid")
+            contract_cost = float(mid) * 100 if mid else 0.0
+            app_log(f"{symbol}: skipped no affordable clean option | mid={mid} | contract_cost={contract_cost:.2f} | max_spend={max_spend_per_trade:.2f}")
             continue
         if remaining_trades <= 0:
             app_log(f"{symbol}: skipped max trades reached")
-            continue
+            break
         if estimated_cost > remaining_capital:
             app_log(f"{symbol}: skipped max daily capital reached")
             continue
         if symbol in active_symbols:
             app_log(f"{symbol}: skipped active position already exists")
             continue
+        if selected_count >= max_selected:
+            break
+        selected_count += 1
 
         if telegram.get("send_alerts", False):
             ok = send_telegram_message(tg_cfg, make_alert_message(row.to_dict(), option_clean))

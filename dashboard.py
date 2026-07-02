@@ -2024,6 +2024,16 @@ def display_exception_message(exc: Exception) -> str:
     return str(exc) or type(exc).__name__
 
 
+def scanner_results_session_date(df: pd.DataFrame):
+    if not isinstance(df, pd.DataFrame) or df.empty or "ORB Confirmation Time" not in df.columns:
+        return None
+    dates = pd.to_datetime(df["ORB Confirmation Time"].astype(str).str.slice(0, 10), errors="coerce")
+    dates = dates.dropna()
+    if dates.empty:
+        return None
+    return dates.max().date()
+
+
 def load_saved_scanner_results() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     status_file, stock_file, option_file = scanner_result_paths()
     status = read_scanner_job_status()
@@ -2039,12 +2049,27 @@ def load_saved_scanner_results() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
             option_df = pd.read_csv(option_file)
     except Exception:
         option_df = pd.DataFrame()
+    session_date = scanner_results_session_date(stock_df)
+    today_et = datetime.now(EASTERN).date()
+    if session_date and session_date != today_et:
+        status = {
+            **status,
+            "status": "stale",
+            "message": f"Scanner results are stale ({session_date}); run the IBKR scanner for today's data.",
+        }
+        stock_df = pd.DataFrame()
+        option_df = pd.DataFrame()
     return stock_df, option_df, status
 
 
 def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
     _status_file, stock_file, option_file = scanner_result_paths()
     asyncio.set_event_loop(asyncio.new_event_loop())
+    for path in (stock_file, option_file):
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
     write_scanner_job_status({
         "status": "running",
         "started_at": datetime.now().isoformat(timespec="seconds"),
@@ -2172,6 +2197,8 @@ elif selected_page == "📈 Scanner & Breakdown":
             st_autorefresh(interval=2_000, key="scanner_job_refresh_display")
         elif scanner_job_status.get("status") == "error":
             st.error(f"Scanner failed: {scanner_job_status.get('message', 'Unknown error')}")
+        elif scanner_job_status.get("status") == "stale":
+            st.warning(scanner_job_status.get("message", "Scanner results are stale. Run the IBKR scanner for today's data."))
 
         if (isinstance(stock_df, pd.DataFrame) and not stock_df.empty) or (isinstance(option_df, pd.DataFrame) and not option_df.empty):
             st.markdown("### Last Scanner Results")
