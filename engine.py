@@ -460,21 +460,16 @@ def run_cycle() -> None:
             ):
                 continue
 
-            opt = recommend_option_ib(ib, symbol, result["Signal"], result["Price"], int(strategy.get("option_dte", 7)))
-            qty = calculate_contract_quantity(float(opt["Mid"]), max_spend_per_trade, int(risk.get("max_contracts", 2))) if opt else 0
-            estimated_cost = round(qty * float(opt["Mid"]) * 100, 2) if opt and qty else 0.0
-            option_clean = {k: v for k, v in opt.items() if k != "Contract"} if opt else None
-
             candidates.append({
-                "Rank Score": opportunity_rank_score(result, opt, bool(strategy.get("use_rvol_ranking", False))),
+                "Rank Score": opportunity_rank_score(result, None, bool(strategy.get("use_rvol_ranking", False))),
                 **clean_for_table(result),
-                "Option": option_clean["Option"] if option_clean else "No clean contract",
-                "Mid": option_clean["Mid"] if option_clean else None,
-                "Option Score": option_clean["Option Score"] if option_clean else 0,
-                "Qty": qty,
-                "Estimated Cost": estimated_cost,
-                "_option_full": opt,
-                "_option_clean": option_clean,
+                "Option": "Not priced",
+                "Mid": None,
+                "Option Score": 0,
+                "Qty": 0,
+                "Estimated Cost": 0.0,
+                "_option_full": None,
+                "_option_clean": None,
             })
         except Exception as exc:
             app_log(f"{symbol} scan error: {exc}", "ERROR")
@@ -503,27 +498,39 @@ def run_cycle() -> None:
     selected_count = 0
     for _, row in df.iterrows():
         symbol = row["Symbol"]
-        option_full = row["_option_full"]
-        option_clean = row["_option_clean"]
-        qty = int(row["Qty"] or 0)
-        estimated_cost = float(row["Estimated Cost"] or 0)
+        if selected_count >= max_selected:
+            break
+        if remaining_trades <= 0:
+            app_log(f"{symbol}: skipped max trades reached")
+            break
+        if symbol in active_symbols:
+            app_log(f"{symbol}: skipped active position already exists")
+            continue
+
+        try:
+            option_full = recommend_option_ib(ib, symbol, row["Signal"], float(row["Price"]), int(strategy.get("option_dte", 7)))
+        except Exception as exc:
+            app_log(f"{symbol}: option pricing error: {exc}", "ERROR")
+            continue
+        option_clean = {k: v for k, v in option_full.items() if k != "Contract"} if option_full else None
+        qty = calculate_contract_quantity(float(option_full["Mid"]), max_spend_per_trade, int(risk.get("max_contracts", 2))) if option_full else 0
+        estimated_cost = round(qty * float(option_full["Mid"]) * 100, 2) if option_full and qty else 0.0
+        row["Option"] = option_clean["Option"] if option_clean else "No clean contract"
+        row["Mid"] = option_clean["Mid"] if option_clean else None
+        row["Option Score"] = option_clean["Option Score"] if option_clean else 0
+        row["Qty"] = qty
+        row["Estimated Cost"] = estimated_cost
+        row["_option_full"] = option_full
+        row["_option_clean"] = option_clean
 
         if qty <= 0 or option_full is None:
             mid = row.get("Mid")
             contract_cost = float(mid) * 100 if mid else 0.0
             app_log(f"{symbol}: skipped no affordable clean option | mid={mid} | contract_cost={contract_cost:.2f} | max_spend={max_spend_per_trade:.2f}")
             continue
-        if remaining_trades <= 0:
-            app_log(f"{symbol}: skipped max trades reached")
-            break
         if estimated_cost > remaining_capital:
             app_log(f"{symbol}: skipped max daily capital reached")
             continue
-        if symbol in active_symbols:
-            app_log(f"{symbol}: skipped active position already exists")
-            continue
-        if selected_count >= max_selected:
-            break
         selected_count += 1
 
         if telegram.get("send_alerts", False):

@@ -2076,7 +2076,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
         "symbols": list(scan_symbols),
         "message": "Scanner running",
     })
-    rows, option_rows = [], []
+    rows, option_rows, option_candidates = [], [], []
     ib = None
     try:
         scan_ib_cfg = IBConfig(
@@ -2106,10 +2106,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
                         float(scan_cfg["strategy"].get("min_atr", 0.3)),
                         bool(scan_cfg["strategy"].get("use_rvol_filter", False)),
                     ):
-                        option = recommend_option_ib(ib, symbol, result["Signal"], result["Price"], int(scan_cfg["strategy"].get("option_dte", 7)))
-                        if option:
-                            option_clean = {k: v for k, v in option.items() if k != "Contract"}
-                            option_rows.append({"Symbol": symbol, "Signal": result["Signal"], "Score": result["Score"], "Confidence": result["Confidence"], **option_clean})
+                        option_candidates.append(clean_for_table(result))
             except Exception as e:
                 rows.append({"Symbol": symbol, "Signal": "ERROR", "Score": 0, "Confidence": 0, "RVOL": 0, "ATR %": 0, "Reasons": display_exception_message(e)})
             write_scanner_job_status({
@@ -2124,6 +2121,29 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
         stock_df = pd.DataFrame(rows)
         if not stock_df.empty:
             stock_df = stock_df.sort_values(["Score", "Confidence", "RVOL", "ATR %"], ascending=[False, False, False, False])
+
+        option_candidate_df = pd.DataFrame(option_candidates)
+        if not option_candidate_df.empty:
+            option_candidate_df = option_candidate_df.sort_values(["Score", "Confidence", "RVOL", "ATR %"], ascending=[False, False, False, False])
+            option_lookup_limit = max(1, int(scan_cfg["strategy"].get("top_n_tickers", 4)))
+            priced_candidates = option_candidate_df.head(option_lookup_limit)
+            for j, (_, row) in enumerate(priced_candidates.iterrows()):
+                symbol = str(row["Symbol"])
+                write_scanner_job_status({
+                    "status": "running",
+                    "started_at": read_scanner_job_status().get("started_at"),
+                    "symbols": list(scan_symbols),
+                    "completed": len(scan_symbols),
+                    "total": len(scan_symbols),
+                    "message": f"Pricing options for {symbol} ({j + 1}/{len(priced_candidates)})",
+                })
+                try:
+                    option = recommend_option_ib(ib, symbol, row["Signal"], float(row["Price"]), int(scan_cfg["strategy"].get("option_dte", 7)))
+                    if option:
+                        option_clean = {k: v for k, v in option.items() if k != "Contract"}
+                        option_rows.append({"Symbol": symbol, "Signal": row["Signal"], "Score": row["Score"], "Confidence": row["Confidence"], **option_clean})
+                except Exception as e:
+                    option_rows.append({"Symbol": symbol, "Signal": row["Signal"], "Score": row["Score"], "Confidence": row["Confidence"], "Option": "ERROR", "Option Score": 0, "Reasons": display_exception_message(e)})
 
         option_df = pd.DataFrame(option_rows)
         if not option_df.empty:
