@@ -1671,6 +1671,7 @@ def default_config() -> dict:
         "watchlist": WATCHLIST,
         "dynamic_watchlist": {"enabled": False, "mode": "Manual", "max_symbols": 5, "refresh_hour": 9, "refresh_minute": 30, "source_universe": WATCHLIST},
         "ibkr_flex": {"token": "", "trade_query_id": "", "base_url": ""},
+        "performance": {"original_deposited_capital": 2300.0},
     }
 
 

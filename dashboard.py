@@ -635,6 +635,16 @@ def render_platform_settings():
         today_trade_count, today_deployed_capital = get_today_trade_stats()
         st.caption(f"Today: {today_trade_count} trades | ${today_deployed_capital:,.2f} deployed")
 
+    with st.expander("Performance Capital", expanded=False):
+        perf = cfg.setdefault("performance", {})
+        perf["original_deposited_capital"] = st.number_input(
+            "Original deposited from bank transfer USD",
+            value=float(perf.get("original_deposited_capital", 2300.0) or 2300.0),
+            min_value=0.0,
+            step=100.0,
+        )
+        st.caption("Used only for performance return math. Broker trade P/L still comes from synced IBKR executions.")
+
     with st.expander("Trade Management", expanded=False):
         r = cfg["risk"]
         s = cfg["strategy"]
@@ -2780,14 +2790,18 @@ elif selected_page == "📊 Performance & Trade Journal":
         gross_profit = float(exits.loc[exits["realized_pnl"] > 0, "realized_pnl"].sum()) if wins else 0.0
         gross_loss = abs(float(exits.loc[exits["realized_pnl"] < 0, "realized_pnl"].sum())) if losses else 0.0
         profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (round(gross_profit, 2) if gross_profit > 0 else 0.0)
+        original_deposited = float(cfg.get("performance", {}).get("original_deposited_capital", 2300.0) or 0.0)
+        pct_up = (realized_pnl / original_deposited * 100.0) if original_deposited > 0 else 0.0
 
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1, m2, m3, m4, m5, m6, m7, m8 = st.columns(8)
         m1.metric("Net P/L", f"${realized_pnl:,.2f}")
         m2.metric("Win Rate", f"{win_rate}%")
         m3.metric("Entries", total_entries)
         m4.metric("Closed", total_exits)
         m5.metric("Avg Win / Loss", f"${avg_win:,.0f} / ${avg_loss:,.0f}")
         m6.metric("Profit Factor", profit_factor)
+        m7.metric("% Up", f"{pct_up:.2f}%")
+        m8.metric("Original Deposited", f"${original_deposited:,.2f}")
 
         if not exits.empty:
             exits = exits.sort_values("timestamp")

@@ -204,5 +204,8 @@
   },
   "dashboard": {
     "auto_start_engines": true
+  },
+  "performance": {
+    "original_deposited_capital": 2300.0
   }
 }

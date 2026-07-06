@@ -1,15 +1,15 @@
 {
   "engine_running": true,
   "market_open": true,
-  "last_status": "Connected",
+  "last_status": "Cycle complete",
   "mode": "Live",
-  "updated_at": "2026-07-06T14:21:56.535380-04:00",
+  "updated_at": "2026-07-06T14:34:05.490619-04:00",
   "started_at": "2026-07-06T13:58:31.732392-04:00",
   "ib_connected": true,
   "auto_trading": false,
   "last_error": "",
-  "last_scan_start": "2026-07-06T14:21:56.535219-04:00",
-  "last_scan_finish": "2026-07-06T14:20:56.390091-04:00",
+  "last_scan_start": "2026-07-06T14:33:23.021065-04:00",
+  "last_scan_finish": "2026-07-06T14:34:05.490547-04:00",
   "candidates": 1,
   "submitted_orders": 0
 }
