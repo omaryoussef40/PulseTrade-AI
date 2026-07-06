@@ -400,6 +400,7 @@ def scan_symbol_ib(
     use_rvol_score: bool = False,
     strategy_name: str = "pmb",
     orb_minutes: int = 15,
+    min_session_bars: int = 7,
 ) -> dict | None:
     """Run the active scanner strategy on IBKR historical bars.
 
@@ -427,6 +428,7 @@ def scan_symbol_ib(
             min_score=MIN_SCORE,
             timezone=EASTERN,
             orb_minutes=int(orb_minutes),
+            min_session_bars=int(min_session_bars),
         )
 
     return strategy_scan_dataframe(
@@ -438,6 +440,7 @@ def scan_symbol_ib(
         min_score=MIN_SCORE,
         timezone=EASTERN,
         orb_minutes=int(orb_minutes),
+        min_session_bars=int(min_session_bars),
     )
 
 
@@ -618,19 +621,35 @@ def get_today_trade_stats() -> tuple[int, float]:
         if df.empty or "timestamp" not in df.columns:
             return 0, 0.0
 
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df["timestamp"] = _parse_timestamps_utc(df["timestamp"])
         today_et = datetime.now(EASTERN).date()
-        today_df = df[df["timestamp"].dt.date == today_et]
+        today_df = df[df["timestamp"].dt.tz_convert(EASTERN).dt.date == today_et]
 
+        if today_df.empty:
+            return 0, 0.0
+
+        if "event" in today_df.columns:
+            today_df = today_df[today_df["event"].fillna("").astype(str).str.upper() == "ENTRY"]
+        if "status" in today_df.columns:
+            active_statuses = {"filled", "partiallyfilled", "submitted", "presubmitted"}
+            today_df = today_df[today_df["status"].fillna("").astype(str).str.lower().isin(active_statuses)]
         if today_df.empty:
             return 0, 0.0
 
         trade_count = len(today_df)
         deployed = 0.0
 
-        if "estimated_cost" in today_df.columns:
+        if {"filled_quantity", "entry_price"}.issubset(today_df.columns):
+            deployed = float(
+                (
+                    pd.to_numeric(today_df["filled_quantity"], errors="coerce").fillna(0)
+                    * pd.to_numeric(today_df["entry_price"], errors="coerce").fillna(0)
+                    * 100
+                ).sum()
+            )
+        if deployed <= 0 and "estimated_cost" in today_df.columns:
             deployed = float(pd.to_numeric(today_df["estimated_cost"], errors="coerce").fillna(0).sum())
-        elif {"quantity", "limit_price"}.issubset(today_df.columns):
+        elif deployed <= 0 and {"quantity", "limit_price"}.issubset(today_df.columns):
             deployed = float(
                 (
                     pd.to_numeric(today_df["quantity"], errors="coerce").fillna(0)
@@ -734,8 +753,16 @@ def trade_fill_details(trade, requested_quantity: int, fallback_price: float | N
 
 
 def log_trade(row: dict):
-    df = pd.DataFrame([row])
     exists = os.path.exists(TRADE_LOG_FILE)
+    columns = None
+    if exists:
+        try:
+            columns = list(pd.read_csv(TRADE_LOG_FILE, nrows=0).columns)
+        except Exception:
+            columns = None
+    if columns:
+        row = {column: row.get(column) for column in columns}
+    df = pd.DataFrame([row])
     df.to_csv(TRADE_LOG_FILE, mode="a", index=False, header=not exists)
 
 
@@ -758,6 +785,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None) -> tu
     if not fills:
         return 0, "No IBKR executions found for today."
 
+    today_et = datetime.now(EASTERN).date()
     grouped: dict[tuple, dict] = {}
     for fill in fills:
         contract = getattr(fill, "contract", None)
@@ -789,12 +817,17 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None) -> tu
         exec_time = getattr(execution, "time", None) or datetime.now(EASTERN)
         if hasattr(exec_time, "astimezone"):
             exec_time = exec_time.astimezone(EASTERN)
+        try:
+            if exec_time.date() != today_et:
+                continue
+        except Exception:
+            continue
 
         row = grouped.setdefault(key, {
             "timestamp": exec_time,
             "event": event,
             "source": "IBKR_EXECUTION",
-            "external_id": f"IBKR_EXEC-{datetime.now(EASTERN).date()}-{key[0]}-{group_side}",
+            "external_id": f"IBKR_EXEC-{today_et}-{key[0]}-{group_side}",
             "symbol": symbol,
             "signal": signal,
             "option": option_label,
@@ -850,29 +883,14 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None) -> tu
     for row in rows:
         if row["external_id"] in existing_ids:
             continue
-        if not existing.empty and row["event"] == "ENTRY" and "timestamp" in existing.columns:
-            existing_ts = pd.to_datetime(existing["timestamp"], errors="coerce")
-            same_day = existing_ts.dt.date == datetime.now(EASTERN).date()
-            same_symbol = existing.get("symbol", pd.Series(dtype=str)).astype(str).str.upper() == row["symbol"]
-            same_event = existing.get("event", pd.Series(dtype=str)).astype(str).str.upper() == "ENTRY"
-            matches = existing[same_day & same_symbol & same_event].index
-            if len(matches):
-                idx = matches[-1]
-                for col, value in row.items():
-                    if col in {"value"}:
-                        continue
-                    existing.loc[idx, col] = value
-                imported += 1
-                existing_ids.add(row["external_id"])
-                continue
         new_rows.append({k: v for k, v in row.items() if k != "value"})
         imported += 1
         existing_ids.add(row["external_id"])
 
     combined = pd.concat([existing, pd.DataFrame(new_rows)], ignore_index=True, sort=False) if new_rows else existing
     if not combined.empty and "timestamp" in combined.columns:
-        combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
-        combined = combined.dropna(subset=["timestamp"]).sort_values("timestamp")
+        sort_ts = _parse_timestamps_utc(combined["timestamp"])
+        combined = combined.assign(_sort_ts=sort_ts).sort_values("_sort_ts", na_position="last").drop(columns=["_sort_ts"])
     combined.to_csv(path, index=False)
     return imported, f"IBKR executions grouped={len(rows)} imported_or_updated={imported}"
 
@@ -898,6 +916,189 @@ def is_filled_order_status(status: str) -> bool:
     return str(status or "").strip().lower() in {"filled", "partiallyfilled", "partially filled"}
 
 
+def _number_or_none(value) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(str(value).replace(",", ""))
+    except Exception:
+        return None
+
+
+def _parse_timestamps_utc(values):
+    try:
+        return pd.to_datetime(values, errors="coerce", utc=True, format="mixed")
+    except TypeError:
+        return pd.to_datetime(values, errors="coerce", utc=True)
+
+
+def _broker_position_contract_key(contract) -> str:
+    con_id = getattr(contract, "conId", None)
+    if con_id:
+        return f"conid:{int(con_id)}"
+    symbol = str(getattr(contract, "symbol", "") or "").upper()
+    expiry = str(getattr(contract, "lastTradeDateOrContractMonth", "") or "")
+    strike = str(getattr(contract, "strike", "") or "")
+    right = str(getattr(contract, "right", "") or "").upper()
+    return f"opt:{symbol}:{expiry}:{strike}:{right}"
+
+
+def broker_open_option_positions(ib: IB, account: str | None = None) -> list[dict]:
+    """Return non-zero option positions currently visible at IBKR."""
+    positions = []
+    for broker_pos in ib.positions():
+        if account and getattr(broker_pos, "account", None) != account:
+            continue
+        contract = getattr(broker_pos, "contract", None)
+        if contract is None:
+            continue
+        if str(getattr(contract, "secType", "") or "").upper() != "OPT":
+            continue
+        try:
+            qty = float(getattr(broker_pos, "position", 0) or 0)
+        except Exception:
+            continue
+        if qty == 0:
+            continue
+        right = str(getattr(contract, "right", "") or "").upper()
+        positions.append({
+            "key": _broker_position_contract_key(contract),
+            "symbol": str(getattr(contract, "symbol", "") or "").upper(),
+            "signal": "CALL" if right.startswith("C") else "PUT" if right.startswith("P") else "",
+            "option": str(getattr(contract, "localSymbol", "") or ""),
+            "expiry": str(getattr(contract, "lastTradeDateOrContractMonth", "") or ""),
+            "strike": float(getattr(contract, "strike", 0) or 0),
+            "con_id": getattr(contract, "conId", None),
+            "quantity": int(abs(qty)) if float(abs(qty)).is_integer() else abs(qty),
+            "avg_cost": float(getattr(broker_pos, "avgCost", 0) or 0),
+            "account": getattr(broker_pos, "account", None),
+        })
+    return positions
+
+
+def broker_open_option_symbols(ib: IB, account: str | None = None) -> set[str]:
+    return {pos["symbol"] for pos in broker_open_option_positions(ib, account=account) if pos.get("symbol")}
+
+
+def _trade_log_entry_lookup() -> dict[str, dict]:
+    if not os.path.exists(TRADE_LOG_FILE):
+        return {}
+    try:
+        df = pd.read_csv(TRADE_LOG_FILE)
+    except Exception:
+        return {}
+    if df.empty or "event" not in df.columns:
+        return {}
+
+    df = df[df["event"].fillna("").astype(str).str.upper() == "ENTRY"].copy()
+    if df.empty:
+        return {}
+    if "timestamp" in df.columns:
+        df["timestamp"] = _parse_timestamps_utc(df["timestamp"])
+        df = df.sort_values("timestamp")
+
+    lookup: dict[str, dict] = {}
+    for _, row in df.iterrows():
+        con_id = row.get("con_id")
+        if pd.notna(con_id) and str(con_id).strip():
+            try:
+                lookup[f"conid:{int(float(con_id))}"] = row.to_dict()
+            except Exception:
+                pass
+        symbol = str(row.get("symbol", "") or "").upper()
+        expiry = str(row.get("expiry", "") or "")
+        strike = str(row.get("strike", "") or "")
+        signal = str(row.get("signal", "") or "").upper()
+        right = "C" if signal == "CALL" else "P" if signal == "PUT" else ""
+        if symbol and expiry and strike and right:
+            lookup[f"opt:{symbol}:{expiry}:{strike}:{right}"] = row.to_dict()
+        option = str(row.get("option", "") or "")
+        if option:
+            lookup[f"label:{option}"] = row.to_dict()
+    return lookup
+
+
+def sync_active_positions_from_broker(ib: IB, account: str | None = None) -> list[dict]:
+    """Add missing local active-position records for filled IBKR option positions.
+
+    This covers the case where the order callback said Inactive/Submitted locally
+    but IBKR later reports a real execution/position.
+    """
+    broker_positions = broker_open_option_positions(ib, account=account)
+    if not broker_positions:
+        return []
+
+    local_positions = read_active_positions()
+    local_keys = set()
+    for pos in local_positions:
+        if pos.get("con_id"):
+            try:
+                local_keys.add(f"conid:{int(pos.get('con_id'))}")
+            except Exception:
+                pass
+        option = str(pos.get("option", "") or "")
+        if option:
+            local_keys.add(f"label:{option}")
+
+    entry_lookup = _trade_log_entry_lookup()
+    added = []
+    for broker_pos in broker_positions:
+        key = broker_pos["key"]
+        option = broker_pos.get("option") or " ".join(
+            str(x) for x in [
+                broker_pos.get("symbol"),
+                broker_pos.get("expiry"),
+                broker_pos.get("strike"),
+                broker_pos.get("signal"),
+            ] if x
+        )
+        if key in local_keys or f"label:{option}" in local_keys:
+            continue
+
+        log_row = entry_lookup.get(key) or entry_lookup.get(f"label:{option}") or {}
+        entry_price = _number_or_none(log_row.get("entry_price")) if log_row else None
+        if entry_price is None:
+            entry_price = _number_or_none(log_row.get("limit_price")) if log_row else None
+        if entry_price is None:
+            avg_cost = float(broker_pos.get("avg_cost") or 0)
+            entry_price = avg_cost / 100.0 if avg_cost > 10 else avg_cost
+        if not entry_price or entry_price <= 0:
+            continue
+
+        symbol = broker_pos.get("symbol") or str(log_row.get("symbol", "") or "").upper()
+        signal = broker_pos.get("signal") or str(log_row.get("signal", "") or "").upper()
+        position_id = f"{symbol}-{broker_pos.get('expiry')}-{broker_pos.get('strike')}-{signal}-{datetime.now(EASTERN).strftime('%Y%m%d%H%M%S')}"
+        local_positions.append({
+            "id": position_id,
+            "symbol": symbol,
+            "signal": signal,
+            "option": option,
+            "expiry": broker_pos.get("expiry"),
+            "strike": float(broker_pos.get("strike") or 0),
+            "con_id": broker_pos.get("con_id"),
+            "quantity": broker_pos.get("quantity"),
+            "entry_price": round(float(entry_price), 2),
+            "current_stop_price": round(float(entry_price) * 0.80, 2),
+            "take_profit_price": round(float(entry_price) * 1.30, 2),
+            "highest_price": round(float(entry_price), 2),
+            "breakeven_active": False,
+            "trailing_active": False,
+            "entry_time": datetime.now(EASTERN).isoformat(),
+            "entry_status": "Filled via IBKR sync",
+            "source": "IBKR_POSITION_SYNC",
+        })
+        added.append({
+            "Symbol": symbol,
+            "Option": option,
+            "Action": "ADDED",
+            "Reason": "Open IBKR position missing from local active positions",
+        })
+
+    if added:
+        write_active_positions(local_positions)
+    return added
+
+
 def get_today_loss_stats() -> tuple[int, float]:
     """Return today's consecutive losses and realized P/L from the local trade log."""
     if not os.path.exists(TRADE_LOG_FILE):
@@ -906,9 +1107,9 @@ def get_today_loss_stats() -> tuple[int, float]:
         df = pd.read_csv(TRADE_LOG_FILE)
         if df.empty or "timestamp" not in df.columns:
             return 0, 0.0
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df["timestamp"] = _parse_timestamps_utc(df["timestamp"])
         today = datetime.now(EASTERN).date()
-        df = df[df["timestamp"].dt.date == today].copy()
+        df = df[df["timestamp"].dt.tz_convert(EASTERN).dt.date == today].copy()
         if df.empty:
             return 0, 0.0
 
@@ -1464,7 +1665,7 @@ def default_config() -> dict:
         "ib": {"host": "127.0.0.1", "paper_port": 7497, "live_port": 7496, "client_id": 11, "account": "", "readonly": False},
         "telegram": {"bot_token": "", "chat_id": "", "send_alerts": False},
         "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 60, "market_timezone": "America/New_York", "scan_only_market_hours": True},
-        "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20},
+        "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7},
         "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "max_spend_per_trade_pct": 25.0, "max_daily_capital_pct": 50.0, "max_spend_per_trade": 250, "max_daily_capital": 500, "max_contracts": 2, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},
         "watchlist": WATCHLIST,

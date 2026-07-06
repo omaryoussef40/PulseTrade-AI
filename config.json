@@ -35,16 +35,17 @@
     "top_n_tickers": 4,
     "active_strategy": "pmb",
     "orb_minutes": 15,
-    "first_signal_minutes": 15
+    "first_signal_minutes": 15,
+    "min_session_bars": 3
   },
   "risk": {
-    "account_size": 1270.98,
+    "account_size": 3064.19,
     "use_ibkr_buying_power": true,
     "max_trades_per_day": 2,
     "max_spend_per_trade_pct": 70.0,
     "max_daily_capital_pct": 80.0,
-    "max_spend_per_trade": 889.69,
-    "max_daily_capital": 1016.78,
+    "max_spend_per_trade": 2144.93,
+    "max_daily_capital": 2451.35,
     "max_contracts": 20,
     "entry_cutoff_hour": 11,
     "entry_cutoff_minute": 0,

@@ -1,0 +1,2 @@
+Symbol,Signal,Score,Confidence,Option,Option Score,Reasons
+RKLB,PUT,95.0,100.0,ERROR,0,cannot convert float NaN to integer

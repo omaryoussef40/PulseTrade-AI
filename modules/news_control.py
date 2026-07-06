@@ -33,6 +33,17 @@ PROCESS_LOG_FILE = LOG_DIR / "news_engine_process.log"
 NEWS_ENGINE_FILE = MODULES_DIR / "news_engine.py"
 
 
+def project_python() -> str:
+    candidates = (
+        PROJECT_ROOT / ".venv" / "bin" / "python",
+        PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
+
 @dataclass
 class NewsProcessStatus:
     running: bool
@@ -125,7 +136,7 @@ def start_news_engine() -> NewsProcessStatus:
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
 
     process = subprocess.Popen(
-        [sys.executable, str(NEWS_ENGINE_FILE)],
+        [project_python(), str(NEWS_ENGINE_FILE)],
         **kwargs,
     )
     _write_pid(process.pid)
@@ -180,7 +191,7 @@ def run_news_poll_once(timeout_seconds: int = 60) -> dict[str, Any]:
 
     try:
         completed = subprocess.run(
-            [sys.executable, str(NEWS_ENGINE_FILE), "--once"],
+            [project_python(), str(NEWS_ENGINE_FILE), "--once"],
             cwd=str(PROJECT_ROOT),
             capture_output=True,
             text=True,

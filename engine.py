@@ -23,6 +23,7 @@ from bot_core import (
     calculate_contract_quantity,
     clean_for_table,
     connect_ib,
+    broker_open_option_symbols,
     get_today_loss_stats,
     get_today_trade_stats,
     ib_port_from_config,
@@ -42,6 +43,8 @@ from bot_core import (
     scan_symbol_ib,
     send_telegram_message,
     save_trade_replay,
+    sync_active_positions_from_broker,
+    sync_today_executions_to_trade_log,
     trade_fill_details,
     write_health,
 )
@@ -375,6 +378,20 @@ def run_cycle() -> None:
 
     ib = connect_ib(ib_cfg)
     write_health(ib_connected=bool(ib.isConnected()), last_scan_start=datetime.now(EASTERN).isoformat(), last_status="Connected", last_error="")
+    try:
+        imported, message = sync_today_executions_to_trade_log(ib, account=ib_cfg.account)
+        if imported:
+            app_log(f"IBKR execution sync before risk checks | {message}")
+    except Exception as exc:
+        app_log(f"IBKR execution sync before risk checks failed: {exc}", "WARN")
+
+    try:
+        sync_events = sync_active_positions_from_broker(ib, account=ib_cfg.account)
+        if sync_events:
+            app_log(f"IBKR position sync restored active positions | events={len(sync_events)}")
+    except Exception as exc:
+        app_log(f"IBKR position sync failed: {exc}", "WARN")
+
     if should_auto_build(cfg):
         try:
             payload = build_premarket_watchlist(cfg, ib)
@@ -405,6 +422,30 @@ def run_cycle() -> None:
 
     consecutive_losses, realized_pnl_today = get_today_loss_stats()
     account_size = max(float(risk.get("account_size", 1000) or 1000), 1.0)
+    if bool(risk.get("use_ibkr_buying_power", False)):
+        try:
+            summary_rows = ib.accountSummary()
+            buying_power = None
+            available_funds = None
+            for item in summary_rows:
+                tag = str(getattr(item, "tag", "") or "")
+                value = getattr(item, "value", None)
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if tag == "BuyingPower":
+                    buying_power = numeric_value
+                elif tag == "AvailableFunds":
+                    available_funds = numeric_value
+            live_account_size = available_funds if available_funds and available_funds > 0 else buying_power
+            if live_account_size and live_account_size > 0:
+                account_size = float(live_account_size)
+                app_log(f"Using live IBKR available funds for option sizing | account_size={account_size:.2f}")
+            else:
+                app_log("IBKR available funds unavailable; using saved account size for sizing.", "WARN")
+        except Exception as exc:
+            app_log(f"IBKR available funds refresh failed; using saved account size: {exc}", "WARN")
     max_spend_per_trade = float(risk.get("max_spend_per_trade", 250))
     max_daily_capital = float(risk.get("max_daily_capital", 500))
     max_spend_pct = float(risk.get("max_spend_per_trade_pct", 0) or 0)
@@ -442,6 +483,7 @@ def run_cycle() -> None:
                 bool(strategy.get("use_rvol_score", False)),
                 str(strategy.get("active_strategy", "pmb")),
                 int(strategy.get("orb_minutes", 15)),
+                int(strategy.get("min_session_bars", 7)),
             )
             if not result:
                 continue
@@ -492,7 +534,11 @@ def run_cycle() -> None:
     current_trade_count, current_deployed = get_today_trade_stats()
     remaining_trades = max(0, int(risk.get("max_trades_per_day", 2)) - current_trade_count)
     remaining_capital = max(0.0, max_daily_capital - current_deployed)
-    active_symbols = {p.get("symbol") for p in read_active_positions()}
+    active_symbols = {p.get("symbol") for p in read_active_positions() if p.get("symbol")}
+    try:
+        active_symbols |= broker_open_option_symbols(ib, account=ib_cfg.account)
+    except Exception as exc:
+        app_log(f"IBKR active-symbol check failed; using local active positions only: {exc}", "WARN")
 
     submitted = 0
     selected_count = 0
@@ -530,6 +576,9 @@ def run_cycle() -> None:
             continue
         if estimated_cost > remaining_capital:
             app_log(f"{symbol}: skipped max daily capital reached")
+            continue
+        if estimated_cost > max_spend_per_trade:
+            app_log(f"{symbol}: skipped per-trade cap exceeded | estimated_cost={estimated_cost:.2f} | max_spend={max_spend_per_trade:.2f}", "WARN")
             continue
         selected_count += 1
 

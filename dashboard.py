@@ -590,29 +590,29 @@ def render_platform_settings():
     with st.expander("Position Controls", expanded=False):
         r = cfg["risk"]
         s = cfg["strategy"]
-        buying_power = _number_or_none((st.session_state.get("ibkr_account_summary") or {}).get("BuyingPower"))
-        use_buying_power = st.checkbox("Use full IBKR buying power as account size", value=bool(r.get("use_ibkr_buying_power", False)))
+        buying_power = _number_or_none((st.session_state.get("ibkr_account_summary") or {}).get("AvailableFunds"))
+        use_buying_power = st.checkbox("Use IBKR available funds as account size", value=bool(r.get("use_ibkr_buying_power", False)))
         r["use_ibkr_buying_power"] = bool(use_buying_power)
         if use_buying_power and buying_power is None:
             try:
                 summary = cached_account_summary(
                     ib_cfg.host,
                     int(ib_cfg.port),
-                    int(ib_cfg.client_id),
+                    int(ib_cfg.client_id) + 305,
                     ib_cfg.account,
-                    bool(ib_cfg.readonly),
+                    True,
                 )
                 summary["connected"] = True
                 summary.setdefault("fetched_at", datetime.now().isoformat(timespec="seconds"))
                 st.session_state["ibkr_account_summary"] = summary
-                buying_power = _number_or_none(summary.get("BuyingPower"))
+                buying_power = _number_or_none(summary.get("AvailableFunds"))
             except Exception as exc:
-                st.caption(f"IBKR buying power is not available yet, using saved account size. {exc}")
+                st.caption(f"IBKR available funds are not available yet, using saved account size. {exc}")
 
         if use_buying_power and buying_power is not None:
             r["account_size"] = round(float(buying_power), 2)
             st.number_input("Account size USD", value=float(r["account_size"]), min_value=0.0, step=100.0, disabled=True)
-            st.caption(f"Using IBKR BuyingPower: ${float(buying_power):,.2f}")
+            st.caption(f"Using IBKR AvailableFunds: ${float(buying_power):,.2f}")
         else:
             r["account_size"] = st.number_input("Account size USD", value=float(r.get("account_size", 1000)), min_value=100.0, step=100.0)
 
@@ -631,7 +631,7 @@ def render_platform_settings():
         r["max_spend_per_trade"] = round(account_size * float(r["max_spend_per_trade_pct"]) / 100.0, 2)
         r["max_daily_capital"] = round(account_size * float(r["max_daily_capital_pct"]) / 100.0, 2)
         st.caption(f"Calculated limits: ${r['max_spend_per_trade']:,.2f} per trade | ${r['max_daily_capital']:,.2f} max daily capital")
-        r["max_contracts"] = st.number_input("Max contracts per trade", value=int(r.get("max_contracts", 2)), min_value=1, max_value=20, step=1)
+        r["max_contracts"] = st.number_input("Max contracts per trade", value=int(r.get("max_contracts", 2)), min_value=1, step=1)
         today_trade_count, today_deployed_capital = get_today_trade_stats()
         st.caption(f"Today: {today_trade_count} trades | ${today_deployed_capital:,.2f} deployed")
 
@@ -647,6 +647,7 @@ def render_platform_settings():
             index=[15, 30].index(current_orb_minutes),
             format_func=lambda minutes: f"{minutes} minutes",
         )
+        s["min_session_bars"] = st.number_input("Minimum session bars", value=int(s.get("min_session_bars", 7)), min_value=2, max_value=30, step=1)
         r["stop_loss_pct"] = st.number_input("Option stop loss %", value=float(r.get("stop_loss_pct", 20.0)), min_value=1.0, max_value=90.0, step=1.0)
         r["take_profit_pct"] = st.number_input("Option take profit %", value=float(r.get("take_profit_pct", 30.0)), min_value=1.0, max_value=300.0, step=1.0)
         r["breakeven_trigger_pct"] = st.number_input("Move stop to breakeven at +%", value=float(r.get("breakeven_trigger_pct", 15.0)), min_value=1.0, max_value=200.0, step=1.0)
@@ -825,6 +826,16 @@ ib_cfg = IBConfig(
 tg_cfg = TelegramConfig(bot_token=cfg["telegram"].get("bot_token", ""), chat_id=cfg["telegram"].get("chat_id", ""))
 symbols = cfg.get("watchlist", WATCHLIST)
 
+
+def dashboard_ib_cfg(offset: int = 300, readonly: bool | None = None) -> IBConfig:
+    return IBConfig(
+        host=ib_cfg.host,
+        port=ib_cfg.port,
+        client_id=int(ib_cfg.client_id) + int(offset),
+        account=ib_cfg.account,
+        readonly=ib_cfg.readonly if readonly is None else bool(readonly),
+    )
+
 @st.cache_data(ttl=180, show_spinner=False)
 def cached_catalyst_map(symbols_key: tuple[str, ...], min_impact: int = 70, lookback_hours: int = 24) -> dict:
     if get_catalyst_map is None:
@@ -911,14 +922,14 @@ def sync_ibkr_account_status(force: bool = False) -> dict:
 
     try:
         if force:
-            summary = fetch_ibkr_account_summary_dict(ib_cfg)
+            summary = fetch_ibkr_account_summary_dict(dashboard_ib_cfg(300, readonly=True))
         else:
             summary = cached_account_summary(
                 ib_cfg.host,
                 int(ib_cfg.port),
-                int(ib_cfg.client_id),
+                int(ib_cfg.client_id) + 300,
                 ib_cfg.account,
-                bool(ib_cfg.readonly),
+                True,
             )
         summary["connected"] = True
         summary.setdefault("fetched_at", datetime.now().isoformat(timespec="seconds"))
@@ -955,6 +966,17 @@ ENGINE_LOG_FILE = PROJECT_ROOT / "logs" / "engine_stdout.log"
 ENGINE_FILE = PROJECT_ROOT / "engine.py"
 STATUS_ALERT_STATE_FILE = PROJECT_ROOT / "data" / "status_alert_state.json"
 STATUS_ALERT_COOLDOWN_SECONDS = 300
+
+
+def project_python() -> str:
+    candidates = (
+        PROJECT_ROOT / ".venv" / "bin" / "python",
+        PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
 
 
 def _is_pid_running(pid: int) -> bool:
@@ -1093,7 +1115,7 @@ def start_trading_engine_once() -> None:
             kwargs["start_new_session"] = True
         elif os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
-        process = subprocess.Popen([sys.executable, str(ENGINE_FILE)], **kwargs)
+        process = subprocess.Popen([project_python(), str(ENGINE_FILE)], **kwargs)
         ENGINE_PID_FILE.write_text(str(process.pid), encoding="utf-8")
         st.session_state["trading_engine_auto_start_status"] = f"Trading engine started as PID {process.pid}."
     except Exception as exc:
@@ -1134,7 +1156,7 @@ def start_telegram_decision_worker() -> None:
                 current_ib_cfg = IBConfig(
                     host=current_cfg["ib"].get("host", "127.0.0.1"),
                     port=ib_port_from_config(current_cfg),
-                    client_id=int(current_cfg["ib"].get("client_id", 11)),
+                    client_id=int(current_cfg["ib"].get("client_id", 11)) + 301,
                     account=current_cfg["ib"].get("account") or None,
                     readonly=bool(current_cfg["ib"].get("readonly", False)),
                 )
@@ -1164,7 +1186,7 @@ def start_telegram_decision_worker() -> None:
 
 
 def load_manual_option_defaults(symbol: str, signal: str, dte_target: int) -> dict:
-    ib = connect_ib(ib_cfg)
+    ib = connect_ib(dashboard_ib_cfg(302, readonly=True))
     try:
         stock = qualify_stock(ib, symbol)
         stock_market = get_snapshot_mid(ib, stock)
@@ -2095,6 +2117,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
                     bool(scan_cfg["strategy"].get("use_rvol_score", False)),
                     str(scan_cfg["strategy"].get("active_strategy", "pmb")),
                     int(scan_cfg["strategy"].get("orb_minutes", 15)),
+                    int(scan_cfg["strategy"].get("min_session_bars", 7)),
                 )
                 if result:
                     rows.append(clean_for_table(result))
@@ -2263,6 +2286,7 @@ elif selected_page == "📈 Scanner & Breakdown":
                     bool(cfg["strategy"].get("use_rvol_score", False)),
                     str(cfg["strategy"].get("active_strategy", "pmb")),
                     int(cfg["strategy"].get("orb_minutes", 15)),
+                    int(cfg["strategy"].get("min_session_bars", 7)),
                 )
                 if not breakdown:
                     st.error("No breakdown available.")
@@ -2399,8 +2423,9 @@ elif selected_page == "💼 Positions":
         st_autorefresh(interval=1_000, key="telegram_order_decision_refresh")
         try:
             ib_connected_now = live_ibkr_ping(ib_cfg)
-            ib = connect_ib(ib_cfg) if ib_connected_now else None
-            processed = process_telegram_order_callbacks(ib, ib_cfg, tg_cfg, orders_unlocked_from_config(cfg) and ib_connected_now)
+            callback_ib_cfg = dashboard_ib_cfg(303)
+            ib = connect_ib(callback_ib_cfg) if ib_connected_now else None
+            processed = process_telegram_order_callbacks(ib, callback_ib_cfg, tg_cfg, orders_unlocked_from_config(cfg) and ib_connected_now)
             if processed:
                 st.success(f"Processed {processed} Telegram decision(s).")
         except Exception as e:
@@ -2577,7 +2602,7 @@ elif selected_page == "💼 Positions":
             if not read_active_positions():
                 st.info("No active positions to manage.")
             else:
-                ib = connect_ib(ib_cfg)
+                ib = connect_ib(dashboard_ib_cfg(304))
                 try:
                     r = cfg["risk"]
                     events = manage_open_positions(
@@ -2603,6 +2628,12 @@ elif selected_page == "💼 Positions":
 elif selected_page == "📊 Performance & Trade Journal":
     st.subheader("Performance & Trade Journal")
 
+    def _parse_dashboard_timestamps(values):
+        try:
+            return pd.to_datetime(values, errors="coerce", utc=True, format="mixed").dt.tz_convert(EASTERN)
+        except TypeError:
+            return pd.to_datetime(values, errors="coerce", utc=True).dt.tz_convert(EASTERN)
+
     def _load_trade_log_df() -> pd.DataFrame:
         if not os.path.exists(TRADE_LOG_FILE):
             return pd.DataFrame()
@@ -2610,7 +2641,7 @@ elif selected_page == "📊 Performance & Trade Journal":
             df = pd.read_csv(TRADE_LOG_FILE)
             if df.empty or "timestamp" not in df.columns:
                 return pd.DataFrame()
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            df["timestamp"] = _parse_dashboard_timestamps(df["timestamp"])
             df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
             if "realized_pnl" in df.columns:
                 df["realized_pnl"] = pd.to_numeric(df["realized_pnl"], errors="coerce").fillna(0.0)
@@ -2790,7 +2821,34 @@ elif selected_page == "📊 Performance & Trade Journal":
             with chart_cols[1]:
                 st.plotly_chart(_empty_fig("Symbol P/L Preview", "P/L USD"), use_container_width=True)
 
+        st.markdown("### Executed Trade Journal")
+        if filtered.empty:
+            st.info("No executed trades match the selected filters.")
+        else:
+            executed_cols = [
+                c for c in [
+                    "timestamp",
+                    "event",
+                    "symbol",
+                    "signal",
+                    "option",
+                    "quantity",
+                    "filled_quantity",
+                    "entry_price",
+                    "exit_price",
+                    "realized_pnl",
+                    "status",
+                    "broker_status",
+                    "source",
+                    "external_id",
+                ] if c in filtered.columns
+            ]
+            executed_journal = filtered[executed_cols].sort_values("timestamp", ascending=False).copy()
+            st.dataframe(executed_journal.head(250), use_container_width=True)
+            st.download_button("Download executed trade journal", executed_journal.to_csv(index=False), "executed_trade_journal.csv", "text/csv")
+
         st.markdown("### Trade Replay Journal")
+        st.caption("Replay rows are scanner snapshots and signal/order attempts. Executed broker trades are shown above.")
         if replay_filtered.empty:
             st.info("No replay snapshots yet. The engine records them for qualified signals and entries.")
         else:

@@ -265,7 +265,7 @@ def _score_direction(direction: str, price: float, vwap: float, ema9: float, ema
     return _clamp(score), reasons, components
 
 
-def scan_dataframe(symbol: str, intraday: pd.DataFrame, daily: pd.DataFrame | None = None, use_rvol_score: bool = False, min_score: float = MIN_SCORE, timezone: ZoneInfo = EASTERN, orb_minutes: int = DEFAULT_ORB_MINUTES) -> dict | None:
+def scan_dataframe(symbol: str, intraday: pd.DataFrame, daily: pd.DataFrame | None = None, use_rvol_score: bool = False, min_score: float = MIN_SCORE, timezone: ZoneInfo = EASTERN, orb_minutes: int = DEFAULT_ORB_MINUTES, min_session_bars: int = 7) -> dict | None:
     symbol = str(symbol).strip().upper()
     intraday = _normalize_ohlcv(intraday, timezone=timezone)
     daily = _normalize_ohlcv(daily, timezone=timezone) if daily is not None else pd.DataFrame(columns=REQUIRED_COLUMNS)
@@ -282,7 +282,7 @@ def scan_dataframe(symbol: str, intraday: pd.DataFrame, daily: pd.DataFrame | No
     if intraday.empty:
         return None
 
-    valid_sessions = get_valid_sessions(intraday, min_bars=7)
+    valid_sessions = get_valid_sessions(intraday, min_bars=int(min_session_bars))
     if not valid_sessions:
         return None
     today_date = valid_sessions[-1]
