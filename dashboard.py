@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import asyncio
+import calendar
 import html
 import json
 import re
@@ -427,6 +428,43 @@ def _empty_fig(title: str, y_title: str = "USD"):
     )
     fig.update_yaxes(zeroline=True)
     return fig
+
+
+def _format_pnl_chart(fig: go.Figure, height: int = 360) -> go.Figure:
+    fig.update_layout(
+        height=height,
+        title_text=None,
+        showlegend=False,
+        hovermode="x unified",
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
+        margin=dict(l=16, r=18, t=12, b=34),
+        font=dict(color="#374151", size=13),
+    )
+    fig.update_xaxes(
+        showgrid=False,
+        title_text=None,
+        tickfont=dict(color="#6b7280"),
+        linecolor="#e5e7eb",
+        zeroline=False,
+    )
+    fig.update_yaxes(
+        tickprefix="$",
+        title_text=None,
+        separatethousands=True,
+        gridcolor="#e5e7eb",
+        zeroline=True,
+        zerolinecolor="#e5e7eb",
+        tickfont=dict(color="#6b7280"),
+    )
+    return fig
+
+
+def _chart_card_title(title: str) -> None:
+    st.markdown(
+        f"<div style='font-size:1.05rem;font-weight:800;margin:0.1rem 0 0.45rem;color:#111827;'>{html.escape(title)} <span style='color:#6b7280;'>ⓘ</span></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_empty_performance_dashboard():
@@ -1163,6 +1201,9 @@ def start_telegram_decision_worker() -> None:
         while True:
             try:
                 current_cfg = load_config()
+                if bool(current_cfg.get("automation", {}).get("require_trade_approval", False)):
+                    time.sleep(2)
+                    continue
                 current_ib_cfg = IBConfig(
                     host=current_cfg["ib"].get("host", "127.0.0.1"),
                     port=ib_port_from_config(current_cfg),
@@ -2431,16 +2472,7 @@ elif selected_page == "💼 Positions":
     pending_telegram_orders = [o for o in read_pending_approvals() if is_recent_pending_approval(o)]
     if pending_telegram_orders:
         st_autorefresh(interval=1_000, key="telegram_order_decision_refresh")
-        try:
-            ib_connected_now = live_ibkr_ping(ib_cfg)
-            callback_ib_cfg = dashboard_ib_cfg(303)
-            ib = connect_ib(callback_ib_cfg) if ib_connected_now else None
-            processed = process_telegram_order_callbacks(ib, callback_ib_cfg, tg_cfg, orders_unlocked_from_config(cfg) and ib_connected_now)
-            if processed:
-                st.success(f"Processed {processed} Telegram decision(s).")
-        except Exception as e:
-            if "Read timed out" not in str(e):
-                st.warning(f"Telegram decision auto-check failed: {e}")
+        st.caption("Waiting for Telegram decision. The background worker is checking for replies.")
 
     st.markdown("### Manual Order Approval")
     with st.container(border=True):
@@ -2661,6 +2693,233 @@ elif selected_page == "📊 Performance & Trade Journal":
         except Exception:
             return pd.DataFrame()
 
+    def _render_monthly_pnl_calendar(exits_df: pd.DataFrame, month_anchor: datetime.date) -> None:
+        month_start = month_anchor.replace(day=1)
+        month_label = month_start.strftime("%B %Y")
+        day_stats = {}
+        if isinstance(exits_df, pd.DataFrame) and not exits_df.empty and "timestamp" in exits_df.columns:
+            month_exits = exits_df[
+                (exits_df["timestamp"].dt.year == month_start.year)
+                & (exits_df["timestamp"].dt.month == month_start.month)
+            ].copy()
+            if not month_exits.empty:
+                month_exits["trade_date"] = month_exits["timestamp"].dt.date
+                grouped = month_exits.groupby("trade_date").agg(
+                    pnl=("realized_pnl", "sum"),
+                    trades=("realized_pnl", "size"),
+                )
+                day_stats = grouped.to_dict("index")
+
+        weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(month_start.year, month_start.month)
+        today_et = datetime.now(EASTERN).date()
+        cells = []
+        for week in weeks:
+            for day in week:
+                in_month = day.month == month_start.month
+                stats = day_stats.get(day, {"pnl": 0.0, "trades": 0})
+                pnl = float(stats.get("pnl", 0.0) or 0.0)
+                trades = int(stats.get("trades", 0) or 0)
+                tone = "pt-cal-empty"
+                if trades and pnl > 0:
+                    tone = "pt-cal-win"
+                elif trades and pnl < 0:
+                    tone = "pt-cal-loss"
+                elif trades:
+                    tone = "pt-cal-flat"
+                today_class = " pt-cal-today" if day == today_et else ""
+                muted_class = " pt-cal-muted" if not in_month else ""
+                trade_label = "trade" if trades == 1 else "trades"
+                pnl_html = f"<strong>${pnl:,.0f}</strong><span>{trades} {trade_label}</span>" if trades else ""
+                cells.append(
+                    f"<div class='pt-cal-cell {tone}{today_class}{muted_class}'>"
+                    f"<div class='pt-cal-day'>{day.day if in_month else ''}</div>"
+                    f"<div class='pt-cal-pnl'>{pnl_html}</div>"
+                    "</div>"
+                )
+
+        st.markdown(
+            f"""
+            <style>
+            .pt-cal-wrap {{
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                overflow: hidden;
+                margin: 0.75rem 0 1.25rem;
+                background: #ffffff;
+            }}
+            .pt-cal-head {{
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 0.85rem 1rem;
+                border-bottom: 1px solid #e5e7eb;
+            }}
+            .pt-cal-title {{
+                font-size: 1.35rem;
+                font-weight: 700;
+            }}
+            .pt-cal-weekdays, .pt-cal-grid {{
+                display: grid;
+                grid-template-columns: repeat(7, minmax(0, 1fr));
+                gap: 6px;
+                padding: 6px 1rem;
+            }}
+            .pt-cal-weekdays div {{
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                padding: 0.55rem;
+                text-align: center;
+                font-weight: 700;
+                color: #111827;
+            }}
+            .pt-cal-grid {{
+                padding-bottom: 1rem;
+            }}
+            .pt-cal-cell {{
+                min-height: 112px;
+                border-radius: 6px;
+                border: 1px solid #e5e7eb;
+                background: #f3f4f6;
+                padding: 0.55rem;
+                position: relative;
+            }}
+            .pt-cal-day {{
+                text-align: right;
+                font-size: 0.95rem;
+                color: #111827;
+            }}
+            .pt-cal-pnl {{
+                margin-top: 0.85rem;
+                text-align: center;
+                color: #111827;
+            }}
+            .pt-cal-pnl strong {{
+                display: block;
+                font-size: 1.25rem;
+            }}
+            .pt-cal-pnl span {{
+                color: #6b7280;
+                font-size: 0.95rem;
+            }}
+            .pt-cal-win {{
+                background: #dcfce7;
+                border-color: #10b981;
+            }}
+            .pt-cal-loss {{
+                background: #fee2e2;
+                border-color: #ef4444;
+            }}
+            .pt-cal-flat {{
+                background: #eef2ff;
+                border-color: #6366f1;
+            }}
+            .pt-cal-muted {{
+                background: #ffffff;
+            }}
+            .pt-cal-today .pt-cal-day {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                float: right;
+                width: 1.75rem;
+                height: 1.75rem;
+                border-radius: 999px;
+                background: #6554b8;
+                color: #ffffff;
+            }}
+            </style>
+            <div class="pt-cal-wrap">
+                <div class="pt-cal-head">
+                    <div class="pt-cal-title">{html.escape(month_label)}</div>
+                    <div>{len(day_stats)} trading day{"s" if len(day_stats) != 1 else ""}</div>
+                </div>
+                <div class="pt-cal-weekdays">
+                    <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+                </div>
+                <div class="pt-cal-grid">{''.join(cells)}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    def _format_signed_money(value) -> str:
+        try:
+            amount = float(value)
+        except Exception:
+            amount = 0.0
+        sign = "-" if amount < 0 else ""
+        return f"{sign}${abs(amount):,.2f}"
+
+    def _render_performance_table(rows: list[dict], columns: list[tuple[str, str]], empty_message: str) -> None:
+        if not rows:
+            st.info(empty_message)
+            return
+        header_html = "".join(f"<th>{html.escape(label)}</th>" for _key, label in columns)
+        body = []
+        for row in rows:
+            cells = []
+            for key, _label in columns:
+                value = row.get(key, "")
+                cell_class = ""
+                if key in {"net_pnl", "unrealized_pnl"}:
+                    try:
+                        amount = float(row.get(f"{key}_raw", value))
+                    except Exception:
+                        amount = 0.0
+                    cell_class = " pt-perf-positive" if amount >= 0 else " pt-perf-negative"
+                cells.append(f"<td class='{cell_class}'>{html.escape(str(value))}</td>")
+            body.append(f"<tr>{''.join(cells)}</tr>")
+        st.markdown(
+            f"""
+            <style>
+            .pt-perf-table-wrap {{
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                overflow: hidden;
+                background: #ffffff;
+            }}
+            .pt-perf-table {{
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 1rem;
+            }}
+            .pt-perf-table th {{
+                background: #f4f2fb;
+                color: #111827;
+                font-size: 1.05rem;
+                font-weight: 800;
+                padding: 1rem;
+                text-align: center;
+                border-bottom: 1px solid #e5e7eb;
+            }}
+            .pt-perf-table td {{
+                padding: 1rem;
+                text-align: center;
+                color: #111827;
+                border-bottom: 1px solid #f3f4f6;
+            }}
+            .pt-perf-table tr:last-child td {{
+                border-bottom: 0;
+            }}
+            .pt-perf-positive {{
+                color: #10b981 !important;
+                font-weight: 800;
+            }}
+            .pt-perf-negative {{
+                color: #ef4444 !important;
+                font-weight: 800;
+            }}
+            </style>
+            <div class="pt-perf-table-wrap">
+                <table class="pt-perf-table">
+                    <thead><tr>{header_html}</tr></thead>
+                    <tbody>{''.join(body)}</tbody>
+                </table>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     with st.expander("IBKR Historical Trade Sync", expanded=False):
         st.caption("Fetches historical fills/P&L directly from IBKR Flex Web Service and merges new rows into the local trade log.")
         if st.button("Sync Today's IBKR Executions", use_container_width=True):
@@ -2719,7 +2978,7 @@ elif selected_page == "📊 Performance & Trade Journal":
     else:
         now_et = datetime.now(EASTERN)
         today = now_et.date()
-        period = st.radio("Performance Period", ["Today", "This Week", "This Month", "All Time", "Custom Range"], horizontal=True)
+        period = st.radio("Performance Period", ["Today", "This Week", "This Month", "All Time", "Custom Range"], index=2, horizontal=True)
         base_dates = trade_log["timestamp"].dt.date if not trade_log.empty else replay_df["timestamp"].dt.date
         if period == "Today":
             start_date, end_date = today, today
@@ -2775,6 +3034,16 @@ elif selected_page == "📊 Performance & Trade Journal":
             elif outcome_filter == "Breakeven":
                 exits = exits[exits["realized_pnl"] == 0]
 
+        calendar_source = _apply_common_filters(trade_log.copy()) if not trade_log.empty else pd.DataFrame()
+        calendar_exits = calendar_source[calendar_source.get("event", pd.Series(dtype=str)).astype(str) == "EXIT"].copy() if not calendar_source.empty else pd.DataFrame()
+        if not calendar_exits.empty:
+            if outcome_filter == "Winners":
+                calendar_exits = calendar_exits[calendar_exits["realized_pnl"] > 0]
+            elif outcome_filter == "Losers":
+                calendar_exits = calendar_exits[calendar_exits["realized_pnl"] < 0]
+            elif outcome_filter == "Breakeven":
+                calendar_exits = calendar_exits[calendar_exits["realized_pnl"] == 0]
+
         entries = filtered[filtered.get("event", pd.Series(dtype=str)).astype(str) == "ENTRY"].copy() if not filtered.empty else pd.DataFrame()
         if not entries.empty and "status" in entries.columns:
             inactive_statuses = {"cancelled", "canceled", "apicancelled", "inactive", "rejected"}
@@ -2803,37 +3072,99 @@ elif selected_page == "📊 Performance & Trade Journal":
         m7.metric("% Up", f"{pct_up:.2f}%")
         m8.metric("Original Deposited", f"${original_deposited:,.2f}")
 
+        calendar_anchor = today
+        if period == "All Time" and not calendar_exits.empty:
+            calendar_anchor = calendar_exits["timestamp"].max().date()
+        elif period == "Custom Range":
+            calendar_anchor = start_date
+        st.markdown("### Monthly P/L Calendar")
+        _render_monthly_pnl_calendar(calendar_exits, calendar_anchor)
+
         if not exits.empty:
             exits = exits.sort_values("timestamp")
-            exits["cumulative_pnl"] = exits["realized_pnl"].cumsum()
-            eq_fig = go.Figure()
-            eq_fig.add_trace(go.Scatter(x=exits["timestamp"], y=exits["cumulative_pnl"], mode="lines+markers", name="Cumulative P/L"))
-            eq_fig.update_layout(height=380, title=f"Equity Curve ({period})", xaxis_title="Time", yaxis_title="Realized P/L USD")
-            st.plotly_chart(eq_fig, use_container_width=True)
-
-            chart_cols = st.columns(2)
             daily = exits.copy()
             daily["date"] = daily["timestamp"].dt.date
             daily_pnl = daily.groupby("date", as_index=False)["realized_pnl"].sum()
+            daily_pnl["cumulative_pnl"] = daily_pnl["realized_pnl"].cumsum()
+
+            baseline = pd.DataFrame([{
+                "date": daily_pnl["date"].min() - timedelta(days=1),
+                "realized_pnl": 0.0,
+                "cumulative_pnl": 0.0,
+            }])
+            equity_daily = pd.concat([baseline, daily_pnl], ignore_index=True)
+            eq_fig = go.Figure()
+            eq_fig.add_trace(go.Scatter(
+                x=equity_daily["date"],
+                y=equity_daily["cumulative_pnl"],
+                mode="lines",
+                fill="tozeroy",
+                line=dict(color="#6554d9", width=2),
+                fillcolor="rgba(16, 185, 129, 0.22)",
+                hovertemplate="%{x|%m/%d/%y}<br>$%{y:,.2f}<extra></extra>",
+                name="Cumulative P/L",
+            ))
+            eq_fig = _format_pnl_chart(eq_fig, height=260)
+            eq_fig.update_xaxes(tickformat="%m/%d/%y")
+
+            chart_cols = st.columns(3)
             daily_fig = go.Figure()
-            daily_fig.add_trace(go.Bar(x=daily_pnl["date"].astype(str), y=daily_pnl["realized_pnl"], name="Daily P/L"))
-            daily_fig.update_layout(height=360, title="Daily P/L", xaxis_title="Date", yaxis_title="P/L USD")
-            chart_cols[0].plotly_chart(daily_fig, use_container_width=True)
+            daily_colors = ["#10b981" if float(v) >= 0 else "#ef4444" for v in daily_pnl["realized_pnl"]]
+            daily_fig.add_trace(go.Bar(
+                x=daily_pnl["date"],
+                y=daily_pnl["realized_pnl"],
+                marker_color=daily_colors,
+                hovertemplate="%{x|%m/%d/%y}<br>$%{y:,.2f}<extra></extra>",
+                name="Daily P/L",
+            ))
+            daily_fig = _format_pnl_chart(daily_fig, height=260)
+            daily_fig.update_xaxes(tickformat="%m/%d/%y")
+
+            with chart_cols[0]:
+                with st.container(border=True):
+                    _chart_card_title("Daily net cumulative P&L")
+                    st.plotly_chart(eq_fig, use_container_width=True)
+            with chart_cols[1]:
+                with st.container(border=True):
+                    _chart_card_title("Net daily P&L")
+                    st.plotly_chart(daily_fig, use_container_width=True)
 
             if "symbol" in exits.columns:
                 sym_pnl = exits.groupby("symbol", as_index=False)["realized_pnl"].sum().sort_values("realized_pnl", ascending=False)
                 sym_fig = go.Figure()
-                sym_fig.add_trace(go.Bar(x=sym_pnl["symbol"].astype(str), y=sym_pnl["realized_pnl"], name="Symbol P/L"))
-                sym_fig.update_layout(height=360, title="P/L by Symbol", xaxis_title="Symbol", yaxis_title="P/L USD")
-                chart_cols[1].plotly_chart(sym_fig, use_container_width=True)
+                sym_colors = ["#10b981" if float(v) >= 0 else "#ef4444" for v in sym_pnl["realized_pnl"]]
+                sym_fig.add_trace(go.Bar(
+                    x=sym_pnl["symbol"].astype(str),
+                    y=sym_pnl["realized_pnl"],
+                    marker_color=sym_colors,
+                    hovertemplate="%{x}<br>$%{y:,.2f}<extra></extra>",
+                    name="Symbol P/L",
+                ))
+                sym_fig = _format_pnl_chart(sym_fig, height=260)
+                with chart_cols[2]:
+                    with st.container(border=True):
+                        _chart_card_title("Net P&L by symbol")
+                        st.plotly_chart(sym_fig, use_container_width=True)
+            else:
+                with chart_cols[2]:
+                    with st.container(border=True):
+                        _chart_card_title("Net P&L by symbol")
+                        st.plotly_chart(_format_pnl_chart(_empty_fig("Net P&L by symbol", "P/L USD"), height=260), use_container_width=True)
         else:
             st.info("No closed trades match the selected filters yet.")
-            st.plotly_chart(_empty_fig("Equity Curve Preview", "Realized P/L USD"), use_container_width=True)
-            chart_cols = st.columns(2)
+            chart_cols = st.columns(3)
             with chart_cols[0]:
-                st.plotly_chart(_empty_fig("Daily P/L Preview", "Daily P/L USD"), use_container_width=True)
+                with st.container(border=True):
+                    _chart_card_title("Daily net cumulative P&L")
+                    st.plotly_chart(_format_pnl_chart(_empty_fig("Daily net cumulative P&L", "Realized P/L USD"), height=260), use_container_width=True)
             with chart_cols[1]:
-                st.plotly_chart(_empty_fig("Symbol P/L Preview", "P/L USD"), use_container_width=True)
+                with st.container(border=True):
+                    _chart_card_title("Net daily P&L")
+                    st.plotly_chart(_format_pnl_chart(_empty_fig("Net daily P&L", "Daily P/L USD"), height=260), use_container_width=True)
+            with chart_cols[2]:
+                with st.container(border=True):
+                    _chart_card_title("Net P&L by symbol")
+                    st.plotly_chart(_format_pnl_chart(_empty_fig("Net P&L by symbol", "P/L USD"), height=260), use_container_width=True)
 
         st.markdown("### Executed Trade Journal")
         if filtered.empty:
@@ -2858,7 +3189,54 @@ elif selected_page == "📊 Performance & Trade Journal":
                 ] if c in filtered.columns
             ]
             executed_journal = filtered[executed_cols].sort_values("timestamp", ascending=False).copy()
-            st.dataframe(executed_journal.head(250), use_container_width=True)
+            recent_rows = []
+            if not exits.empty:
+                for _, row in exits.sort_values("timestamp", ascending=False).head(25).iterrows():
+                    close_date = row["timestamp"].strftime("%m/%d/%Y") if pd.notna(row.get("timestamp")) else ""
+                    pnl = float(row.get("realized_pnl", 0.0) or 0.0)
+                    recent_rows.append({
+                        "close_date": close_date,
+                        "symbol": row.get("symbol", ""),
+                        "net_pnl": _format_signed_money(pnl),
+                        "net_pnl_raw": pnl,
+                    })
+
+            open_rows = []
+            active_positions = read_active_positions()
+            if active_positions:
+                for position in active_positions[:25]:
+                    opened = position.get("entry_time") or position.get("timestamp") or position.get("opened_at") or ""
+                    try:
+                        opened_label = pd.to_datetime(opened, errors="coerce").strftime("%m/%d/%Y")
+                    except Exception:
+                        opened_label = str(opened)[:10]
+                    entry_price = position.get("entry_price", position.get("avgCost", ""))
+                    try:
+                        entry_label = f"${float(entry_price):,.2f}"
+                    except Exception:
+                        entry_label = str(entry_price)
+                    open_rows.append({
+                        "open_date": opened_label,
+                        "symbol": position.get("symbol", ""),
+                        "entry": entry_label,
+                    })
+
+            tab_recent, tab_open = st.tabs(["Recent trades", "Open positions"])
+            with tab_recent:
+                _render_performance_table(
+                    recent_rows,
+                    [("close_date", "Close Date"), ("symbol", "Symbol"), ("net_pnl", "Net P&L")],
+                    "No closed trades match the selected filters.",
+                )
+            with tab_open:
+                _render_performance_table(
+                    open_rows,
+                    [("open_date", "Open Date"), ("symbol", "Symbol"), ("entry", "Entry")],
+                    "No open bot-managed positions.",
+                )
+
+            with st.expander("Detailed executed trade journal"):
+                st.dataframe(executed_journal.head(250), use_container_width=True)
             st.download_button("Download executed trade journal", executed_journal.to_csv(index=False), "executed_trade_journal.csv", "text/csv")
 
         st.markdown("### Trade Replay Journal")

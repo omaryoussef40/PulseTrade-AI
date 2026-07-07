@@ -344,6 +344,94 @@ def _stat_card(label: str, value: str) -> None:
     )
 
 
+def _render_news_table(table: pd.DataFrame, max_rows: int = 500) -> None:
+    if table.empty:
+        st.info("No articles match the current filters.")
+        return
+
+    headers = ["Published", "Source", "Headline", "Tickers", "Sentiment", "Impact", "Watchlist"]
+    header_html = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
+    body_rows = []
+    for _, row in table.head(max_rows).iterrows():
+        published = _fmt_time(row.get("published_at"))
+        source = html.escape(_clean_news_text(row.get("source", ""), 24))
+        headline_text = html.escape(_clean_news_text(row.get("headline", "Untitled"), 115))
+        url = str(row.get("url", "") or "")
+        headline = f"<a href='{html.escape(url, quote=True)}' target='_blank'>{headline_text}</a>" if url else headline_text
+        tickers = _ticker_pills(_safe_list(row.get("tickers")))
+        sentiment = _sentiment_pill(str(row.get("sentiment", "neutral")))
+        impact = _impact_pill(row.get("impact_score", 0))
+        watchlist = "Yes" if bool(row.get("watchlist_hit", False)) else "No"
+        watchlist_class = " pt-news-positive" if watchlist == "Yes" else ""
+        body_rows.append(
+            "<tr>"
+            f"<td>{html.escape(published)}</td>"
+            f"<td>{source}</td>"
+            f"<td class='pt-news-headline'>{headline}</td>"
+            f"<td>{tickers}</td>"
+            f"<td>{sentiment}</td>"
+            f"<td>{impact}</td>"
+            f"<td class='{watchlist_class}'>{watchlist}</td>"
+            "</tr>"
+        )
+
+    st.markdown(
+        f"""
+        <style>
+        .pt-news-table-wrap {{
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #ffffff;
+        }}
+        .pt-news-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.86rem;
+        }}
+        .pt-news-table th {{
+            background: #f4f2fb;
+            color: #111827;
+            font-size: 0.92rem;
+            font-weight: 800;
+            padding: 0.8rem 0.7rem;
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+        }}
+        .pt-news-table td {{
+            padding: 0.75rem 0.7rem;
+            color: #111827;
+            border-bottom: 1px solid #f3f4f6;
+            vertical-align: top;
+        }}
+        .pt-news-table tr:last-child td {{
+            border-bottom: 0;
+        }}
+        .pt-news-headline {{
+            min-width: 320px;
+            font-weight: 750;
+            line-height: 1.25;
+        }}
+        .pt-news-table a {{
+            color: #4f46e5;
+            text-decoration: none;
+        }}
+        .pt-news-positive {{
+            color: #10b981 !important;
+            font-weight: 800;
+        }}
+        </style>
+        <div class="pt-news-table-wrap">
+            <table class="pt-news-table">
+                <thead><tr>{header_html}</tr></thead>
+                <tbody>{''.join(body_rows)}</tbody>
+            </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_article_card(article: dict[str, Any]) -> None:
     headline = html.escape(str(article.get("headline", "Untitled")))
     summary = html.escape(str(article.get("summary", "") or ""))
@@ -728,6 +816,38 @@ def render_market_intelligence_tab(db_path: str | Path = DEFAULT_DB_PATH) -> Non
     watchlist_only = bool(st.session_state.get("news_filter_watchlist_only", True))
     query = str(st.session_state.get("news_filter_query", ""))
 
+    with st.expander("Filters", expanded=False):
+        st.markdown("### Filters")
+        f1, f2, f3, f4 = st.columns(4)
+        with f1:
+            lookback_label = st.selectbox("Time window", lookback_options, index=lookback_options.index(lookback_label), key="news_filter_time_window")
+        with f2:
+            ticker = st.selectbox("Ticker", ticker_options, index=ticker_options.index(ticker), key="news_filter_ticker")
+        with f3:
+            sentiment = st.selectbox("Sentiment", sentiment_options, index=sentiment_options.index(sentiment), key="news_filter_sentiment")
+        with f4:
+            min_impact = st.slider("Minimum impact", min_value=0, max_value=100, value=min_impact, step=5, key="news_filter_min_impact")
+
+        f5, f6, f7 = st.columns(3)
+        with f5:
+            category = st.selectbox("Category", category_options, index=category_options.index(category), key="news_filter_category")
+        with f6:
+            source = st.selectbox("Source", source_options, index=source_options.index(source), key="news_filter_source")
+        with f7:
+            watchlist_only = st.checkbox("Watchlist only", value=watchlist_only, key="news_filter_watchlist_only")
+
+        query = st.text_input("Search news", value=query, placeholder="Search headline, summary, ticker, category...", key="news_filter_query")
+        active_bits = [
+            f"Window: {lookback_label}",
+            f"Ticker: {ticker}",
+            f"Sentiment: {sentiment}",
+            f"Min impact: {min_impact}",
+            "Watchlist only" if watchlist_only else "All articles",
+        ]
+        st.caption(" • ".join(active_bits))
+
+    render_news_engine_controls()
+
     lookback_hours = None
     if lookback_label == "1 hour":
         lookback_hours = 1
@@ -750,8 +870,8 @@ def render_market_intelligence_tab(db_path: str | Path = DEFAULT_DB_PATH) -> Non
         lookback_hours=lookback_hours,
     )
 
-    content_col, cards_col = st.columns([2, 1])
-    with content_col:
+    feed_tab, overview_tab, diagnostics_tab = st.tabs(["Live Feed", "Overview", "Diagnostics"])
+    with overview_tab:
         st.markdown("### Intelligence Overview")
         c1, c2 = st.columns(2)
         c1.plotly_chart(_impact_timeline(filtered), use_container_width=True)
@@ -775,19 +895,17 @@ def render_market_intelligence_tab(db_path: str | Path = DEFAULT_DB_PATH) -> Non
         with st.expander("Highest Impact Catalysts", expanded=False):
             _render_highest_impact_catalysts(filtered)
 
-        with st.expander("Raw latest article", expanded=False):
-            if not filtered.empty:
-                st.json(filtered.iloc[0].dropna().to_dict())
-
-    with cards_col:
+    with feed_tab:
         st.markdown("### Live Feed")
         st.caption(f"Showing {len(filtered):,} of {len(df):,} stored articles.")
 
         view_mode = st.radio("View", ["Cards", "Table"], horizontal=True)
         if view_mode == "Cards":
             max_cards = st.slider("Cards to show", 5, 100, 25, 5)
-            for _, row in filtered.head(max_cards).iterrows():
-                _render_article_card(row.to_dict())
+            card_cols = st.columns(4)
+            for idx, (_, row) in enumerate(filtered.head(max_cards).iterrows()):
+                with card_cols[idx % 4]:
+                    _render_article_card(row.to_dict())
         else:
             table_cols = [c for c in [
                 "published_at", "source", "headline", "tickers", "sentiment",
@@ -796,7 +914,7 @@ def render_market_intelligence_tab(db_path: str | Path = DEFAULT_DB_PATH) -> Non
             table = filtered[table_cols].copy()
             if "published_at" in table.columns:
                 table["published_at"] = table["published_at"].astype(str)
-            st.dataframe(table.head(500), use_container_width=True, hide_index=True)
+            _render_news_table(table, max_rows=500)
             st.download_button(
                 "Download filtered news CSV",
                 table.to_csv(index=False),
@@ -804,35 +922,16 @@ def render_market_intelligence_tab(db_path: str | Path = DEFAULT_DB_PATH) -> Non
                 "text/csv",
             )
 
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-    with st.expander("News engine health", expanded=False):
+    with diagnostics_tab:
+        st.markdown("### Diagnostics")
+        st.caption("Technical details for the local news engine and latest filtered article.")
         st.json(health or {"status": "No news engine heartbeat yet."})
         if process_status is not None:
             st.caption("Local process status")
             st.json(process_status.as_dict())
-
-    with st.expander("Filters", expanded=False):
-        f1, f2, f3, f4 = st.columns(4)
-        with f1:
-            st.selectbox("Time window", lookback_options, index=lookback_options.index(lookback_label), key="news_filter_time_window")
-        with f2:
-            st.selectbox("Ticker", ticker_options, index=ticker_options.index(ticker), key="news_filter_ticker")
-        with f3:
-            st.selectbox("Sentiment", sentiment_options, index=sentiment_options.index(sentiment), key="news_filter_sentiment")
-        with f4:
-            st.slider("Minimum impact", min_value=0, max_value=100, value=min_impact, step=5, key="news_filter_min_impact")
-
-        f5, f6, f7 = st.columns(3)
-        with f5:
-            st.selectbox("Category", category_options, index=category_options.index(category), key="news_filter_category")
-        with f6:
-            st.selectbox("Source", source_options, index=source_options.index(source), key="news_filter_source")
-        with f7:
-            st.checkbox("Watchlist only", value=watchlist_only, key="news_filter_watchlist_only")
-
-        st.text_input("Search news", value=query, placeholder="Search headline, summary, ticker, category...", key="news_filter_query")
-
-    render_news_engine_controls()
+        if not filtered.empty:
+            with st.expander("Raw latest article", expanded=False):
+                st.json(filtered.iloc[0].dropna().to_dict())
 
 
 # -----------------------------------------------------------------------------

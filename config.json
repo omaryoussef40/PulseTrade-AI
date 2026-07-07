@@ -41,11 +41,11 @@
   "risk": {
     "account_size": 3064.19,
     "use_ibkr_buying_power": true,
-    "max_trades_per_day": 2,
-    "max_spend_per_trade_pct": 70.0,
-    "max_daily_capital_pct": 80.0,
-    "max_spend_per_trade": 2144.93,
-    "max_daily_capital": 2451.35,
+    "max_trades_per_day": 3,
+    "max_spend_per_trade_pct": 50.0,
+    "max_daily_capital_pct": 70.0,
+    "max_spend_per_trade": 1532.1,
+    "max_daily_capital": 2144.93,
     "max_contracts": 20,
     "entry_cutoff_hour": 11,
     "entry_cutoff_minute": 0,
@@ -60,7 +60,7 @@
     "max_daily_drawdown_pct": 5.0
   },
   "order": {
-    "type": "LIMIT"
+    "type": "MARKET"
   },
   "watchlist": [
     "SPY",
@@ -144,6 +144,9 @@
     "trade_query_id": "1556538",
     "base_url": ""
   },
+  "performance": {
+    "original_deposited_capital": 2300.0
+  },
   "news": {
     "benzinga_api_key": "bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74",
     "poll_interval_seconds": 30,
@@ -204,8 +207,5 @@
   },
   "dashboard": {
     "auto_start_engines": true
-  },
-  "performance": {
-    "original_deposited_capital": 2300.0
   }
 }
