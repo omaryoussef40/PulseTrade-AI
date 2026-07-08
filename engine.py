@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import atexit
 import json
+import os
 import time
 import traceback
 from datetime import datetime, time as dtime
@@ -52,8 +54,47 @@ from bot_core import (
 
 BASE_DIR = Path(__file__).resolve().parent
 EXPORT_DIR = BASE_DIR / "exports"
+DATA_DIR = BASE_DIR / "data"
+ENGINE_PID_FILE = DATA_DIR / "trading_engine.pid"
 PENDING_APPROVALS_FILE = EXPORT_DIR / "pending_order_approvals.json"
 TELEGRAM_APPROVAL_STATE_FILE = EXPORT_DIR / "telegram_approval_state.json"
+
+
+def _is_pid_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def claim_single_engine_instance() -> bool:
+    DATA_DIR.mkdir(exist_ok=True)
+    current_pid = os.getpid()
+    try:
+        existing_pid = int(ENGINE_PID_FILE.read_text(encoding="utf-8").strip())
+    except Exception:
+        existing_pid = 0
+
+    if existing_pid and existing_pid != current_pid and _is_pid_running(existing_pid):
+        message = f"Engine already running as PID {existing_pid}; refusing duplicate PID {current_pid}."
+        app_log(message, "WARN")
+        write_health(engine_running=True, last_status="Duplicate engine refused", last_error=message)
+        return False
+
+    ENGINE_PID_FILE.write_text(str(current_pid), encoding="utf-8")
+
+    def _cleanup_pid_file() -> None:
+        try:
+            if ENGINE_PID_FILE.read_text(encoding="utf-8").strip() == str(current_pid):
+                ENGINE_PID_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    atexit.register(_cleanup_pid_file)
+    return True
 
 
 def scan_result_session_date(result: dict):
@@ -267,7 +308,19 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict) -> str:
         notes=f"Telegram approval submitted: {order.get('id')}",
     )
     if filled_qty > 0:
-        add_active_position_from_entry(row, option_full, filled_qty, entry_price, status)
+        cfg = load_config()
+        risk = cfg.get("risk", {})
+        add_active_position_from_entry(
+            row,
+            option_full,
+            filled_qty,
+            entry_price,
+            status,
+            ib=ib,
+            account=ib_cfg.account,
+            stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
+            take_profit_pct=float(risk.get("take_profit_pct", 30.0)),
+        )
     update_pending_approval(order["id"], status="submitted", submitted_at=datetime.now(EASTERN).isoformat(), broker_status=status)
     return status
 
@@ -386,7 +439,13 @@ def run_cycle() -> None:
         app_log(f"IBKR execution sync before risk checks failed: {exc}", "WARN")
 
     try:
-        sync_events = sync_active_positions_from_broker(ib, account=ib_cfg.account)
+        sync_events = sync_active_positions_from_broker(
+            ib,
+            account=ib_cfg.account,
+            stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
+            take_profit_pct=float(risk.get("take_profit_pct", 30.0)),
+            submit_protection=orders_unlocked_from_config(cfg),
+        )
         if sync_events:
             app_log(f"IBKR position sync restored active positions | events={len(sync_events)}")
     except Exception as exc:
@@ -672,7 +731,17 @@ def run_cycle() -> None:
                 notes="Auto trader entry submitted",
             )
             if filled_qty > 0:
-                add_active_position_from_entry(row, option_full, filled_qty, entry_price, status)
+                add_active_position_from_entry(
+                    row,
+                    option_full,
+                    filled_qty,
+                    entry_price,
+                    status,
+                    ib=ib,
+                    account=ib_cfg.account,
+                    stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
+                    take_profit_pct=float(risk.get("take_profit_pct", 30.0)),
+                )
             submitted += 1
             remaining_trades -= 1
             remaining_capital -= estimated_cost
@@ -699,6 +768,8 @@ def run_cycle() -> None:
 
 
 def main() -> None:
+    if not claim_single_engine_instance():
+        return
     app_log("Engine started.")
     write_health(engine_running=True, started_at=datetime.now(EASTERN).isoformat(), last_status="Engine started")
     while True:

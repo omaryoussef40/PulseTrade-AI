@@ -25,7 +25,7 @@
   },
   "strategy": {
     "option_dte": 7,
-    "min_score": 75,
+    "min_score": 85,
     "min_confidence": 0,
     "use_rvol_filter": false,
     "min_rvol": 1.5,
@@ -36,16 +36,16 @@
     "active_strategy": "pmb",
     "orb_minutes": 15,
     "first_signal_minutes": 15,
-    "min_session_bars": 3
+    "min_session_bars": 4
   },
   "risk": {
-    "account_size": 3064.19,
+    "account_size": 4146.97,
     "use_ibkr_buying_power": true,
-    "max_trades_per_day": 3,
-    "max_spend_per_trade_pct": 50.0,
-    "max_daily_capital_pct": 70.0,
-    "max_spend_per_trade": 1532.1,
-    "max_daily_capital": 2144.93,
+    "max_trades_per_day": 2,
+    "max_spend_per_trade_pct": 40.0,
+    "max_daily_capital_pct": 80.0,
+    "max_spend_per_trade": 1658.79,
+    "max_daily_capital": 3317.58,
     "max_contracts": 20,
     "entry_cutoff_hour": 11,
     "entry_cutoff_minute": 0,
@@ -98,9 +98,9 @@
     "CRWD"
   ],
   "dynamic_watchlist": {
-    "enabled": false,
-    "mode": "Manual",
-    "max_symbols": 5,
+    "enabled": true,
+    "mode": "Automatic",
+    "max_symbols": 15,
     "refresh_hour": 9,
     "refresh_minute": 35,
     "source_universe": [
@@ -145,7 +145,7 @@
     "base_url": ""
   },
   "performance": {
-    "original_deposited_capital": 2300.0
+    "original_deposited_capital": 4500.0
   },
   "news": {
     "benzinga_api_key": "bz.SHPKXEACLAI54NMQAVVFFDHNV5TPLG74",

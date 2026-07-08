@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -12,6 +14,7 @@ import requests
 
 FLEX_BASE_URL = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
 USER_AGENT = "PulseTrade-AI Flex Sync"
+EASTERN = ZoneInfo("America/New_York")
 
 
 def _first_text(root: ET.Element, names: list[str]) -> str:
@@ -23,13 +26,14 @@ def _first_text(root: ET.Element, names: list[str]) -> str:
 
 
 def _node_value(node: ET.Element, names: list[str]) -> str:
-    lowered = {name.lower() for name in names}
-    for key, value in node.attrib.items():
-        if key.lower() in lowered:
-            return str(value or "").strip()
-    for child in node:
-        if child.tag.lower() in lowered and child.text:
-            return child.text.strip()
+    for name in names:
+        wanted = name.lower()
+        for key, value in node.attrib.items():
+            if key.lower() == wanted:
+                return str(value or "").strip()
+        for child in node:
+            if child.tag.lower() == wanted and child.text:
+                return child.text.strip()
     return ""
 
 
@@ -40,20 +44,49 @@ def _number(value, default: float = 0.0) -> float:
         return default
 
 
+def _parse_flex_timestamp(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    candidates = [
+        text,
+        text.replace(";", " "),
+        text.replace("T", " "),
+    ]
+    compact = re.sub(r"\D", "", text)
+    if len(compact) >= 14:
+        candidates.append(f"{compact[:8]} {compact[8:14]}")
+    elif len(compact) == 8:
+        candidates.append(compact)
+
+    for candidate in candidates:
+        parsed = pd.to_datetime(candidate, errors="coerce")
+        if pd.isna(parsed):
+            continue
+        dt = parsed.to_pydatetime()
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=EASTERN)
+        else:
+            dt = dt.astimezone(EASTERN)
+        return dt
+    return None
+
+
 def _timestamp(row: ET.Element) -> str:
     raw_datetime = _node_value(row, ["dateTime", "date_time", "tradeDateTime", "transactionDateTime"])
     if raw_datetime:
-        parsed = pd.to_datetime(raw_datetime, errors="coerce")
-        if pd.notna(parsed):
+        parsed = _parse_flex_timestamp(raw_datetime)
+        if parsed:
             return parsed.isoformat()
 
     raw_date = _node_value(row, ["tradeDate", "date", "transactionDate"])
     raw_time = _node_value(row, ["tradeTime", "time", "transactionTime"])
     combined = f"{raw_date} {raw_time}".strip()
-    parsed = pd.to_datetime(combined, errors="coerce")
-    if pd.notna(parsed):
+    parsed = _parse_flex_timestamp(combined)
+    if parsed:
         return parsed.isoformat()
-    return datetime.now().isoformat()
+    return datetime.now(EASTERN).isoformat()
 
 
 def _option_side(row: ET.Element) -> str:
@@ -71,10 +104,15 @@ def _option_side(row: ET.Element) -> str:
 
 
 def _event(row: ET.Element) -> str:
-    buy_sell = _node_value(row, ["buySell", "side", "transactionType"]).upper()
+    buy_sell = _node_value(row, ["buySell", "side"]).upper()
     if buy_sell in {"BUY", "BOT", "B"} or "BUY" in buy_sell:
         return "ENTRY"
     if buy_sell in {"SELL", "SLD", "S"} or "SELL" in buy_sell:
+        return "EXIT"
+    transaction_type = _node_value(row, ["transactionType"]).upper()
+    if "BUY" in transaction_type:
+        return "ENTRY"
+    if "SELL" in transaction_type:
         return "EXIT"
     return "TRADE"
 
@@ -126,17 +164,17 @@ def parse_trade_confirmations(xml_text: str) -> pd.DataFrame:
     ]
     rows = []
     for node in nodes:
-        symbol = _node_value(node, ["symbol", "underlyingSymbol", "ticker"])
+        symbol = _node_value(node, ["underlyingSymbol", "symbol", "ticker"])
         description = _node_value(node, ["description", "ibDescription", "assetDescription"])
         quantity = abs(_number(_node_value(node, ["quantity", "qty", "shares"])))
-        price = _number(_node_value(node, ["price", "tradePrice"]))
+        price = _number(_node_value(node, ["tradePrice", "price"]))
         event = _event(node)
         signal = _option_side(node)
         expiry = _node_value(node, ["expiry", "expiryDate", "maturity"])
         strike = _node_value(node, ["strike", "strikePrice"])
-        external_id = _node_value(node, ["tradeID", "tradeId", "execID", "executionID", "transactionID", "ibExecID"])
-        realized_pnl = _number(_node_value(node, ["realizedPnl", "realizedPNL", "fifoPnl", "mtmPnl"]))
-        commission = _number(_node_value(node, ["commission", "ibCommission"]))
+        external_id = _node_value(node, ["tradeID", "tradeId", "ibExecID", "execID", "executionID", "transactionID"])
+        realized_pnl = _number(_node_value(node, ["fifoPnlRealized", "realizedPnl", "realizedPNL", "fifoPnl", "mtmPnl"]))
+        commission = _number(_node_value(node, ["ibCommission", "commission"]))
         con_id = _node_value(node, ["conid", "conId", "contractId"])
 
         option = description or " ".join(x for x in [symbol, expiry, str(strike), signal] if x)
@@ -161,24 +199,52 @@ def parse_trade_confirmations(xml_text: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def merge_trade_rows(trades: pd.DataFrame, trade_log_file: str | Path) -> int:
+def merge_trade_rows(trades: pd.DataFrame, trade_log_file: str | Path) -> tuple[int, int]:
     if trades.empty:
-        return 0
+        return 0, 0
     path = Path(trade_log_file)
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = pd.read_csv(path) if path.exists() else pd.DataFrame()
+    if not existing.empty:
+        existing = existing.astype("object")
     existing_ids = set()
     if not existing.empty and "external_id" in existing.columns:
         existing_ids = set(existing["external_id"].dropna().astype(str).tolist())
     new_rows = trades[~trades["external_id"].astype(str).isin(existing_ids)].copy()
-    if new_rows.empty:
-        return 0
+    updated = 0
+    if not existing.empty and "external_id" in existing.columns:
+        existing["external_id"] = existing["external_id"].astype(str)
+        for _, trade in trades[trades["external_id"].astype(str).isin(existing_ids)].iterrows():
+            external_id = str(trade.get("external_id", "") or "")
+            if not external_id:
+                continue
+            matches = existing.index[existing["external_id"] == external_id].tolist()
+            if not matches:
+                continue
+            idx = matches[0]
+            changed = False
+            for column, value in trade.items():
+                if pd.isna(value):
+                    continue
+                if column not in existing.columns:
+                    existing[column] = pd.NA
+                old_value = existing.at[idx, column]
+                if str(old_value) != str(value):
+                    existing.at[idx, column] = value
+                    changed = True
+            if changed:
+                updated += 1
+    if new_rows.empty and updated == 0:
+        return 0, 0
     combined = pd.concat([existing, new_rows], ignore_index=True, sort=False) if not existing.empty else new_rows
     if "timestamp" in combined.columns:
-        combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
-        combined = combined.dropna(subset=["timestamp"]).sort_values("timestamp")
+        try:
+            sort_ts = pd.to_datetime(combined["timestamp"], errors="coerce", utc=True, format="mixed")
+        except TypeError:
+            sort_ts = pd.to_datetime(combined["timestamp"], errors="coerce", utc=True)
+        combined = combined.assign(_sort_ts=sort_ts).sort_values("_sort_ts", na_position="last").drop(columns=["_sort_ts"])
     combined.to_csv(path, index=False)
-    return len(new_rows)
+    return len(new_rows), updated
 
 
 def sync_flex_trades_to_trade_log(config: dict, trade_log_file: str | Path) -> tuple[int, str]:
@@ -192,5 +258,9 @@ def sync_flex_trades_to_trade_log(config: dict, trade_log_file: str | Path) -> t
     reference_code = send_flex_request(token, query_id, base_url)
     xml_text = get_flex_statement(token, reference_code, base_url)
     trades = parse_trade_confirmations(xml_text)
-    imported = merge_trade_rows(trades, trade_log_file)
-    return imported, f"Flex rows parsed={len(trades)} imported={imported}"
+    debug_dir = Path(trade_log_file).parent
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    Path(debug_dir / "ibkr_flex_last_response.xml").write_text(xml_text, encoding="utf-8")
+    trades.to_csv(debug_dir / "ibkr_flex_last_parsed.csv", index=False)
+    imported, updated = merge_trade_rows(trades, trade_log_file)
+    return imported + updated, f"Flex rows parsed={len(trades)} imported={imported} updated={updated}"

@@ -700,17 +700,85 @@ def place_option_order(
     if account:
         order.account = account
 
+    submitted_at = datetime.now(EASTERN)
     trade = ib.placeOrder(option_contract, order)
-    for _ in range(8):
+    execution_fills = []
+    for attempt in range(60):
         ib.sleep(1)
         status = str(getattr(trade.orderStatus, "status", "") or "")
         filled = float(getattr(trade.orderStatus, "filled", 0) or 0)
         remaining = float(getattr(trade.orderStatus, "remaining", quantity) or 0)
-        if filled >= quantity or status.lower() in {"filled", "cancelled", "canceled", "apicancelled", "inactive"}:
+        if attempt % 3 == 0 or status.lower() in {"cancelled", "canceled", "apicancelled", "inactive"}:
+            execution_fills = recent_contract_execution_fills(
+                ib,
+                option_contract,
+                action=action,
+                account=account,
+                since=submitted_at - timedelta(seconds=5),
+            )
+        execution_qty = sum(float(getattr(getattr(fill, "execution", None), "shares", 0) or 0) for fill in execution_fills)
+        if filled >= quantity or execution_qty >= quantity or status.lower() == "filled":
             break
         if filled > 0 and remaining <= 0:
             break
+    setattr(trade, "pulse_execution_fills", execution_fills)
     return trade
+
+
+def recent_contract_execution_fills(
+    ib: IB,
+    option_contract,
+    action: str,
+    account: str | None = None,
+    since: datetime | None = None,
+) -> list:
+    """Fetch recent IBKR executions for the same contract/action.
+
+    IBKR orderStatus can briefly report Cancelled/Inactive while executions are
+    still the real source of truth. This helper lets entry logging prefer fills.
+    """
+    since = since or (datetime.now(EASTERN) - timedelta(minutes=5))
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=EASTERN)
+    else:
+        since = since.astimezone(EASTERN)
+
+    filt = ExecutionFilter()
+    filt.time = since.strftime("%Y%m%d %H:%M:%S")
+    if account:
+        filt.acctCode = account
+
+    try:
+        fills = ib.reqExecutions(filt)
+    except Exception:
+        return []
+
+    target_con_id = getattr(option_contract, "conId", None)
+    target_symbol = str(getattr(option_contract, "localSymbol", "") or getattr(option_contract, "symbol", "") or "")
+    wanted_sides = {"BOT", "BUY"} if str(action).upper() == "BUY" else {"SLD", "SELL"}
+    matched = []
+    for fill in fills or []:
+        contract = getattr(fill, "contract", None)
+        execution = getattr(fill, "execution", None)
+        if contract is None or execution is None:
+            continue
+        if account and getattr(execution, "acctNumber", None) and getattr(execution, "acctNumber", None) != account:
+            continue
+        side = str(getattr(execution, "side", "") or "").upper()
+        if side not in wanted_sides:
+            continue
+        con_id = getattr(contract, "conId", None)
+        local_symbol = str(getattr(contract, "localSymbol", "") or getattr(contract, "symbol", "") or "")
+        same_con_id = False
+        try:
+            same_con_id = bool(target_con_id and con_id and int(float(con_id)) == int(float(target_con_id)))
+        except Exception:
+            same_con_id = False
+        if same_con_id:
+            matched.append(fill)
+        elif target_symbol and local_symbol and target_symbol == local_symbol:
+            matched.append(fill)
+    return matched
 
 
 def trade_fill_details(trade, requested_quantity: int, fallback_price: float | None = None) -> dict:
@@ -721,12 +789,18 @@ def trade_fill_details(trade, requested_quantity: int, fallback_price: float | N
     remaining_qty = float(getattr(order_status, "remaining", max(int(requested_quantity), 0)) or 0)
     avg_fill_price = float(getattr(order_status, "avgFillPrice", 0) or 0)
 
-    fills = list(getattr(trade, "fills", []) or [])
+    fills = list(getattr(trade, "fills", []) or []) + list(getattr(trade, "pulse_execution_fills", []) or [])
     if fills:
         fill_qty = 0.0
         fill_value = 0.0
+        seen_exec_ids = set()
         for fill in fills:
             execution = getattr(fill, "execution", None)
+            exec_id = str(getattr(execution, "execId", "") or "")
+            if exec_id and exec_id in seen_exec_ids:
+                continue
+            if exec_id:
+                seen_exec_ids.add(exec_id)
             shares = float(getattr(execution, "shares", 0) or 0)
             price = float(getattr(execution, "price", 0) or 0)
             fill_qty += shares
@@ -766,26 +840,29 @@ def log_trade(row: dict):
     df.to_csv(TRADE_LOG_FILE, mode="a", index=False, header=not exists)
 
 
-def sync_today_executions_to_trade_log(ib: IB, account: str | None = None) -> tuple[int, str]:
-    """Import today's IBKR executions into the local journal.
+def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, target_date=None) -> tuple[int, str]:
+    """Import IBKR executions for one ET date into the local journal.
 
-    Gateway exposes same-day executions before Flex statements are available.
+    Gateway exposes recent executions before Flex statements are available.
     Rows are grouped by option contract and side so partial fills become one
     entry/exit row in the performance journal.
     """
     if not IB_AVAILABLE:
         return 0, "IBKR API is not available."
 
+    target_date = target_date or datetime.now(EASTERN).date()
+    if hasattr(target_date, "date"):
+        target_date = target_date.date()
+
     filt = ExecutionFilter()
-    filt.time = datetime.now(EASTERN).strftime("%Y%m%d 00:00:00")
+    filt.time = datetime.combine(target_date, datetime.min.time(), tzinfo=EASTERN).strftime("%Y%m%d %H:%M:%S")
     if account:
         filt.acctCode = account
 
     fills = ib.reqExecutions(filt)
     if not fills:
-        return 0, "No IBKR executions found for today."
+        return 0, f"No IBKR executions found for {target_date}."
 
-    today_et = datetime.now(EASTERN).date()
     grouped: dict[tuple, dict] = {}
     for fill in fills:
         contract = getattr(fill, "contract", None)
@@ -818,7 +895,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None) -> tu
         if hasattr(exec_time, "astimezone"):
             exec_time = exec_time.astimezone(EASTERN)
         try:
-            if exec_time.date() != today_et:
+            if exec_time.date() != target_date:
                 continue
         except Exception:
             continue
@@ -827,7 +904,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None) -> tu
             "timestamp": exec_time,
             "event": event,
             "source": "IBKR_EXECUTION",
-            "external_id": f"IBKR_EXEC-{today_et}-{key[0]}-{group_side}",
+            "external_id": f"IBKR_EXEC-{target_date}-{key[0]}-{group_side}",
             "symbol": symbol,
             "signal": signal,
             "option": option_label,
@@ -845,7 +922,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None) -> tu
             row["timestamp"] = exec_time
 
     if not grouped:
-        return 0, "No stock/option executions found for today."
+        return 0, f"No stock/option executions found for {target_date}."
 
     rows = []
     entry_price_by_contract = {}
@@ -877,15 +954,40 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None) -> tu
     path = _Path(TRADE_LOG_FILE)
     existing = pd.read_csv(path) if path.exists() else pd.DataFrame()
     existing_ids = set(existing.get("external_id", pd.Series(dtype=str)).dropna().astype(str).tolist()) if not existing.empty else set()
+    existing_trade_keys = set()
+    if not existing.empty:
+        existing_ts = _parse_timestamps_utc(existing.get("timestamp", pd.Series(dtype=str))).dt.tz_convert(EASTERN)
+        for pos, (_, old) in enumerate(existing.iterrows()):
+            try:
+                old_date = existing_ts.iloc[pos].date()
+            except Exception:
+                old_date = None
+            old_event = str(old.get("event", "") or "").upper()
+            old_contract = str(old.get("con_id", "") or old.get("option", "") or "")
+            old_qty = _number_or_none(old.get("filled_quantity")) or _number_or_none(old.get("quantity")) or 0.0
+            old_price = _number_or_none(old.get("entry_price")) if old_event == "ENTRY" else _number_or_none(old.get("exit_price"))
+            existing_trade_keys.add((old_date, old_event, old_contract, round(float(old_qty), 4), round(float(old_price or 0.0), 4)))
     imported = 0
     new_rows = []
 
     for row in rows:
         if row["external_id"] in existing_ids:
             continue
+        row_contract = str(row.get("con_id", "") or row.get("option", "") or "")
+        row_price = row.get("entry_price") if row["event"] == "ENTRY" else row.get("exit_price")
+        trade_key = (
+            target_date,
+            str(row.get("event", "") or "").upper(),
+            row_contract,
+            round(float(row.get("filled_quantity") or row.get("quantity") or 0.0), 4),
+            round(float(row_price or 0.0), 4),
+        )
+        if trade_key in existing_trade_keys:
+            continue
         new_rows.append({k: v for k, v in row.items() if k != "value"})
         imported += 1
         existing_ids.add(row["external_id"])
+        existing_trade_keys.add(trade_key)
 
     combined = pd.concat([existing, pd.DataFrame(new_rows)], ignore_index=True, sort=False) if new_rows else existing
     if not combined.empty and "timestamp" in combined.columns:
@@ -1018,7 +1120,13 @@ def _trade_log_entry_lookup() -> dict[str, dict]:
     return lookup
 
 
-def sync_active_positions_from_broker(ib: IB, account: str | None = None) -> list[dict]:
+def sync_active_positions_from_broker(
+    ib: IB,
+    account: str | None = None,
+    stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
+    take_profit_pct: float = DEFAULT_TAKE_PROFIT_PCT,
+    submit_protection: bool = False,
+) -> list[dict]:
     """Add missing local active-position records for filled IBKR option positions.
 
     This covers the case where the order callback said Inactive/Submitted locally
@@ -1068,7 +1176,7 @@ def sync_active_positions_from_broker(ib: IB, account: str | None = None) -> lis
         symbol = broker_pos.get("symbol") or str(log_row.get("symbol", "") or "").upper()
         signal = broker_pos.get("signal") or str(log_row.get("signal", "") or "").upper()
         position_id = f"{symbol}-{broker_pos.get('expiry')}-{broker_pos.get('strike')}-{signal}-{datetime.now(EASTERN).strftime('%Y%m%d%H%M%S')}"
-        local_positions.append({
+        position = {
             "id": position_id,
             "symbol": symbol,
             "signal": signal,
@@ -1078,21 +1186,33 @@ def sync_active_positions_from_broker(ib: IB, account: str | None = None) -> lis
             "con_id": broker_pos.get("con_id"),
             "quantity": broker_pos.get("quantity"),
             "entry_price": round(float(entry_price), 2),
-            "current_stop_price": round(float(entry_price) * 0.80, 2),
-            "take_profit_price": round(float(entry_price) * 1.30, 2),
+            "current_stop_price": round(float(entry_price) * (1 - float(stop_loss_pct) / 100), 2),
+            "take_profit_price": round(float(entry_price) * (1 + float(take_profit_pct) / 100), 2),
             "highest_price": round(float(entry_price), 2),
             "breakeven_active": False,
             "trailing_active": False,
             "entry_time": datetime.now(EASTERN).isoformat(),
             "entry_status": "Filled via IBKR sync",
             "source": "IBKR_POSITION_SYNC",
-        })
+        }
+        if submit_protection:
+            protection_events = ensure_protective_orders(
+                ib,
+                position,
+                account=account,
+                stop_loss_pct=stop_loss_pct,
+                take_profit_pct=take_profit_pct,
+            )
+        else:
+            protection_events = []
+        local_positions.append(position)
         added.append({
             "Symbol": symbol,
             "Option": option,
             "Action": "ADDED",
             "Reason": "Open IBKR position missing from local active positions",
         })
+        added.extend(protection_events)
 
     if added:
         write_active_positions(local_positions)
@@ -1142,6 +1262,187 @@ def reconstruct_option_contract(pos: dict):
     if pos.get("con_id"):
         contract.conId = int(pos["con_id"])
     return contract
+
+
+def _trade_is_active(trade) -> bool:
+    status = str(getattr(getattr(trade, "orderStatus", None), "status", "") or "").lower()
+    return status not in {"filled", "cancelled", "canceled", "apicancelled", "inactive"}
+
+
+def _order_id(order) -> int | None:
+    try:
+        value = int(getattr(order, "orderId", 0) or 0)
+        return value if value > 0 else None
+    except Exception:
+        return None
+
+
+def _coerce_order_id(value) -> int | None:
+    try:
+        value = int(float(value or 0))
+        return value if value > 0 else None
+    except Exception:
+        return None
+
+
+def _open_sell_trades_for_position(ib: IB, pos: dict) -> list:
+    try:
+        ib.reqOpenOrders()
+        ib.sleep(0.2)
+    except Exception:
+        pass
+
+    con_id = pos.get("con_id")
+    matches = []
+    for trade in ib.openTrades() or []:
+        if not _trade_is_active(trade):
+            continue
+        order = getattr(trade, "order", None)
+        contract = getattr(trade, "contract", None)
+        if str(getattr(order, "action", "") or "").upper() != "SELL":
+            continue
+        try:
+            same_contract = bool(con_id and int(float(getattr(contract, "conId", 0) or 0)) == int(float(con_id)))
+        except Exception:
+            same_contract = False
+        if same_contract:
+            matches.append(trade)
+    return matches
+
+
+def ensure_protective_orders(
+    ib: IB,
+    pos: dict,
+    account: str | None = None,
+    stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
+    take_profit_pct: float = DEFAULT_TAKE_PROFIT_PCT,
+) -> list[dict]:
+    """Create missing broker-side fixed SL/TP OCA orders for an open option position."""
+    qty = int(abs(float(pos.get("quantity", 0) or 0)))
+    entry_price = float(pos.get("entry_price", 0) or 0)
+    if qty <= 0 or entry_price <= 0:
+        return []
+
+    contract = reconstruct_option_contract(pos)
+    try:
+        qualified = ib.qualifyContracts(contract)
+        if qualified:
+            contract = qualified[0]
+            pos["con_id"] = getattr(contract, "conId", pos.get("con_id"))
+    except Exception:
+        pass
+
+    stop_price = round(max(0.01, float(pos.get("current_stop_price") or entry_price * (1 - float(stop_loss_pct) / 100))), 2)
+    take_profit_price = round(max(0.01, float(pos.get("take_profit_price") or entry_price * (1 + float(take_profit_pct) / 100))), 2)
+    pos["current_stop_price"] = stop_price
+    pos["take_profit_price"] = take_profit_price
+
+    open_sell_trades = _open_sell_trades_for_position(ib, pos)
+    existing_order_ids = {_order_id(getattr(trade, "order", None)) for trade in open_sell_trades}
+    existing_order_ids.discard(None)
+
+    stop_order_id = _coerce_order_id(pos.get("ibkr_stop_order_id"))
+    take_profit_order_id = _coerce_order_id(pos.get("ibkr_take_profit_order_id"))
+    want_take_profit = not bool(pos.get("trailing_active", False))
+    has_stop = bool(stop_order_id and stop_order_id in existing_order_ids)
+    has_take_profit = bool(take_profit_order_id and take_profit_order_id in existing_order_ids)
+    stop_trade = None
+
+    for trade in open_sell_trades:
+        order = getattr(trade, "order", None)
+        order_type = str(getattr(order, "orderType", "") or "").upper()
+        if "STP" in order_type and not has_stop:
+            pos["ibkr_stop_order_id"] = _order_id(order)
+            has_stop = True
+            stop_trade = trade
+        elif order_type == "LMT" and not has_take_profit:
+            pos["ibkr_take_profit_order_id"] = _order_id(order)
+            has_take_profit = True
+        elif "STP" in order_type and _order_id(order) == stop_order_id:
+            stop_trade = trade
+
+    events = []
+    oca_group = str(pos.get("ibkr_oca_group") or f"PulseProtect-{pos.get('id') or pos.get('con_id')}-{int(time.time())}")
+    pos["ibkr_oca_group"] = oca_group
+
+    if not want_take_profit:
+        for trade in open_sell_trades:
+            order = getattr(trade, "order", None)
+            order_type = str(getattr(order, "orderType", "") or "").upper()
+            order_id = _order_id(order)
+            if order_type != "LMT":
+                continue
+            if take_profit_order_id and order_id != take_profit_order_id:
+                continue
+            try:
+                ib.cancelOrder(order)
+                ib.sleep(0.2)
+                events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "CANCEL_TP_FOR_TRAIL", "Order ID": order_id})
+            except Exception as exc:
+                events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "CANCEL_TP_FAILED", "Status": str(exc)})
+        pos["ibkr_take_profit_order_id"] = None
+        has_take_profit = True
+
+    if not has_stop:
+        stop_order = StopOrder("SELL", qty, stop_price)
+        stop_order.ocaGroup = oca_group
+        stop_order.ocaType = 1
+        stop_order.tif = "DAY"
+        if account:
+            stop_order.account = account
+        trade = ib.placeOrder(contract, stop_order)
+        ib.sleep(0.2)
+        pos["ibkr_stop_order_id"] = _order_id(getattr(trade, "order", None))
+        events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_STOP", "Stop": stop_price})
+    elif stop_trade is not None:
+        stop_order = getattr(stop_trade, "order", None)
+        old_stop = float(getattr(stop_order, "auxPrice", 0) or 0)
+        if stop_price > old_stop + 0.009:
+            stop_order.auxPrice = stop_price
+            if account:
+                stop_order.account = account
+            ib.placeOrder(contract, stop_order)
+            ib.sleep(0.2)
+            events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "UPDATE_STOP", "Stop": stop_price})
+
+    if want_take_profit and not has_take_profit:
+        target_order = LimitOrder("SELL", qty, take_profit_price)
+        target_order.ocaGroup = oca_group
+        target_order.ocaType = 1
+        target_order.tif = "DAY"
+        if account:
+            target_order.account = account
+        trade = ib.placeOrder(contract, target_order)
+        ib.sleep(0.2)
+        pos["ibkr_take_profit_order_id"] = _order_id(getattr(trade, "order", None))
+        events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_TP", "TP": take_profit_price})
+
+    pos["protective_orders_status"] = "Submitted" if events else "Already protected"
+    return events
+
+
+def cancel_protective_orders(ib: IB, pos: dict) -> list[dict]:
+    """Cancel local-position protective orders before Pulse submits its own exit."""
+    wanted_ids = {
+        _coerce_order_id(pos.get("ibkr_stop_order_id")),
+        _coerce_order_id(pos.get("ibkr_take_profit_order_id")),
+    }
+    wanted_ids.discard(None)
+    if not wanted_ids:
+        return []
+
+    events = []
+    for trade in _open_sell_trades_for_position(ib, pos):
+        order = getattr(trade, "order", None)
+        if _order_id(order) not in wanted_ids:
+            continue
+        try:
+            ib.cancelOrder(order)
+            ib.sleep(0.2)
+            events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "CANCEL_PROTECTION", "Order ID": _order_id(order)})
+        except Exception as exc:
+            events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "CANCEL_PROTECTION_FAILED", "Status": str(exc)})
+    return events
 
 
 def _position_matches_broker_position(pos: dict, broker_pos) -> bool:
@@ -1262,6 +1563,7 @@ def submit_exit_order(
     if qty <= 0:
         raise ValueError("No quantity to exit")
 
+    cancel_protective_orders(ib, pos)
     order = MarketOrder("SELL", qty) if use_market else LimitOrder("SELL", qty, round(float(exit_price), 2))
     if account:
         order.account = account
@@ -1288,14 +1590,24 @@ def submit_exit_order(
     return trade, realized_pnl
 
 
-def add_active_position_from_entry(row: dict, option_full: dict, qty: int, entry_price: float, trade_status: str):
+def add_active_position_from_entry(
+    row: dict,
+    option_full: dict,
+    qty: int,
+    entry_price: float,
+    trade_status: str,
+    ib: IB | None = None,
+    account: str | None = None,
+    stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
+    take_profit_pct: float = DEFAULT_TAKE_PROFIT_PCT,
+):
     if not is_filled_order_status(trade_status):
-        return
+        return None
 
     contract = option_full["Contract"]
     positions = read_active_positions()
     position_id = f"{row['Symbol']}-{option_full['Expiry']}-{option_full['Strike']}-{option_full['Type']}-{datetime.now(EASTERN).strftime('%Y%m%d%H%M%S')}"
-    positions.append({
+    position = {
         "id": position_id,
         "symbol": row["Symbol"],
         "signal": row["Signal"],
@@ -1305,15 +1617,25 @@ def add_active_position_from_entry(row: dict, option_full: dict, qty: int, entry
         "con_id": getattr(contract, "conId", None),
         "quantity": int(qty),
         "entry_price": round(float(entry_price), 2),
-        "current_stop_price": round(float(entry_price) * 0.80, 2),
-        "take_profit_price": round(float(entry_price) * 1.30, 2),
+        "current_stop_price": round(float(entry_price) * (1 - float(stop_loss_pct) / 100), 2),
+        "take_profit_price": round(float(entry_price) * (1 + float(take_profit_pct) / 100), 2),
         "highest_price": round(float(entry_price), 2),
         "breakeven_active": False,
         "trailing_active": False,
         "entry_time": datetime.now(EASTERN).isoformat(),
         "entry_status": trade_status,
-    })
+    }
+    if ib is not None:
+        ensure_protective_orders(
+            ib,
+            position,
+            account=account,
+            stop_loss_pct=stop_loss_pct,
+            take_profit_pct=take_profit_pct,
+        )
+    positions.append(position)
     write_active_positions(positions)
+    return position
 
 
 def manage_open_positions(
@@ -1347,6 +1669,16 @@ def manage_open_positions(
             qualified = ib.qualifyContracts(contract)
             if qualified:
                 contract = qualified[0]
+                pos["con_id"] = getattr(contract, "conId", pos.get("con_id"))
+            if allow_live_orders:
+                protection_events = ensure_protective_orders(
+                    ib,
+                    pos,
+                    account=account,
+                    stop_loss_pct=stop_loss_pct,
+                    take_profit_pct=take_profit_pct,
+                )
+                events.extend(protection_events)
             market = get_snapshot_mid(ib, contract)
             current_price = market.get("Mid")
             if current_price is None or np.isnan(current_price) or current_price <= 0:
@@ -1384,6 +1716,16 @@ def manage_open_positions(
                 trail_stop = highest * (1 - trailing_stop_pct / 100)
                 pos["current_stop_price"] = round(max(float(pos.get("current_stop_price", stop_price)), trail_stop), 2)
                 stop_price = float(pos["current_stop_price"])
+
+            if reason is None and allow_live_orders:
+                protection_events = ensure_protective_orders(
+                    ib,
+                    pos,
+                    account=account,
+                    stop_loss_pct=stop_loss_pct,
+                    take_profit_pct=take_profit_pct,
+                )
+                events.extend(protection_events)
 
             # Before trailing starts, +30% fixed take-profit is active.
             if reason is None and not bool(pos.get("trailing_active", False)) and current_price >= take_profit_price:

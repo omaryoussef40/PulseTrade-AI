@@ -1,2 +1,4 @@
 Symbol,Signal,Score,Confidence,Option,Option Score,Reasons
-RKLB,PUT,95.0,100.0,ERROR,0,cannot convert float NaN to integer
+AVGO,CALL,93.0,100.0,ERROR,0,cannot convert float NaN to integer
+SMCI,CALL,93.0,100.0,ERROR,0,cannot convert float NaN to integer
+CRWD,PUT,93.0,100.0,ERROR,0,cannot convert float NaN to integer

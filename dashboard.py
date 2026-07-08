@@ -98,8 +98,15 @@ st.set_page_config(page_title=APP_DISPLAY_NAME, layout="wide")
 getattr(st, "html", lambda body: st.markdown(body, unsafe_allow_html=True))("""
 <style>
     .block-container { padding-top: 2.75rem !important; padding-bottom: 7.25rem !important; }
-    div[data-testid="stMetricValue"] { font-size: 1.35rem !important; white-space: nowrap !important; }
-    div[data-testid="stMetricLabel"] { font-size: 0.82rem !important; }
+    div[data-testid="stMetricValue"] { font-size: 1.24rem !important; line-height: 1.16 !important; white-space: nowrap !important; }
+    div[data-testid="stMetricLabel"] { font-size: 0.78rem !important; line-height: 1.12 !important; }
+    div[data-testid="stMetric"] { min-width: 0 !important; }
+    .compact-metric { min-width: 0; padding-top: 0.05rem; }
+    .compact-metric-label { font-size: 0.78rem; line-height: 1.12; color: rgba(49, 51, 63, 0.82); margin-bottom: 0.22rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .compact-metric-value { font-size: 1.24rem; line-height: 1.16; white-space: nowrap; color: rgb(49, 51, 63); }
+    .metric-positive { color: #16833a; background: rgba(16, 185, 129, 0.06); padding: 0.06rem 0.18rem; border-radius: 0.2rem; }
+    .metric-negative { color: #c2410c; background: rgba(239, 68, 68, 0.06); padding: 0.06rem 0.18rem; border-radius: 0.2rem; }
+    .metric-divider { color: #16833a; padding: 0 0.2rem; }
     .status-card {
         border: 1px solid rgba(250,250,250,0.14);
         border-radius: 14px;
@@ -2444,9 +2451,11 @@ elif selected_page == "💼 Positions":
                 readonly=True,
             )
             sync_ib = connect_ib(sync_ib_cfg)
-            sync_events = reconcile_active_positions_with_broker(sync_ib, account=ib_cfg.account, log_closures=True)
+            restored_events = sync_active_positions_from_broker(sync_ib, account=ib_cfg.account)
+            reconciled_events = reconcile_active_positions_with_broker(sync_ib, account=ib_cfg.account, log_closures=True)
+            sync_events = restored_events + reconciled_events
             if sync_events:
-                st.success(f"Reconciled {len(sync_events)} bot-managed position record(s).")
+                st.success(f"Synced {len(sync_events)} bot-managed position record(s).")
                 st.dataframe(pd.DataFrame(sync_events), use_container_width=True, hide_index=True)
                 st.rerun()
             else:
@@ -2689,6 +2698,18 @@ elif selected_page == "📊 Performance & Trade Journal":
                 df["realized_pnl"] = pd.to_numeric(df["realized_pnl"], errors="coerce").fillna(0.0)
             else:
                 df["realized_pnl"] = 0.0
+            if {"source", "event", "con_id"}.issubset(df.columns):
+                con_key = pd.to_numeric(df["con_id"], errors="coerce").fillna(0).astype(int).astype(str)
+                trade_key = (
+                    df["timestamp"].dt.date.astype(str)
+                    + "|"
+                    + df["event"].astype(str).str.upper()
+                    + "|"
+                    + con_key
+                )
+                flex_keys = set(trade_key[df["source"].astype(str).eq("IBKR_FLEX") & con_key.ne("0")])
+                duplicate_live_rows = df["source"].astype(str).eq("IBKR_EXECUTION") & trade_key.isin(flex_keys)
+                df = df[~duplicate_live_rows].copy()
             return df
         except Exception:
             return pd.DataFrame()
@@ -2921,8 +2942,25 @@ elif selected_page == "📊 Performance & Trade Journal":
         )
 
     with st.expander("IBKR Historical Trade Sync", expanded=False):
-        st.caption("Fetches historical fills/P&L directly from IBKR Flex Web Service and merges new rows into the local trade log.")
-        if st.button("Sync Today's IBKR Executions", use_container_width=True):
+        st.caption("One sync for executed IBKR trades. Uses IBKR Flex historical trades when configured, then also checks recent live executions from TWS/IB Gateway.")
+        flex_cfg = cfg.setdefault("ibkr_flex", {})
+        token_ready = bool(os.getenv("IBKR_FLEX_TOKEN") or flex_cfg.get("token"))
+        query_ready = bool(os.getenv("IBKR_FLEX_TRADE_QUERY_ID") or flex_cfg.get("trade_query_id"))
+        status_text = "Ready" if token_ready and query_ready else "Missing token/query ID"
+        st.caption(f"Flex sync status: {status_text}")
+        if st.button("Sync All IBKR Trades", use_container_width=True):
+            total_imported = 0
+            messages = []
+            if sync_flex_trades_to_trade_log is not None and token_ready and query_ready:
+                try:
+                    imported, message = sync_flex_trades_to_trade_log(cfg, TRADE_LOG_FILE)
+                    total_imported += int(imported or 0)
+                    messages.append(f"Flex: {message}")
+                except Exception as exc:
+                    messages.append(f"Flex failed: {exc}")
+            else:
+                messages.append("Flex skipped: token/query ID missing.")
+
             sync_ib = None
             try:
                 sync_ib_cfg = IBConfig(
@@ -2933,14 +2971,19 @@ elif selected_page == "📊 Performance & Trade Journal":
                     readonly=True,
                 )
                 sync_ib = connect_ib(sync_ib_cfg)
-                imported, message = sync_today_executions_to_trade_log(sync_ib, account=ib_cfg.account)
-                if imported:
-                    st.success(message)
-                else:
-                    st.info(message)
-                st.rerun()
+                recent_imported = 0
+                today_et = datetime.now(EASTERN).date()
+                for day_offset in range(0, 10):
+                    imported, message = sync_today_executions_to_trade_log(
+                        sync_ib,
+                        account=ib_cfg.account,
+                        target_date=today_et - timedelta(days=day_offset),
+                    )
+                    recent_imported += int(imported or 0)
+                total_imported += recent_imported
+                messages.append(f"Recent live executions: imported={recent_imported}")
             except Exception as exc:
-                st.error(f"IBKR execution sync failed: {display_exception_message(exc)}")
+                messages.append(f"Recent live execution sync failed: {display_exception_message(exc)}")
             finally:
                 try:
                     if sync_ib and sync_ib.isConnected():
@@ -2948,27 +2991,12 @@ elif selected_page == "📊 Performance & Trade Journal":
                 except Exception:
                     pass
 
-        st.divider()
-        flex_cfg = cfg.setdefault("ibkr_flex", {})
-        token_ready = bool(os.getenv("IBKR_FLEX_TOKEN") or flex_cfg.get("token"))
-        query_ready = bool(os.getenv("IBKR_FLEX_TRADE_QUERY_ID") or flex_cfg.get("trade_query_id"))
-        status_text = "Ready" if token_ready and query_ready else "Missing token/query ID"
-        st.caption(f"Flex sync status: {status_text}")
-        if st.button("Sync IBKR Historical Trades", use_container_width=True, disabled=sync_flex_trades_to_trade_log is None):
-            if sync_flex_trades_to_trade_log is None:
-                st.error("IBKR Flex sync module could not be loaded.")
-            elif not token_ready or not query_ready:
-                st.error("Add the Flex token and trade query ID in Platform Settings first.")
+            if total_imported:
+                st.success(f"Imported {total_imported} new trade row(s).")
             else:
-                try:
-                    imported, message = sync_flex_trades_to_trade_log(cfg, TRADE_LOG_FILE)
-                    if imported:
-                        st.success(f"Imported {imported} new historical trade rows. {message}")
-                    else:
-                        st.info(message)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"IBKR Flex sync failed: {exc}")
+                st.info("No new IBKR trade rows imported.")
+            for message in messages:
+                st.caption(message)
 
     trade_log = _load_trade_log_df()
     replay_df = load_trade_replay() if "load_trade_replay" in globals() else pd.DataFrame()
@@ -3061,16 +3089,35 @@ elif selected_page == "📊 Performance & Trade Journal":
         profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (round(gross_profit, 2) if gross_profit > 0 else 0.0)
         original_deposited = float(cfg.get("performance", {}).get("original_deposited_capital", 2300.0) or 0.0)
         pct_up = (realized_pnl / original_deposited * 100.0) if original_deposited > 0 else 0.0
+        account_summary = st.session_state.get("ibkr_account_summary") or {}
+        if _number_or_none(account_summary.get("AvailableFunds")) is None and live_ibkr_ping(ib_cfg):
+            account_summary = sync_ibkr_account_status(force=False)
+        available_funds = _number_or_none(account_summary.get("AvailableFunds"))
+        available_funds_label = f"${available_funds:,.2f}" if available_funds is not None else "N/A"
+        avg_loss_label = f"-${abs(avg_loss):,.0f}" if avg_loss < 0 else f"${avg_loss:,.0f}"
 
-        m1, m2, m3, m4, m5, m6, m7, m8 = st.columns(8)
+        m1, m2, m3, m4, m5, m6, m7, m8, m9 = st.columns(9)
         m1.metric("Net P/L", f"${realized_pnl:,.2f}")
         m2.metric("Win Rate", f"{win_rate}%")
         m3.metric("Entries", total_entries)
         m4.metric("Closed", total_exits)
-        m5.metric("Avg Win / Loss", f"${avg_win:,.0f} / ${avg_loss:,.0f}")
+        m5.markdown(
+            f"""
+            <div class="compact-metric">
+                <div class="compact-metric-label">Avg Win / Loss</div>
+                <div class="compact-metric-value">
+                    <span class="metric-positive">${avg_win:,.0f}</span>
+                    <span class="metric-divider">/</span>
+                    <span class="metric-negative">{avg_loss_label}</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         m6.metric("Profit Factor", profit_factor)
-        m7.metric("% Up", f"{pct_up:.2f}%")
-        m8.metric("Original Deposited", f"${original_deposited:,.2f}")
+        m7.metric("% Return", f"{pct_up:.2f}%")
+        m8.metric("Deposited", f"${original_deposited:,.2f}")
+        m9.metric("Avail. Funds", available_funds_label)
 
         calendar_anchor = today
         if period == "All Time" and not calendar_exits.empty:
