@@ -6,6 +6,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import subprocess
 import time
 import traceback
 from datetime import datetime, time as dtime
@@ -70,6 +71,29 @@ def _is_pid_running(pid: int) -> bool:
         return False
 
 
+def _pid_command_line(pid: int) -> str:
+    if pid <= 0:
+        return ""
+    try:
+        if os.name == "nt":
+            cmd = [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
+            ]
+        else:
+            cmd = ["ps", "-p", str(pid), "-o", "command="]
+        return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+    except Exception:
+        return ""
+
+
+def _is_engine_process(pid: int) -> bool:
+    cmdline = _pid_command_line(pid).lower()
+    return "engine.py" in cmdline and "python" in cmdline
+
+
 def claim_single_engine_instance() -> bool:
     DATA_DIR.mkdir(exist_ok=True)
     current_pid = os.getpid()
@@ -78,7 +102,7 @@ def claim_single_engine_instance() -> bool:
     except Exception:
         existing_pid = 0
 
-    if existing_pid and existing_pid != current_pid and _is_pid_running(existing_pid):
+    if existing_pid and existing_pid != current_pid and _is_pid_running(existing_pid) and _is_engine_process(existing_pid):
         message = f"Engine already running as PID {existing_pid}; refusing duplicate PID {current_pid}."
         app_log(message, "WARN")
         write_health(engine_running=True, last_status="Duplicate engine refused", last_error=message)

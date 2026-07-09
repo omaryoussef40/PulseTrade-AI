@@ -1,3 +1,7 @@
 @echo off
 cd /d "%~dp0"
-streamlit run dashboard.py
+if exist ".venv\Scripts\streamlit.exe" (
+  ".venv\Scripts\streamlit.exe" run dashboard.py
+) else (
+  streamlit run dashboard.py
+)

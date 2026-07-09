@@ -1117,6 +1117,29 @@ def _is_pid_running(pid: int) -> bool:
         return False
 
 
+def _pid_command_line(pid: int) -> str:
+    if pid <= 0:
+        return ""
+    try:
+        if os.name == "nt":
+            cmd = [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
+            ]
+        else:
+            cmd = ["ps", "-p", str(pid), "-o", "command="]
+        return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+    except Exception:
+        return ""
+
+
+def _is_engine_process(pid: int) -> bool:
+    cmdline = _pid_command_line(pid).lower()
+    return "engine.py" in cmdline and "python" in cmdline
+
+
 def _read_engine_pid() -> int | None:
     try:
         if not ENGINE_PID_FILE.exists():
@@ -1131,7 +1154,7 @@ def get_trading_engine_process_status() -> tuple[bool, str]:
     pid = _read_engine_pid()
     if pid is None:
         return False, "No trading engine PID file."
-    if _is_pid_running(pid):
+    if _is_pid_running(pid) and _is_engine_process(pid):
         return True, f"Trading engine running as PID {pid}."
     try:
         ENGINE_PID_FILE.unlink(missing_ok=True)
