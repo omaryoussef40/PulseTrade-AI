@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -21,12 +21,13 @@ except Exception:
     pass
 
 try:
-    from ib_insync import IB, Stock, util
+    from ib_insync import IB, Option, Stock, util
     IB_AVAILABLE = True
 except Exception as exc:  # pragma: no cover
     IB_AVAILABLE = False
     IB_IMPORT_ERROR = repr(exc)
     IB = Any  # type: ignore
+    Option = Any  # type: ignore
     Stock = Any  # type: ignore
     util = None  # type: ignore
 
@@ -249,6 +250,93 @@ class IBKRMarketDataProvider:
         elif close and close > 0:
             mid = close
         return {"symbol": str(symbol).strip().upper(), "bid": bid, "ask": ask, "last": last, "close": close, "mid": mid, "spread_pct": spread_pct, "volume": int(ticker.volume or 0), "fetched_at": datetime.now().isoformat(timespec="seconds")}
+
+    def historical_option_bars(
+        self,
+        symbol: str,
+        signal: str,
+        underlying_price: float,
+        option_dte: int,
+        reference_time,
+        bar_size: str = "5 mins",
+        what_to_show: str = "TRADES",
+        use_rth: bool = True,
+    ) -> tuple[dict[str, Any], pd.DataFrame]:
+        ib = self.connect()
+        symbol = str(symbol).strip().upper()
+        signal = str(signal).strip().upper()
+        if signal not in {"CALL", "PUT"}:
+            raise RuntimeError(f"Unsupported option signal for {symbol}: {signal}")
+        right = "C" if signal == "CALL" else "P"
+        stock = self.qualify_stock(symbol)
+        params = ib.reqSecDefOptParams(symbol, "", stock.secType, stock.conId)
+        if not params:
+            raise RuntimeError(f"No IBKR option chain returned for {symbol}")
+        chain = next((p for p in params if p.exchange == "SMART"), params[0])
+
+        ref_ts = pd.Timestamp(reference_time)
+        if ref_ts.tzinfo is None:
+            ref_ts = ref_ts.tz_localize(self.config.timezone)
+        else:
+            ref_ts = ref_ts.tz_convert(self.config.timezone)
+        ref_date = ref_ts.date()
+        target_date = ref_date + timedelta(days=int(option_dte))
+
+        expirations = []
+        for raw in sorted(chain.expirations):
+            try:
+                exp_date = datetime.strptime(str(raw), "%Y%m%d").date()
+            except Exception:
+                continue
+            if exp_date >= ref_date:
+                expirations.append((str(raw), exp_date))
+        if not expirations:
+            raise RuntimeError(f"No valid expirations for {symbol} on {ref_date}")
+        expiry = min(expirations, key=lambda item: abs((item[1] - target_date).days))[0]
+
+        strikes = []
+        for raw_strike in chain.strikes:
+            try:
+                strike_value = float(raw_strike)
+            except Exception:
+                continue
+            if np.isfinite(strike_value) and strike_value > 0:
+                strikes.append(strike_value)
+        strikes = sorted(strikes)
+        nearby = [s for s in strikes if float(underlying_price) * 0.90 <= s <= float(underlying_price) * 1.10]
+        strike_pool = nearby or strikes
+        if not strike_pool:
+            raise RuntimeError(f"No valid strikes for {symbol} {expiry}")
+        strike = min(strike_pool, key=lambda value: abs(float(value) - float(underlying_price)))
+
+        contract = Option(symbol, expiry, strike, right, "SMART", currency="USD", multiplier="100")
+        qualified = ib.qualifyContracts(contract)
+        if not qualified:
+            raise RuntimeError(f"Could not qualify option {symbol} {expiry} {strike:g} {right}")
+        contract = qualified[0]
+
+        end_dt = ref_ts.replace(hour=16, minute=0, second=0, microsecond=0)
+        bars = ib.reqHistoricalData(
+            contract,
+            endDateTime=end_dt.to_pydatetime(),
+            durationStr="1 D",
+            barSizeSetting=bar_size,
+            whatToShow=what_to_show,
+            useRTH=use_rth,
+            formatDate=1,
+            keepUpToDate=False,
+        )
+        df = self._bars_to_ohlcv(bars)
+        info = {
+            "symbol": symbol,
+            "option_dte": int(option_dte),
+            "expiry": expiry,
+            "strike": float(strike),
+            "right": right,
+            "localSymbol": getattr(contract, "localSymbol", ""),
+            "conId": getattr(contract, "conId", None),
+        }
+        return info, df
 
     def _bars_to_ohlcv(self, bars: Any) -> pd.DataFrame:
         if not bars:

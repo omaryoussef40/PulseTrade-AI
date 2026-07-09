@@ -34,25 +34,25 @@
     "min_atr": 0.3,
     "top_n_tickers": 4,
     "active_strategy": "pmb",
-    "orb_minutes": 15,
+    "orb_minutes": 30,
     "first_signal_minutes": 15,
-    "min_session_bars": 4
+    "min_session_bars": 6
   },
   "risk": {
     "account_size": 4146.97,
     "use_ibkr_buying_power": true,
-    "max_trades_per_day": 2,
-    "max_spend_per_trade_pct": 40.0,
-    "max_daily_capital_pct": 80.0,
-    "max_spend_per_trade": 1658.79,
-    "max_daily_capital": 3317.58,
-    "max_contracts": 20,
+    "max_trades_per_day": 4,
+    "max_spend_per_trade_pct": 20.0,
+    "max_daily_capital_pct": 35.0,
+    "max_spend_per_trade": 829.39,
+    "max_daily_capital": 1451.44,
+    "max_contracts": 5,
     "entry_cutoff_hour": 11,
     "entry_cutoff_minute": 0,
-    "stop_loss_pct": 20.0,
-    "take_profit_pct": 30.0,
+    "stop_loss_pct": 15.0,
+    "take_profit_pct": 25.0,
     "breakeven_trigger_pct": 15.0,
-    "trailing_trigger_pct": 25.0,
+    "trailing_trigger_pct": 20.0,
     "trailing_stop_pct": 10.0,
     "force_exit_hour": 15,
     "force_exit_minute": 55,
@@ -60,7 +60,7 @@
     "max_daily_drawdown_pct": 5.0
   },
   "order": {
-    "type": "MARKET"
+    "type": "LIMIT"
   },
   "watchlist": [
     "SPY",
@@ -192,15 +192,19 @@
     "selected_strategies": [
       "PMB"
     ],
-    "period": "30d",
+    "period": "7d",
     "interval": "15m",
     "max_symbols": 20,
     "force_refresh": true,
     "data_source": "IBKR",
     "orb_minutes": 15,
-    "first_signal_minutes": 15,
+    "first_signal_minutes": 10,
     "min_session_bars": 4,
     "visual_updates": true,
+    "option_dte_values": [
+      7,
+      14
+    ],
     "premium_pct_ui": 0.25,
     "slippage_pct": 2.0,
     "allow_same_symbol": true

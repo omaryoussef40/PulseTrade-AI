@@ -59,6 +59,7 @@ class StrategyLabSettings:
     max_daily_capital: float = 500.0
     # 0 = no fixed contract cap; Strategy Lab sizes by budget.
     max_contracts: int = 0
+    option_dte_values: tuple[int, ...] = (7,)
     stop_loss_pct: float = 20.0
     take_profit_pct: float = 30.0
     breakeven_trigger_pct: float = 15.0
@@ -305,36 +306,18 @@ class StrategyLabController:
         return pd.DataFrame(replay_rows), pd.DataFrame(signal_rows), sessions_df
 
     def simulate(self, signals: pd.DataFrame, data: dict[str, pd.DataFrame], settings: StrategyLabSettings) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame]:
-        sim_config = OptionSimulationConfig(
-            starting_capital=float(settings.starting_capital),
-            max_trades_per_day=int(settings.max_trades_per_day),
-            sizing_method=str(settings.sizing_method),
-            position_allocation_pct=float(settings.position_allocation_pct),
-            max_daily_exposure_pct=float(settings.max_daily_exposure_pct),
-            max_spend_per_trade=float(settings.max_spend_per_trade),
-            max_daily_capital=float(settings.max_daily_capital),
-            max_contracts=int(settings.max_contracts),
-            stop_loss_pct=float(settings.stop_loss_pct),
-            take_profit_pct=float(settings.take_profit_pct),
-            breakeven_trigger_pct=float(settings.breakeven_trigger_pct),
-            trailing_trigger_pct=float(settings.trailing_trigger_pct),
-            trailing_stop_pct=float(settings.trailing_stop_pct),
-            force_exit_time=dtime(int(settings.force_exit_hour), int(settings.force_exit_minute)),
-            premium_pct=float(settings.premium_pct),
-            slippage_pct=float(settings.slippage_pct),
-            allow_same_symbol_same_day=bool(settings.allow_same_symbol_same_day),
-        )
-
         all_trades: list[pd.DataFrame] = []
         all_decisions: list[pd.DataFrame] = []
         comparison_rows: list[dict[str, Any]] = []
         selected_strategies = _normalize_strategy_names(settings.selected_strategies)
+        option_dte_values = tuple(int(v) for v in (settings.option_dte_values or (7,)) if int(v) > 0) or (7,)
+        option_bars_provider = getattr(self.client, "historical_option_bars", None) if str(settings.data_source).upper() == "IBKR" else None
 
         if signals is None or signals.empty:
             for strategy_name in selected_strategies:
-                base_metrics = summarize_trades(pd.DataFrame(), starting_capital=float(settings.starting_capital))
                 comparison_rows.append({
                     "Strategy": _strategy_display_name(strategy_name),
+                    "DTE": ", ".join(str(v) for v in option_dte_values),
                     "Status": "No signals" if strategy_name == "PMB" else "Placeholder only",
                     "Trades": 0,
                     "Win %": 0.0,
@@ -347,29 +330,54 @@ class StrategyLabController:
             comparison = pd.DataFrame(comparison_rows)
             return pd.DataFrame(), {}, pd.DataFrame(), comparison
 
-        for strategy_name in selected_strategies:
-            strategy_signals = signals[signals.get("strategy", "PMB").astype(str).str.upper() == strategy_name].copy() if "strategy" in signals.columns else signals.copy()
-            trades, decisions = simulate_option_trades_with_decisions(strategy_signals, data, sim_config)
-            if not trades.empty:
-                trades["strategy"] = strategy_name
-                trades["strategy_name"] = _strategy_display_name(strategy_name)
-                all_trades.append(trades)
-            if not decisions.empty:
-                decisions["strategy"] = strategy_name
-                decisions["strategy_name"] = _strategy_display_name(strategy_name)
-                all_decisions.append(decisions)
-            metrics = summarize_trades(trades, starting_capital=float(settings.starting_capital))
-            comparison_rows.append({
-                "Strategy": _strategy_display_name(strategy_name),
-                "Status": "Implemented" if strategy_name == "PMB" else "Placeholder only",
-                "Trades": int(metrics.get("total_trades", 0)),
-                "Win %": float(metrics.get("win_rate", 0)),
-                "Avg R": round(float(metrics.get("avg_trade", 0)) / max(abs(float(settings.max_spend_per_trade or 1)), 1.0), 2),
-                "Max DD": float(metrics.get("max_drawdown", 0)),
-                "Profit Factor": metrics.get("profit_factor", 0),
-                "Net P/L": float(metrics.get("net_pnl", 0)),
-                "Return %": float(metrics.get("return_pct", 0)),
-            })
+        for option_dte in option_dte_values:
+            sim_config = OptionSimulationConfig(
+                starting_capital=float(settings.starting_capital),
+                max_trades_per_day=int(settings.max_trades_per_day),
+                sizing_method=str(settings.sizing_method),
+                position_allocation_pct=float(settings.position_allocation_pct),
+                max_daily_exposure_pct=float(settings.max_daily_exposure_pct),
+                max_spend_per_trade=float(settings.max_spend_per_trade),
+                max_daily_capital=float(settings.max_daily_capital),
+                max_contracts=int(settings.max_contracts),
+                option_dte=int(option_dte),
+                option_bars_provider=option_bars_provider,
+                stop_loss_pct=float(settings.stop_loss_pct),
+                take_profit_pct=float(settings.take_profit_pct),
+                breakeven_trigger_pct=float(settings.breakeven_trigger_pct),
+                trailing_trigger_pct=float(settings.trailing_trigger_pct),
+                trailing_stop_pct=float(settings.trailing_stop_pct),
+                force_exit_time=dtime(int(settings.force_exit_hour), int(settings.force_exit_minute)),
+                premium_pct=float(settings.premium_pct),
+                slippage_pct=float(settings.slippage_pct),
+                allow_same_symbol_same_day=bool(settings.allow_same_symbol_same_day),
+            )
+            for strategy_name in selected_strategies:
+                strategy_signals = signals[signals.get("strategy", "PMB").astype(str).str.upper() == strategy_name].copy() if "strategy" in signals.columns else signals.copy()
+                trades, decisions = simulate_option_trades_with_decisions(strategy_signals, data, sim_config)
+                if not trades.empty:
+                    trades["strategy"] = strategy_name
+                    trades["strategy_name"] = _strategy_display_name(strategy_name)
+                    trades["option_dte"] = int(option_dte)
+                    all_trades.append(trades)
+                if not decisions.empty:
+                    decisions["strategy"] = strategy_name
+                    decisions["strategy_name"] = _strategy_display_name(strategy_name)
+                    decisions["option_dte"] = int(option_dte)
+                    all_decisions.append(decisions)
+                metrics = summarize_trades(trades, starting_capital=float(settings.starting_capital))
+                comparison_rows.append({
+                    "Strategy": _strategy_display_name(strategy_name),
+                    "DTE": int(option_dte),
+                    "Status": "Implemented" if strategy_name == "PMB" else "Placeholder only",
+                    "Trades": int(metrics.get("total_trades", 0)),
+                    "Win %": float(metrics.get("win_rate", 0)),
+                    "Avg R": round(float(metrics.get("avg_trade", 0)) / max(abs(float(settings.max_spend_per_trade or 1)), 1.0), 2),
+                    "Max DD": float(metrics.get("max_drawdown", 0)),
+                    "Profit Factor": metrics.get("profit_factor", 0),
+                    "Net P/L": float(metrics.get("net_pnl", 0)),
+                    "Return %": float(metrics.get("return_pct", 0)),
+                })
 
         combined_trades = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
         combined_decisions = pd.concat(all_decisions, ignore_index=True) if all_decisions else pd.DataFrame()

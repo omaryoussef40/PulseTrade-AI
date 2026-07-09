@@ -54,7 +54,56 @@ def _chart_equity(trades: pd.DataFrame):
     return fig
 
 
-def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbols: list[str], selected_strategies: list[str], period: str, interval: str, max_symbols: int, force_refresh: bool, data_source: str, orb_minutes: int, first_signal_minutes: int, min_session_bars: int, visual_updates: bool, premium_pct_ui: float, slippage_pct: float, allow_same_symbol: bool) -> None:
+def _result_dte_values(comparison: pd.DataFrame, trades: pd.DataFrame) -> list[int]:
+    values: list[int] = []
+    sources = []
+    if isinstance(comparison, pd.DataFrame) and not comparison.empty and "DTE" in comparison.columns:
+        sources.append(comparison["DTE"])
+    if isinstance(trades, pd.DataFrame) and not trades.empty and "option_dte" in trades.columns:
+        sources.append(trades["option_dte"])
+    for source in sources:
+        for value in source.dropna().tolist():
+            try:
+                dte = int(float(value))
+            except Exception:
+                continue
+            if dte not in values:
+                values.append(dte)
+    return values
+
+
+def _render_dte_result(dte: int, comparison: pd.DataFrame, trades: pd.DataFrame) -> None:
+    dte_trades = trades[pd.to_numeric(trades["option_dte"], errors="coerce") == int(dte)].copy() if isinstance(trades, pd.DataFrame) and not trades.empty and "option_dte" in trades.columns else pd.DataFrame()
+    dte_row = pd.DataFrame()
+    if isinstance(comparison, pd.DataFrame) and not comparison.empty and "DTE" in comparison.columns:
+        dte_row = comparison[pd.to_numeric(comparison["DTE"], errors="coerce") == int(dte)].head(1)
+
+    st.markdown(f"#### {dte} DTE")
+    if not dte_row.empty:
+        row = dte_row.iloc[0]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Trades", int(row.get("Trades", 0)))
+        c2.metric("Win Rate", f"{float(row.get('Win %', 0)):,.1f}%")
+        c3.metric("Net P/L", f"${float(row.get('Net P/L', 0)):,.2f}")
+        c4.metric("Profit Factor", row.get("Profit Factor", 0))
+    elif not dte_trades.empty:
+        c1, c2 = st.columns(2)
+        c1.metric("Trades", len(dte_trades))
+        c2.metric("Net P/L", f"${pd.to_numeric(dte_trades.get('realized_pnl'), errors='coerce').sum():,.2f}")
+
+    if dte_trades.empty:
+        st.info(f"No simulated trades for {dte} DTE.")
+        return
+
+    st.plotly_chart(_chart_equity(dte_trades), use_container_width=True)
+    daily = daily_pnl(dte_trades)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=daily["date"], y=daily["realized_pnl"], name=f"{dte} DTE Daily P/L"))
+    fig.update_layout(height=260, title="Daily P/L", xaxis_title="Date", yaxis_title="P/L USD")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbols: list[str], selected_strategies: list[str], period: str, interval: str, max_symbols: int, force_refresh: bool, data_source: str, orb_minutes: int, first_signal_minutes: int, min_session_bars: int, visual_updates: bool, option_dte_values: list[int], premium_pct_ui: float, slippage_pct: float, allow_same_symbol: bool) -> None:
     config.setdefault("strategy_lab", {})
     config["watchlist"] = list(selected_symbols)
     config["strategy_lab"] = {
@@ -69,6 +118,7 @@ def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbo
         "first_signal_minutes": int(first_signal_minutes),
         "min_session_bars": int(min_session_bars),
         "visual_updates": bool(visual_updates),
+        "option_dte_values": [int(v) for v in option_dte_values],
         "premium_pct_ui": float(premium_pct_ui),
         "slippage_pct": float(slippage_pct),
         "allow_same_symbol": bool(allow_same_symbol),
@@ -192,6 +242,8 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
                 max_daily_capital = st.number_input("Max daily capital USD", min_value=50.0, value=default_daily_capital, step=50.0, key="sl_daily_cap")
             stop_loss = st.number_input("Stop loss %", min_value=1.0, max_value=90.0, value=float(risk.get("stop_loss_pct", 20.0)), step=1.0, key="sl_stop")
             take_profit = st.number_input("Take profit %", min_value=1.0, max_value=300.0, value=float(risk.get("take_profit_pct", 30.0)), step=1.0, key="sl_tp")
+            saved_dtes = [int(v) for v in lab_cfg.get("option_dte_values", [7, 14]) if int(v) in [7, 14]]
+            option_dte_values = st.multiselect("Compare option DTE", [7, 14], default=saved_dtes or [7, 14], format_func=lambda value: f"{value} DTE", key="sl_option_dtes")
             premium_pct_ui = st.number_input("Entry premium % of stock", min_value=0.1, max_value=10.0, value=float(lab_cfg.get("premium_pct_ui", 0.25)), step=0.05, key="sl_premium_v092")
             slippage_pct = st.number_input("Slippage %", min_value=0.0, max_value=20.0, value=float(lab_cfg.get("slippage_pct", 2.0)), step=0.5, key="sl_slippage")
             allow_same_symbol = st.checkbox("Allow same symbol more than once per day", value=bool(lab_cfg.get("allow_same_symbol", False)), key="sl_same_symbol")
@@ -218,6 +270,7 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         max_spend_per_trade=float(max_spend),
         max_daily_capital=float(max_daily_capital),
         max_contracts=0,  # 0 = unlimited; Strategy Lab buys as many contracts as budget allows.
+        option_dte_values=tuple(int(v) for v in option_dte_values),
         stop_loss_pct=float(stop_loss),
         take_profit_pct=float(take_profit),
         breakeven_trigger_pct=float(risk.get("breakeven_trigger_pct", 15.0)),
@@ -231,7 +284,7 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         selected_strategies=tuple(selected_strategies),
         data_source=str(data_source),
     )
-    _save_strategy_lab_settings(config, symbols, selected_all_symbols, selected_strategies, period, interval, max_symbols, force_refresh, data_source, orb_minutes, first_signal_minutes, min_session_bars, visual_updates, premium_pct_ui, slippage_pct, allow_same_symbol)
+    _save_strategy_lab_settings(config, symbols, selected_all_symbols, selected_strategies, period, interval, max_symbols, force_refresh, data_source, orb_minutes, first_signal_minutes, min_session_bars, visual_updates, list(option_dte_values), premium_pct_ui, slippage_pct, allow_same_symbol)
 
     if st.button("Run Backtest", use_container_width=True, key="sl_run"):
         if not symbols:
@@ -258,7 +311,12 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
             finally:
                 st.session_state["bt_job_running"] = False
 
-    result = st.session_state.get("sl_last_result") or controller.load_last_result()
+    session_result = st.session_state.get("sl_last_result")
+    session_replay = session_result.get("replay", pd.DataFrame()) if isinstance(session_result, dict) else pd.DataFrame()
+    if isinstance(session_replay, pd.DataFrame) and not session_replay.empty:
+        result = session_result
+    else:
+        result = controller.load_last_result()
     replay = result.get("replay", pd.DataFrame())
     signals = result.get("signals", pd.DataFrame())
     trades = result.get("trades", pd.DataFrame())
@@ -280,25 +338,28 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         m6.metric("Win Rate", f"{float(metrics.get('win_rate', 0)):,.1f}%")
         m7.metric("Profit Factor", metrics.get("profit_factor", 0))
 
+        dte_values = _result_dte_values(comparison, trades)
+        if dte_values:
+            st.markdown("### Option DTE Results")
+            if len(dte_values) == 1:
+                _render_dte_result(dte_values[0], comparison, trades)
+            else:
+                columns = st.columns(len(dte_values))
+                for column, dte in zip(columns, dte_values):
+                    with column:
+                        _render_dte_result(dte, comparison, trades)
+
         if isinstance(comparison, pd.DataFrame) and not comparison.empty:
             st.markdown("### Strategy Comparison")
             st.dataframe(comparison, use_container_width=True, hide_index=True)
 
         if isinstance(trades, pd.DataFrame) and not trades.empty:
-            st.plotly_chart(_chart_equity(trades), use_container_width=True)
-            cc1, cc2 = st.columns(2)
-            with cc1:
-                d = daily_pnl(trades)
-                fig = go.Figure()
-                fig.add_trace(go.Bar(x=d["date"], y=d["realized_pnl"], name="Daily P/L"))
-                fig.update_layout(height=330, title="Daily P/L", xaxis_title="Date", yaxis_title="P/L USD")
-                st.plotly_chart(fig, use_container_width=True)
-            with cc2:
-                sp = symbol_pnl(trades)
-                fig = go.Figure()
-                fig.add_trace(go.Bar(x=sp["symbol"], y=sp["realized_pnl"], name="Symbol P/L"))
-                fig.update_layout(height=330, title="Symbol P/L", xaxis_title="Symbol", yaxis_title="P/L USD")
-                st.plotly_chart(fig, use_container_width=True)
+            st.markdown("### Net P/L by Symbol")
+            sp = symbol_pnl(trades)
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=sp["symbol"], y=sp["realized_pnl"], name="Symbol P/L"))
+            fig.update_layout(height=330, xaxis_title="Symbol", yaxis_title="P/L USD")
+            st.plotly_chart(fig, use_container_width=True)
 
         tab_signals, tab_decisions, tab_trades, tab_replay, tab_sessions = st.tabs(["Signals", "Execution Decisions", "Simulated Trades", "Replay Log", "Sessions"])
         with tab_signals:
@@ -308,14 +369,14 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         with tab_decisions:
             if isinstance(decisions, pd.DataFrame) and not decisions.empty:
                 st.caption("Every scanner signal ends here as TRADED, SKIPPED, or REJECTED. This is the execution audit trail.")
-                dcols = [c for c in ["decision_no", "timestamp", "strategy", "symbol", "signal", "score", "grade", "status", "stage", "reason", "entry_premium", "contract_cost_with_commission", "quantity", "sizing_method", "position_allocation_pct", "max_daily_exposure_pct", "buying_power_before", "buying_power_after_entry", "buying_power_after_exit", "max_spend_per_trade", "max_daily_capital", "estimated_cost", "exit_credit", "account_equity", "underlying_move_pct", "option_return_pct", "pricing_model", "raw_delta_return_pct", "model_option_return_pct", "theta_decay_pct", "realized_pnl"] if c in decisions.columns]
+                dcols = [c for c in ["decision_no", "timestamp", "strategy", "option_dte", "symbol", "signal", "score", "grade", "status", "stage", "reason", "option_expiry", "option_strike", "option_local_symbol", "entry_premium", "contract_cost_with_commission", "quantity", "sizing_method", "position_allocation_pct", "max_daily_exposure_pct", "buying_power_before", "buying_power_after_entry", "buying_power_after_exit", "max_spend_per_trade", "max_daily_capital", "estimated_cost", "exit_credit", "account_equity", "underlying_move_pct", "option_return_pct", "pricing_model", "raw_delta_return_pct", "model_option_return_pct", "theta_decay_pct", "realized_pnl"] if c in decisions.columns]
                 st.dataframe(decisions[dcols].tail(500), use_container_width=True, hide_index=True)
                 st.download_button("Download execution decisions", decisions.to_csv(index=False), "strategy_lab_signal_decisions.csv", "text/csv")
             else:
                 st.info("No execution decision log yet.")
         with tab_trades:
             if isinstance(trades, pd.DataFrame) and not trades.empty:
-                key_cols = [c for c in ["trade_no", "entry_time", "exit_time", "date", "strategy", "symbol", "signal", "score", "grade", "entry_underlying", "exit_underlying", "underlying_move_pct", "entry_premium", "exit_premium", "option_return_pct", "pricing_model", "quantity", "estimated_cost", "exit_credit", "buying_power_before", "buying_power_after_entry", "buying_power_after_exit", "account_equity", "realized_pnl", "return_pct", "hold_minutes", "exit_reason", "reasons"] if c in trades.columns]
+                key_cols = [c for c in ["trade_no", "entry_time", "exit_time", "date", "strategy", "option_dte", "symbol", "signal", "option_expiry", "option_strike", "option_local_symbol", "score", "grade", "entry_underlying", "exit_underlying", "underlying_move_pct", "entry_premium", "exit_premium", "option_return_pct", "pricing_model", "quantity", "estimated_cost", "exit_credit", "buying_power_before", "buying_power_after_entry", "buying_power_after_exit", "account_equity", "realized_pnl", "return_pct", "hold_minutes", "exit_reason", "reasons"] if c in trades.columns]
                 st.dataframe(trades[key_cols].tail(500), use_container_width=True, hide_index=True)
                 st.download_button("Download trades", trades.to_csv(index=False), "strategy_lab_trades.csv", "text/csv")
             else:

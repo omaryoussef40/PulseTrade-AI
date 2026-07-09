@@ -98,6 +98,7 @@ ACTIVE_POSITIONS_FILE = os.path.join(EXPORT_DIR, "active_positions.json")
 # Trade management defaults for intraday 7 DTE options
 DEFAULT_STOP_LOSS_PCT = 20.0
 DEFAULT_TAKE_PROFIT_PCT = 30.0
+MAX_OPTION_ORDER_CHUNK_QTY = 5
 DEFAULT_BREAKEVEN_TRIGGER_PCT = 15.0
 DEFAULT_TRAILING_TRIGGER_PCT = 25.0
 DEFAULT_TRAILING_STOP_PCT = 10.0
@@ -512,6 +513,14 @@ def get_snapshot_mid(ib: IB, contract) -> dict:
     }
 
 
+def _finite_number(value) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if np.isfinite(numeric) else None
+
+
 def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dte_target=7) -> dict | None:
     if signal not in ["CALL", "PUT"]:
         return None
@@ -544,14 +553,18 @@ def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dt
             continue
         contract = qualified[0]
         market = get_snapshot_mid(ib, contract)
-        mid = market["Mid"]
+        mid = _finite_number(market.get("Mid"))
 
-        if np.isnan(mid) or mid <= 0:
+        if mid is None or mid <= 0:
             continue
 
-        spread_pct = market["Spread %"]
-        if not np.isnan(spread_pct) and spread_pct > 0.25:
+        spread_pct = _finite_number(market.get("Spread %"))
+        if spread_pct is not None and spread_pct > 0.25:
             continue
+        bid = _finite_number(market.get("Bid"))
+        ask = _finite_number(market.get("Ask"))
+        last = _finite_number(market.get("Last"))
+        volume = _finite_number(market.get("Volume")) or 0
 
         option_rows.append({
             "Contract": contract,
@@ -560,12 +573,12 @@ def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dt
             "Strike": strike,
             "Type": option_type,
             "Delta": round(est_delta, 2),
-            "Bid": round(market["Bid"], 2) if not np.isnan(market["Bid"]) else None,
-            "Ask": round(market["Ask"], 2) if not np.isnan(market["Ask"]) else None,
-            "Last": round(market["Last"], 2) if not np.isnan(market["Last"]) else None,
+            "Bid": round(bid, 2) if bid is not None else None,
+            "Ask": round(ask, 2) if ask is not None else None,
+            "Last": round(last, 2) if last is not None else None,
             "Mid": round(mid, 2),
-            "Spread %": round(spread_pct * 100, 1) if not np.isnan(spread_pct) else None,
-            "Volume": int(market["Volume"] or 0),
+            "Spread %": round(spread_pct * 100, 1) if spread_pct is not None else None,
+            "Volume": int(volume),
             "Risk / Contract": round(mid * 100, 2),
             "Strike Distance": strike_distance,
         })
@@ -1285,6 +1298,29 @@ def _coerce_order_id(value) -> int | None:
         return None
 
 
+def _order_chunks(quantity: int, max_chunk: int = MAX_OPTION_ORDER_CHUNK_QTY) -> list[int]:
+    quantity = int(abs(quantity or 0))
+    if quantity <= 0:
+        return []
+    max_chunk = max(1, int(max_chunk or 1))
+    return [min(max_chunk, quantity - offset) for offset in range(0, quantity, max_chunk)]
+
+
+def _coerce_order_ids(value) -> list[int]:
+    if isinstance(value, (list, tuple, set)):
+        values = value
+    elif isinstance(value, str) and "," in value:
+        values = value.split(",")
+    else:
+        values = [value]
+    ids = []
+    for item in values:
+        order_id = _coerce_order_id(item)
+        if order_id:
+            ids.append(order_id)
+    return ids
+
+
 def _open_sell_trades_for_position(ib: IB, pos: dict) -> list:
     try:
         ib.reqOpenOrders()
@@ -1338,12 +1374,66 @@ def ensure_protective_orders(
     pos["take_profit_price"] = take_profit_price
 
     open_sell_trades = _open_sell_trades_for_position(ib, pos)
+    chunks = _order_chunks(qty)
+    want_take_profit = not bool(pos.get("trailing_active", False))
+    if len(chunks) > 1:
+        existing_stop_ids = []
+        existing_take_profit_ids = []
+        for trade in open_sell_trades:
+            order = getattr(trade, "order", None)
+            order_type = str(getattr(order, "orderType", "") or "").upper()
+            if "STP" in order_type:
+                existing_stop_ids.append(_order_id(order))
+            elif order_type == "LMT":
+                existing_take_profit_ids.append(_order_id(order))
+        existing_stop_ids = [order_id for order_id in existing_stop_ids if order_id]
+        existing_take_profit_ids = [order_id for order_id in existing_take_profit_ids if order_id]
+        if existing_stop_ids and (existing_take_profit_ids or not want_take_profit):
+            pos["ibkr_stop_order_ids"] = existing_stop_ids
+            pos["ibkr_take_profit_order_ids"] = existing_take_profit_ids
+            pos["protective_orders_status"] = "Already protected"
+            return []
+
+        events = []
+        stop_ids = []
+        take_profit_ids = []
+        base_group = str(pos.get("ibkr_oca_group") or f"PulseProtect-{pos.get('id') or pos.get('con_id')}-{int(time.time())}")
+        pos["ibkr_oca_group"] = base_group
+        for idx, chunk_qty in enumerate(chunks, start=1):
+            oca_group = f"{base_group}-{idx}"
+            stop_order = StopOrder("SELL", chunk_qty, stop_price)
+            stop_order.ocaGroup = oca_group
+            stop_order.ocaType = 1
+            stop_order.tif = "DAY"
+            if account:
+                stop_order.account = account
+            stop_trade = ib.placeOrder(contract, stop_order)
+            ib.sleep(0.2)
+            stop_ids.append(_order_id(getattr(stop_trade, "order", None)))
+            events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_STOP", "Stop": stop_price, "Qty": chunk_qty})
+
+            if want_take_profit:
+                target_order = LimitOrder("SELL", chunk_qty, take_profit_price)
+                target_order.ocaGroup = oca_group
+                target_order.ocaType = 1
+                target_order.tif = "DAY"
+                if account:
+                    target_order.account = account
+                target_trade = ib.placeOrder(contract, target_order)
+                ib.sleep(0.2)
+                take_profit_ids.append(_order_id(getattr(target_trade, "order", None)))
+                events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_TP", "TP": take_profit_price, "Qty": chunk_qty})
+
+        pos["ibkr_stop_order_ids"] = [order_id for order_id in stop_ids if order_id]
+        pos["ibkr_take_profit_order_ids"] = [order_id for order_id in take_profit_ids if order_id]
+        pos["protective_orders_status"] = "Submitted" if events else "Already protected"
+        return events
+
     existing_order_ids = {_order_id(getattr(trade, "order", None)) for trade in open_sell_trades}
     existing_order_ids.discard(None)
 
     stop_order_id = _coerce_order_id(pos.get("ibkr_stop_order_id"))
     take_profit_order_id = _coerce_order_id(pos.get("ibkr_take_profit_order_id"))
-    want_take_profit = not bool(pos.get("trailing_active", False))
     has_stop = bool(stop_order_id and stop_order_id in existing_order_ids)
     has_take_profit = bool(take_profit_order_id and take_profit_order_id in existing_order_ids)
     stop_trade = None
@@ -1427,6 +1517,8 @@ def cancel_protective_orders(ib: IB, pos: dict) -> list[dict]:
         _coerce_order_id(pos.get("ibkr_stop_order_id")),
         _coerce_order_id(pos.get("ibkr_take_profit_order_id")),
     }
+    wanted_ids.update(_coerce_order_ids(pos.get("ibkr_stop_order_ids")))
+    wanted_ids.update(_coerce_order_ids(pos.get("ibkr_take_profit_order_ids")))
     wanted_ids.discard(None)
     if not wanted_ids:
         return []
@@ -1564,11 +1656,14 @@ def submit_exit_order(
         raise ValueError("No quantity to exit")
 
     cancel_protective_orders(ib, pos)
-    order = MarketOrder("SELL", qty) if use_market else LimitOrder("SELL", qty, round(float(exit_price), 2))
-    if account:
-        order.account = account
-    trade = ib.placeOrder(contract, order)
-    ib.sleep(1)
+    trades = []
+    for chunk_qty in _order_chunks(qty):
+        order = MarketOrder("SELL", chunk_qty) if use_market else LimitOrder("SELL", chunk_qty, round(float(exit_price), 2))
+        if account:
+            order.account = account
+        trade = ib.placeOrder(contract, order)
+        trades.append(trade)
+        ib.sleep(1)
 
     entry_price = float(pos.get("entry_price", 0))
     mark = float(exit_price or entry_price)
@@ -1585,9 +1680,9 @@ def submit_exit_order(
         "entry_price": entry_price,
         "exit_price": round(mark, 2),
         "realized_pnl": realized_pnl,
-        "status": str(trade.orderStatus.status),
+        "status": ", ".join(str(getattr(trade.orderStatus, "status", "")) for trade in trades),
     })
-    return trade, realized_pnl
+    return trades[-1], realized_pnl
 
 
 def add_active_position_from_entry(
@@ -2008,7 +2103,7 @@ def default_config() -> dict:
         "telegram": {"bot_token": "", "chat_id": "", "send_alerts": False},
         "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 60, "market_timezone": "America/New_York", "scan_only_market_hours": True},
         "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7},
-        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "max_spend_per_trade_pct": 25.0, "max_daily_capital_pct": 50.0, "max_spend_per_trade": 250, "max_daily_capital": 500, "max_contracts": 2, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
+        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},
         "watchlist": WATCHLIST,
         "dynamic_watchlist": {"enabled": False, "mode": "Manual", "max_symbols": 5, "refresh_hour": 9, "refresh_minute": 30, "source_universe": WATCHLIST},

@@ -25,6 +25,7 @@ from streamlit_autorefresh import st_autorefresh
 
 from bot_core import *
 from engine import (
+    is_telegram_polling_noise,
     make_approval_id,
     process_telegram_order_callbacks,
     read_pending_approvals,
@@ -102,11 +103,11 @@ getattr(st, "html", lambda body: st.markdown(body, unsafe_allow_html=True))("""
     div[data-testid="stMetricLabel"] { font-size: 0.78rem !important; line-height: 1.12 !important; }
     div[data-testid="stMetric"] { min-width: 0 !important; }
     .compact-metric { min-width: 0; padding-top: 0.05rem; }
-    .compact-metric-label { font-size: 0.78rem; line-height: 1.12; color: rgba(49, 51, 63, 0.82); margin-bottom: 0.22rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .compact-metric-value { font-size: 1.24rem; line-height: 1.16; white-space: nowrap; color: rgb(49, 51, 63); }
-    .metric-positive { color: #16833a; background: rgba(16, 185, 129, 0.06); padding: 0.06rem 0.18rem; border-radius: 0.2rem; }
-    .metric-negative { color: #c2410c; background: rgba(239, 68, 68, 0.06); padding: 0.06rem 0.18rem; border-radius: 0.2rem; }
-    .metric-divider { color: #16833a; padding: 0 0.2rem; }
+    .compact-metric-label { font-size: 0.78rem; line-height: 1.12; color: rgba(49, 51, 63, 0.82); margin-bottom: 0.28rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .compact-metric-value { display: flex; align-items: baseline; gap: 0.18rem; font-size: 1.08rem; line-height: 1.16; white-space: nowrap; color: rgb(49, 51, 63); }
+    .metric-positive { color: #16833a; font-weight: 700; }
+    .metric-negative { color: #c2410c; font-weight: 700; }
+    .metric-divider { color: rgba(49, 51, 63, 0.55); font-weight: 600; }
     .status-card {
         border: 1px solid rgba(250,250,250,0.14);
         border-radius: 14px;
@@ -1010,6 +1011,74 @@ def sync_ibkr_account_status(force: bool = False) -> dict:
         return summary
 
 
+def enrich_active_positions_with_live_pnl(positions: list[dict]) -> tuple[pd.DataFrame, str | None]:
+    if not positions:
+        return pd.DataFrame(), None
+
+    df = pd.DataFrame(positions).copy()
+    for column in ["Live Price", "Live P/L", "Live P/L %"]:
+        df[column] = pd.NA
+
+    if not live_ibkr_ping(ib_cfg):
+        return df, f"IBKR is not reachable at {ib_cfg.host}:{ib_cfg.port}."
+
+    live_ib = None
+    try:
+        live_ib = connect_ib(dashboard_ib_cfg(208, readonly=True))
+        for idx, position in enumerate(positions):
+            entry_price = _number_or_none(position.get("entry_price"))
+            qty = _number_or_none(position.get("quantity"))
+            if entry_price is None or entry_price <= 0 or qty is None or qty <= 0:
+                continue
+            contract = reconstruct_option_contract(position)
+            qualified = live_ib.qualifyContracts(contract)
+            if qualified:
+                contract = qualified[0]
+            market = get_snapshot_mid(live_ib, contract)
+            live_price = _number_or_none(market.get("Mid"))
+            if live_price is None or live_price <= 0:
+                continue
+            pnl = (live_price - entry_price) * float(qty) * 100.0
+            pnl_pct = ((live_price - entry_price) / entry_price) * 100.0
+            df.at[idx, "Live Price"] = live_price
+            df.at[idx, "Live P/L"] = pnl
+            df.at[idx, "Live P/L %"] = pnl_pct
+        return df, None
+    except Exception as exc:
+        return df, display_exception_message(exc)
+    finally:
+        try:
+            if live_ib and live_ib.isConnected():
+                live_ib.disconnect()
+        except Exception:
+            pass
+
+
+def style_live_pnl_table(df: pd.DataFrame):
+    def color_pnl(value):
+        number = _number_or_none(value)
+        if number is None:
+            return ""
+        if number > 0:
+            return "color: #16833a; font-weight: 700;"
+        if number < 0:
+            return "color: #c2410c; font-weight: 700;"
+        return ""
+
+    formatters = {
+        "entry_price": lambda value: "" if _number_or_none(value) is None else f"${float(value):,.2f}",
+        "current_stop_price": lambda value: "" if _number_or_none(value) is None else f"${float(value):,.2f}",
+        "take_profit_price": lambda value: "" if _number_or_none(value) is None else f"${float(value):,.2f}",
+        "Live Price": lambda value: "" if _number_or_none(value) is None else f"${float(value):,.2f}",
+        "Live P/L": lambda value: "" if _number_or_none(value) is None else f"${float(value):,.2f}",
+        "Live P/L %": lambda value: "" if _number_or_none(value) is None else f"{float(value):,.2f}%",
+    }
+    return df.style.format({key: value for key, value in formatters.items() if key in df.columns}).map(
+        color_pnl,
+        subset=[column for column in ["Live P/L", "Live P/L %"] if column in df.columns],
+    )
+
+
 def schedule_ibkr_reconnect_refresh() -> None:
     if not health.get("ib_connected"):
         st_autorefresh(interval=10_000, key="ibkr_reconnect_refresh")
@@ -1237,7 +1306,8 @@ def start_telegram_decision_worker() -> None:
                         except Exception:
                             pass
             except Exception as exc:
-                app_log(f"Telegram decision worker error: {exc}", "WARN")
+                if not is_telegram_polling_noise(exc):
+                    app_log(f"Telegram decision worker error: {exc}", "WARN")
             time.sleep(2)
 
     threading.Thread(target=worker, daemon=True, name="telegram-decision-worker").start()
@@ -1950,7 +2020,7 @@ def render_yahoo_backtester_tab(config: dict, default_symbols: list[str]):
 
 
     st.markdown("### Step 3 — Simulate Option Trades")
-    st.caption("Uses the historical CALL/PUT scanner signals and simulates 7-DTE, ~0.50-delta option trades. This is still Yahoo-based approximation, not real historical option-chain pricing.")
+    st.caption("Uses the historical CALL/PUT scanner signals and simulates approximate ~0.50-delta option trades. This is Yahoo-based approximation, not real historical IBKR option-chain pricing.")
 
     sim_col1, sim_col2, sim_col3, sim_col4 = st.columns(4)
     with sim_col1:
@@ -2066,7 +2136,7 @@ def render_yahoo_backtester_tab(config: dict, default_symbols: list[str]):
             key="bt_download_sim_trades",
         )
 
-    st.info("Current phase: Yahoo replay now simulates approximate 7-DTE option entries/exits and P/L. Next phase: improve analytics, trade explorer, and parameter testing.")
+    st.info("Current phase: Yahoo replay simulates approximate option entries/exits and P/L. Accurate 7/14-DTE testing requires IBKR historical option bars.")
 
 
 def scanner_result_paths() -> tuple[Path, Path, Path]:
@@ -2436,7 +2506,26 @@ elif selected_page == "💼 Positions":
     st.markdown("### Bot-Managed Positions")
     active_positions = read_active_positions()
     if active_positions:
-        st.dataframe(pd.DataFrame(active_positions), use_container_width=True)
+        active_df, live_pnl_error = enrich_active_positions_with_live_pnl(active_positions)
+        preferred_cols = [
+            "symbol",
+            "signal",
+            "option",
+            "quantity",
+            "entry_price",
+            "Live Price",
+            "Live P/L",
+            "Live P/L %",
+            "current_stop_price",
+            "take_profit_price",
+            "trailing_active",
+            "protective_orders_status",
+        ]
+        shown_cols = [column for column in preferred_cols if column in active_df.columns]
+        display_df = active_df[shown_cols] if shown_cols else active_df
+        st.dataframe(style_live_pnl_table(display_df), use_container_width=True, hide_index=True)
+        if live_pnl_error:
+            st.caption(f"Live P/L unavailable: {live_pnl_error}")
     else:
         st.info("No bot-managed positions. Engine is waiting for a valid signal.")
 
@@ -3104,7 +3193,7 @@ elif selected_page == "📊 Performance & Trade Journal":
         m5.markdown(
             f"""
             <div class="compact-metric">
-                <div class="compact-metric-label">Avg Win / Loss</div>
+                <div class="compact-metric-label">Avg W/L</div>
                 <div class="compact-metric-value">
                     <span class="metric-positive">${avg_win:,.0f}</span>
                     <span class="metric-divider">/</span>

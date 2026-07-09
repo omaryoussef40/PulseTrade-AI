@@ -11,8 +11,9 @@ No signal is silently ignored. Every signal becomes TRADED, SKIPPED, or REJECTED
 with a reason and sizing/account context.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import time as dtime
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -35,6 +36,8 @@ class OptionSimulationConfig:
     max_daily_capital: float = 500.0
     # 0 = no fixed contract cap; size by budget/buying power.
     max_contracts: int = 0
+    option_dte: int = 7
+    option_bars_provider: Callable[..., tuple[dict[str, Any], pd.DataFrame]] | None = None
     target_delta: float = 0.50
     premium_pct: float = 0.0025
     min_premium: float = 0.35
@@ -316,6 +319,37 @@ def _future_session_bars(df: pd.DataFrame, entry_ts: pd.Timestamp) -> pd.DataFra
     return same_day[same_day.index >= entry_ts].copy()
 
 
+def _historical_option_session(
+    signal_row: dict,
+    symbol: str,
+    signal: str,
+    entry_ts: pd.Timestamp,
+    entry_underlying: float,
+    config: OptionSimulationConfig,
+) -> tuple[dict[str, Any] | None, pd.DataFrame]:
+    provider = getattr(config, "option_bars_provider", None)
+    if provider is None:
+        return None, pd.DataFrame()
+    info, bars = provider(
+        symbol=symbol,
+        signal=signal,
+        underlying_price=float(entry_underlying),
+        option_dte=int(getattr(config, "option_dte", 7) or 7),
+        reference_time=entry_ts,
+    )
+    if bars is None or bars.empty:
+        return info, pd.DataFrame()
+    option_bars = bars.copy()
+    if getattr(option_bars.index, "tz", None) is None:
+        option_bars.index = pd.to_datetime(option_bars.index, errors="coerce").tz_localize(config.timezone)
+    else:
+        option_bars.index = pd.to_datetime(option_bars.index, errors="coerce").tz_convert(config.timezone)
+    option_bars = option_bars[option_bars.index.date == entry_ts.date()].copy()
+    option_bars = option_bars[option_bars.index >= entry_ts].copy()
+    option_bars = option_bars.dropna(subset=["Close"]) if "Close" in option_bars.columns else pd.DataFrame()
+    return info, option_bars
+
+
 def _base_decision(signal_row: dict, status: str, reason: str, stage: str = "SIMULATOR", **extra) -> dict:
     ts = signal_row.get("timestamp") or signal_row.get("Timestamp")
     symbol = str(signal_row.get("symbol") or signal_row.get("Symbol") or "").upper()
@@ -375,7 +409,33 @@ def _simulate_single_trade(
     if entry_underlying <= 0:
         return None, _base_decision(signal_row, "REJECTED", "Invalid entry underlying price", "VALIDATION"), daily_capital_used
 
-    entry_premium_mid = estimate_entry_premium(entry_underlying, config)
+    option_info = None
+    option_bars = pd.DataFrame()
+    uses_real_option_bars = False
+    if getattr(config, "option_bars_provider", None) is not None:
+        try:
+            option_info, option_bars = _historical_option_session(signal_row, symbol, signal, entry_ts, entry_underlying, config)
+            uses_real_option_bars = not option_bars.empty
+        except Exception as exc:
+            return None, _base_decision(
+                signal_row,
+                "REJECTED",
+                f"IBKR historical option bars unavailable: {exc}",
+                "OPTION_DATA",
+                option_dte=int(getattr(config, "option_dte", 7) or 7),
+            ), daily_capital_used
+        if not uses_real_option_bars:
+            option_decision_info = {k: v for k, v in (option_info or {}).items() if k != "option_dte"}
+            return None, _base_decision(
+                signal_row,
+                "REJECTED",
+                "No IBKR historical option bars after signal timestamp",
+                "OPTION_DATA",
+                option_dte=int(getattr(config, "option_dte", 7) or 7),
+                **option_decision_info,
+            ), daily_capital_used
+
+    entry_premium_mid = round(float(option_bars.iloc[0]["Close"]), 2) if uses_real_option_bars else estimate_entry_premium(entry_underlying, config)
     entry_premium = round(entry_premium_mid * (1 + float(config.slippage_pct) / 100.0), 2)
     sizing = calculate_position_size(entry_premium, account, config, daily_capital_used, day_start_equity=day_start_equity)
 
@@ -418,17 +478,38 @@ def _simulate_single_trade(
     breakeven_active = False
     trailing_active = False
 
-    exit_ts = bars.index[-1]
-    exit_underlying = float(bars.iloc[-1]["Close"])
+    price_bars = option_bars if uses_real_option_bars else bars
+    exit_ts = price_bars.index[-1]
+    underlying_until_exit = bars[bars.index <= exit_ts]
+    exit_underlying = float(underlying_until_exit.iloc[-1]["Close"]) if not underlying_until_exit.empty else float(bars.iloc[-1]["Close"])
     exit_premium_mid = entry_premium_mid
     exit_reason = "End-of-day forced exit"
-    exit_pricing_components = _price_model_components(signal, entry_underlying, exit_underlying, entry_premium_mid, 0.0, config)
+    exit_pricing_components = (
+        {
+            "pricing_model": "ibkr_historical_option_bars_v1",
+            "option_return_after_theta_pct": 0.0,
+            "theta_decay_pct": 0.0,
+            "raw_delta_return_pct": 0.0,
+        }
+        if uses_real_option_bars
+        else _price_model_components(signal, entry_underlying, exit_underlying, entry_premium_mid, 0.0, config)
+    )
 
-    for ts, bar in bars.iterrows():
-        current_underlying = float(bar["Close"])
+    for ts, bar in price_bars.iterrows():
+        stock_until_ts = bars[bars.index <= ts]
+        current_underlying = float(stock_until_ts.iloc[-1]["Close"]) if not stock_until_ts.empty else entry_underlying
         minutes_held = max(0.0, (ts - entry_ts).total_seconds() / 60.0)
-        pricing_components = _price_model_components(signal, entry_underlying, current_underlying, entry_premium_mid, minutes_held, config)
-        current_premium = float(pricing_components["mark"])
+        if uses_real_option_bars:
+            current_premium = round(float(bar["Close"]), 2)
+            pricing_components = {
+                "pricing_model": "ibkr_historical_option_bars_v1",
+                "option_return_after_theta_pct": round(((current_premium - entry_premium_mid) / entry_premium_mid) * 100.0, 2) if entry_premium_mid else 0.0,
+                "theta_decay_pct": 0.0,
+                "raw_delta_return_pct": 0.0,
+            }
+        else:
+            pricing_components = _price_model_components(signal, entry_underlying, current_underlying, entry_premium_mid, minutes_held, config)
+            current_premium = float(pricing_components["mark"])
         highest_price = max(highest_price, current_premium)
         pnl_pct = ((current_premium - entry_premium) / entry_premium) * 100.0 if entry_premium else 0.0
 
@@ -481,10 +562,12 @@ def _simulate_single_trade(
             exit_reason = reason
             break
 
-    if exit_reason == "End-of-day forced exit":
+    if exit_reason == "End-of-day forced exit" and not uses_real_option_bars:
         final_minutes_held = max(0.0, (exit_ts - entry_ts).total_seconds() / 60.0)
         exit_pricing_components = _price_model_components(signal, entry_underlying, exit_underlying, entry_premium_mid, final_minutes_held, config)
         exit_premium_mid = float(exit_pricing_components["mark"])
+    elif exit_reason == "End-of-day forced exit" and uses_real_option_bars:
+        exit_premium_mid = round(float(price_bars.iloc[-1]["Close"]), 2)
 
     # Directional consistency guard for the Yahoo approximate pricing model.
     # In real options, a profitable trailing stop can sometimes fill before the
@@ -496,10 +579,10 @@ def _simulate_single_trade(
     # keeps the approximate Yahoo model conservative until IBKR historical option
     # prices are available.
     directional_guard_applied = False
-    if str(signal).upper() == "CALL" and float(exit_underlying) <= float(entry_underlying) and float(exit_premium_mid) > float(entry_premium):
+    if not uses_real_option_bars and str(signal).upper() == "CALL" and float(exit_underlying) <= float(entry_underlying) and float(exit_premium_mid) > float(entry_premium):
         exit_premium_mid = float(entry_premium)
         directional_guard_applied = True
-    elif str(signal).upper() == "PUT" and float(exit_underlying) >= float(entry_underlying) and float(exit_premium_mid) > float(entry_premium):
+    elif not uses_real_option_bars and str(signal).upper() == "PUT" and float(exit_underlying) >= float(entry_underlying) and float(exit_premium_mid) > float(entry_premium):
         exit_premium_mid = float(entry_premium)
         directional_guard_applied = True
 
@@ -523,6 +606,11 @@ def _simulate_single_trade(
         "strategy": str(signal_row.get("strategy") or signal_row.get("Strategy") or "PMB").upper(),
         "symbol": symbol,
         "signal": signal,
+        "option_dte": int(getattr(config, "option_dte", 7) or 7),
+        "option_expiry": (option_info or {}).get("expiry"),
+        "option_strike": (option_info or {}).get("strike"),
+        "option_right": (option_info or {}).get("right"),
+        "option_local_symbol": (option_info or {}).get("localSymbol"),
         "score": signal_row.get("score"),
         "grade": signal_row.get("grade") or signal_row.get("Grade") or signal_row.get("Setup Quality"),
         "confidence": signal_row.get("confidence"),
@@ -570,6 +658,10 @@ def _simulate_single_trade(
         f"Opened simulated option trade and exited: {exit_reason}",
         "BROKER",
         entry_underlying=round(entry_underlying, 2),
+        option_dte=int(getattr(config, "option_dte", 7) or 7),
+        option_expiry=(option_info or {}).get("expiry"),
+        option_strike=(option_info or {}).get("strike"),
+        option_local_symbol=(option_info or {}).get("localSymbol"),
         entry_premium=entry_premium,
         contract_cost_with_commission=sizing.contract_cost_with_commission,
         quantity=sizing.quantity,

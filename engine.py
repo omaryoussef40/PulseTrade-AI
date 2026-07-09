@@ -204,6 +204,19 @@ def telegram_post(bot_token: str, method: str, payload: dict, timeout: int = 10)
     return data
 
 
+def is_telegram_polling_noise(exc: Exception) -> bool:
+    message = str(exc)
+    return (
+        "Telegram getUpdates failed" in message
+        and (
+            "error_code': 409" in message
+            or '"error_code": 409' in message
+            or "terminated by other getUpdates request" in message
+            or "Read timed out" in message
+        )
+    )
+
+
 def telegram_try_post(bot_token: str, method: str, payload: dict, timeout: int = 10) -> bool:
     try:
         telegram_post(bot_token, method, payload, timeout=timeout)
@@ -531,9 +544,11 @@ def run_cycle() -> None:
             if processed_callbacks:
                 app_log(f"Processed {processed_callbacks} Telegram order approval callback(s)")
         except Exception as exc:
-            app_log(f"Telegram order approval callback check failed: {exc}", "WARN")
+            if not is_telegram_polling_noise(exc):
+                app_log(f"Telegram order approval callback check failed: {exc}", "WARN")
 
     candidates: list[dict] = []
+    fresh_scan_seen = False
     for symbol in watchlist:
         try:
             result = scan_symbol_ib(
@@ -551,6 +566,7 @@ def run_cycle() -> None:
             if session_date != today_et:
                 app_log(f"{symbol}: skipped stale scan result | session={session_date} | today={today_et}", "WARN")
                 continue
+            fresh_scan_seen = True
             if not is_top_candidate(
                 result,
                 float(strategy.get("min_score", 70)),
@@ -574,6 +590,10 @@ def run_cycle() -> None:
             })
         except Exception as exc:
             app_log(f"{symbol} scan error: {exc}", "ERROR")
+
+    if can_trade and not fresh_scan_seen:
+        app_log("Fresh same-day scan required before live entries. New orders disabled for this cycle.", "WARN")
+        can_trade = False
 
     if not candidates:
         write_health(last_scan_finish=datetime.now(EASTERN).isoformat(), last_status="No candidates", candidates=0)
@@ -646,7 +666,8 @@ def run_cycle() -> None:
             log_alert({"timestamp": datetime.now(EASTERN).isoformat(), "symbol": symbol, "signal": row["Signal"], "score": row["Score"], "grade": row.get("Grade"), "telegram_sent": ok})
 
         if can_trade:
-            limit_price = option_full["Mid"] if order.get("type", "LIMIT") == "LIMIT" else None
+            entry_order_type = str(order.get("type", "LIMIT") or "LIMIT").upper()
+            limit_price = option_full["Mid"] if entry_order_type == "LIMIT" else None
             if automation.get("require_trade_approval", False):
                 existing = [
                     pending for pending in read_pending_approvals()
@@ -663,7 +684,7 @@ def run_cycle() -> None:
                     option_full,
                     qty,
                     estimated_cost,
-                    order.get("type", "LIMIT"),
+                    entry_order_type,
                     limit_price,
                     mode,
                 )
@@ -685,7 +706,7 @@ def run_cycle() -> None:
                 )
                 app_log(f"{symbol}: order approval requested | sent={sent} | id={pending.get('id')}")
                 continue
-            trade = place_option_order(ib, option_full["Contract"], "BUY", qty, order.get("type", "LIMIT"), limit_price, ib_cfg.account)
+            trade = place_option_order(ib, option_full["Contract"], "BUY", qty, entry_order_type, limit_price, ib_cfg.account)
             fallback_entry_price = float(limit_price if limit_price else option_full["Mid"])
             fill = trade_fill_details(trade, qty, fallback_entry_price)
             status = str(fill["status"])
@@ -701,7 +722,7 @@ def run_cycle() -> None:
                 "quantity": qty,
                 "filled_quantity": filled_qty,
                 "remaining_quantity": fill.get("remaining_qty"),
-                "order_type": order.get("type", "LIMIT"),
+                "order_type": entry_order_type,
                 "limit_price": entry_price,
                 "estimated_cost": estimated_cost,
                 "status": status,
