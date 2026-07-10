@@ -1,5 +1,1 @@
-Symbol,Signal,Score,Confidence,Option,Option Score,Reasons,Expiry,Strike,Type,Delta,Bid,Ask,Last,Mid,Spread %,Volume,Risk / Contract,Strike Distance,Delta Distance
-GS,PUT,96.0,100.0,ERROR,0,cannot convert float NaN to integer,,,,,,,,,,,,,
-AVGO,CALL,95.0,100.0,ERROR,0,cannot convert float NaN to integer,,,,,,,,,,,,,
-RKLB,PUT,93.0,100.0,RKLB 20260717 82.5 PUT,100,,20260717,82.5,PUT,-0.51,4.95,5.2,5.0,5.08,4.9,42.0,507.5,0.12000000000000455,0.010000000000000009
-CRWD,PUT,93.0,100.0,ERROR,0,cannot convert float NaN to integer,,,,,,,,,,,,,
+

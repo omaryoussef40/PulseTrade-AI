@@ -78,6 +78,18 @@ TARGET_DELTA = 0.50
 DEFAULT_OPTION_DTE = 7
 DEFAULT_RISK_PER_TRADE = 250
 DEFAULT_MAX_CONTRACTS = 2
+DEFAULT_OPTION_FILTERS = {
+    "require_live_greeks": True,
+    "max_spread_pct": 10.0,
+    "excellent_spread_pct": 5.0,
+    "max_spread_dollars": 0.75,
+    "min_abs_delta": 0.45,
+    "target_abs_delta": 0.55,
+    "max_abs_delta": 0.80,
+    "max_theta_pct_of_mid": 12.0,
+    "min_bid": 0.05,
+    "min_volume": 0,
+}
 DEFAULT_ACCOUNT_SIZE = 1000
 DEFAULT_MAX_TRADES_PER_DAY = 2
 DEFAULT_TOP_N_TICKERS = 2
@@ -487,7 +499,14 @@ def estimate_delta(option_type: str, strike: float, stock_price: float) -> float
 
 def get_snapshot_mid(ib: IB, contract) -> dict:
     ticker = ib.reqMktData(contract, "", snapshot=True, regulatorySnapshot=False)
-    ib.sleep(2)
+    is_option_contract = str(getattr(contract, "secType", "") or "").upper() in {"OPT", "FOP"}
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        ib.sleep(0.25)
+        has_quote = (ticker.bid and ticker.bid > 0) or (ticker.ask and ticker.ask > 0) or (ticker.last and ticker.last > 0)
+        has_greeks = bool(ticker.modelGreeks or ticker.bidGreeks or ticker.askGreeks or ticker.lastGreeks)
+        if has_greeks or (has_quote and not is_option_contract):
+            break
 
     bid = ticker.bid if ticker.bid and ticker.bid > 0 else np.nan
     ask = ticker.ask if ticker.ask and ticker.ask > 0 else np.nan
@@ -503,6 +522,17 @@ def get_snapshot_mid(ib: IB, contract) -> dict:
         mid = np.nan
         spread_pct = np.nan
 
+    greek_source = ""
+    greeks = ticker.modelGreeks or ticker.bidGreeks or ticker.askGreeks or ticker.lastGreeks
+    if ticker.modelGreeks:
+        greek_source = "model"
+    elif ticker.bidGreeks:
+        greek_source = "bid"
+    elif ticker.askGreeks:
+        greek_source = "ask"
+    elif ticker.lastGreeks:
+        greek_source = "last"
+
     return {
         "Bid": bid,
         "Ask": ask,
@@ -510,6 +540,12 @@ def get_snapshot_mid(ib: IB, contract) -> dict:
         "Mid": mid,
         "Spread %": spread_pct,
         "Volume": ticker.volume if ticker.volume else 0,
+        "Delta": getattr(greeks, "delta", np.nan) if greeks else np.nan,
+        "Gamma": getattr(greeks, "gamma", np.nan) if greeks else np.nan,
+        "Theta": getattr(greeks, "theta", np.nan) if greeks else np.nan,
+        "Vega": getattr(greeks, "vega", np.nan) if greeks else np.nan,
+        "Implied Vol": getattr(greeks, "impliedVol", np.nan) if greeks else np.nan,
+        "Greek Source": greek_source,
     }
 
 
@@ -521,10 +557,76 @@ def _finite_number(value) -> float | None:
     return numeric if np.isfinite(numeric) else None
 
 
-def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dte_target=7) -> dict | None:
+def option_filters_from_config(config: dict | None = None) -> dict:
+    filters = dict(DEFAULT_OPTION_FILTERS)
+    if isinstance(config, dict):
+        raw = config.get("option_filters", {})
+        if isinstance(raw, dict):
+            filters.update(raw)
+    return filters
+
+
+def _option_quality_score(option: dict, filters: dict) -> tuple[int, str]:
+    score = 0
+    notes = []
+
+    spread_pct = _finite_number(option.get("Spread %"))
+    excellent_spread = float(filters.get("excellent_spread_pct", 5.0))
+    max_spread = float(filters.get("max_spread_pct", 10.0))
+    if spread_pct is not None:
+        if spread_pct <= excellent_spread:
+            score += 35
+            notes.append(f"tight spread {spread_pct:.1f}%")
+        elif spread_pct <= max_spread:
+            score += 25
+            notes.append(f"acceptable spread {spread_pct:.1f}%")
+        else:
+            notes.append(f"wide spread {spread_pct:.1f}%")
+
+    abs_delta = abs(float(option.get("Delta") or 0))
+    min_delta = float(filters.get("min_abs_delta", 0.45))
+    target_delta = float(filters.get("target_abs_delta", 0.55))
+    max_delta = float(filters.get("max_abs_delta", 0.80))
+    if min_delta <= abs_delta <= max_delta:
+        distance = abs(abs_delta - target_delta)
+        score += max(0, int(round(30 - min(distance / max(target_delta - min_delta, 0.01), 1.0) * 10)))
+        notes.append(f"delta {abs_delta:.2f}")
+
+    mid = _finite_number(option.get("Mid"))
+    theta = _finite_number(option.get("Theta"))
+    max_theta_pct = float(filters.get("max_theta_pct_of_mid", 12.0))
+    if mid and theta is not None:
+        theta_pct = abs(theta) / mid * 100
+        option["Theta % Mid"] = round(theta_pct, 1)
+        if theta_pct <= max_theta_pct * 0.5:
+            score += 15
+            notes.append(f"low theta {theta_pct:.1f}%")
+        elif theta_pct <= max_theta_pct:
+            score += 10
+            notes.append(f"ok theta {theta_pct:.1f}%")
+        else:
+            notes.append(f"high theta {theta_pct:.1f}%")
+
+    gamma = _finite_number(option.get("Gamma"))
+    if gamma is not None and gamma > 0:
+        score += 10
+        notes.append("positive gamma")
+
+    volume = _finite_number(option.get("Volume")) or 0
+    if volume >= max(1, int(filters.get("min_volume", 0))):
+        score += 10
+        notes.append(f"volume {int(volume)}")
+    elif int(filters.get("min_volume", 0)) <= 0:
+        score += 5
+
+    return min(score, 100), " | ".join(notes)
+
+
+def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dte_target=7, option_filters: dict | None = None) -> dict | None:
     if signal not in ["CALL", "PUT"]:
         return None
 
+    filters = option_filters_from_config({"option_filters": option_filters or {}})
     expiry, strikes = get_option_expiry_and_strikes(ib, symbol, dte_target)
     if not expiry or not strikes:
         return None
@@ -536,7 +638,8 @@ def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dt
     if not nearby:
         return None
 
-    # Start with strikes close to target estimated delta to reduce API calls.
+    # Start with strikes close to target estimated delta to reduce API calls,
+    # then require real IBKR Greeks before a contract can be selected.
     candidates = []
     for strike in nearby:
         delta = estimate_delta(option_type, strike, stock_price)
@@ -554,60 +657,79 @@ def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dt
         contract = qualified[0]
         market = get_snapshot_mid(ib, contract)
         mid = _finite_number(market.get("Mid"))
+        bid = _finite_number(market.get("Bid"))
+        ask = _finite_number(market.get("Ask"))
 
-        if mid is None or mid <= 0:
+        if mid is None or mid <= 0 or bid is None or ask is None:
             continue
 
         spread_pct = _finite_number(market.get("Spread %"))
-        if spread_pct is not None and spread_pct > 0.25:
+        spread_dollars = (ask - bid) if ask is not None and bid is not None else None
+        max_spread_pct = float(filters.get("max_spread_pct", 10.0)) / 100.0
+        max_spread_dollars = float(filters.get("max_spread_dollars", 0.75) or 0)
+        min_bid = float(filters.get("min_bid", 0.05) or 0)
+        if spread_pct is None or spread_pct > max_spread_pct:
             continue
-        bid = _finite_number(market.get("Bid"))
-        ask = _finite_number(market.get("Ask"))
+        if max_spread_dollars > 0 and spread_dollars is not None and spread_dollars > max_spread_dollars:
+            continue
+        if bid < min_bid:
+            continue
+
+        real_delta = _finite_number(market.get("Delta"))
+        require_live_greeks = bool(filters.get("require_live_greeks", True))
+        if real_delta is None:
+            if require_live_greeks:
+                continue
+            real_delta = est_delta
+        min_abs_delta = float(filters.get("min_abs_delta", 0.45))
+        max_abs_delta = float(filters.get("max_abs_delta", 0.80))
+        if signal == "CALL" and real_delta <= 0:
+            continue
+        if signal == "PUT" and real_delta >= 0:
+            continue
+        if abs(real_delta) < min_abs_delta or abs(real_delta) > max_abs_delta:
+            continue
+
         last = _finite_number(market.get("Last"))
         volume = _finite_number(market.get("Volume")) or 0
+        min_volume = int(filters.get("min_volume", 0) or 0)
+        if min_volume > 0 and volume < min_volume:
+            continue
 
-        option_rows.append({
+        row = {
             "Contract": contract,
             "Option": f"{symbol} {expiry} {strike:g} {option_type}",
             "Expiry": expiry,
             "Strike": strike,
             "Type": option_type,
-            "Delta": round(est_delta, 2),
+            "Delta": round(real_delta, 4),
+            "Estimated Delta": round(est_delta, 2),
+            "Gamma": round(float(market.get("Gamma")), 6) if _finite_number(market.get("Gamma")) is not None else None,
+            "Theta": round(float(market.get("Theta")), 6) if _finite_number(market.get("Theta")) is not None else None,
+            "Vega": round(float(market.get("Vega")), 6) if _finite_number(market.get("Vega")) is not None else None,
+            "Implied Vol": round(float(market.get("Implied Vol")), 4) if _finite_number(market.get("Implied Vol")) is not None else None,
+            "Greek Source": market.get("Greek Source"),
             "Bid": round(bid, 2) if bid is not None else None,
             "Ask": round(ask, 2) if ask is not None else None,
             "Last": round(last, 2) if last is not None else None,
             "Mid": round(mid, 2),
             "Spread %": round(spread_pct * 100, 1) if spread_pct is not None else None,
+            "Spread $": round(spread_dollars, 2) if spread_dollars is not None else None,
             "Volume": int(volume),
             "Risk / Contract": round(mid * 100, 2),
             "Strike Distance": strike_distance,
-        })
+        }
+        row["Option Score"], row["Option Score Notes"] = _option_quality_score(row, filters)
+        option_rows.append(row)
 
     if not option_rows:
         return None
 
     df = pd.DataFrame(option_rows)
-    df["Delta Distance"] = df["Delta"].apply(lambda d: abs(d - TARGET_DELTA) if option_type == "CALL" else abs(d + TARGET_DELTA))
-    df = df.sort_values(["Delta Distance", "Strike Distance", "Spread %"], na_position="last")
+    target_abs_delta = float(filters.get("target_abs_delta", 0.55))
+    df["Delta Distance"] = df["Delta"].apply(lambda d: abs(abs(float(d)) - target_abs_delta))
+    df = df.sort_values(["Option Score", "Delta Distance", "Spread %", "Strike Distance"], ascending=[False, True, True, True], na_position="last")
     best = df.iloc[0].to_dict()
-
-    option_score = 0
-    spread_pct = best.get("Spread %")
-    if spread_pct is not None:
-        if spread_pct <= 5:
-            option_score += 35
-        elif spread_pct <= 10:
-            option_score += 25
-        elif spread_pct <= 20:
-            option_score += 15
-    if abs(best["Delta"]) >= 0.40:
-        option_score += 35
-    elif abs(best["Delta"]) >= 0.30:
-        option_score += 20
-    if best["Mid"] > 0:
-        option_score += 30
-
-    best["Option Score"] = option_score
     return best
 
 
@@ -681,14 +803,51 @@ def opportunity_rank_score(result: dict, option: dict | None, use_rvol_ranking: 
     option_score = float(option.get("Option Score", 0)) if option else 0.0
     rvol_component = min(float(result.get("RVOL", 0)) * 10, 30) if use_rvol_ranking else 0
     atr_component = min(float(result.get("ATR %", 0)) * 10, 15)
+    sr_component = setup_room_score(result)
 
     return round(
         float(result.get("Score", 0)) * 0.60
         + option_score * 0.25
         + atr_component
+        + sr_component
         + rvol_component,
         2,
     )
+
+
+def setup_room_check(result: dict, min_room_pct: float = 0.75) -> tuple[bool, float | None, str]:
+    """Check whether a setup has enough distance to the next opposing level."""
+    signal = str(result.get("Signal", "")).upper()
+    try:
+        if signal == "CALL":
+            room = result.get("Resistance Distance %")
+            if room is None or pd.isna(room):
+                return True, None, "No nearby resistance above price"
+            room = float(room)
+            if room < float(min_room_pct):
+                return False, room, f"Resistance too close ({room:.2f}% < {float(min_room_pct):.2f}%)"
+            return True, room, f"Upside room to resistance: {room:.2f}%"
+        if signal == "PUT":
+            room = result.get("Support Distance %")
+            if room is None or pd.isna(room):
+                return True, None, "No nearby support below price"
+            room = float(room)
+            if room < float(min_room_pct):
+                return False, room, f"Support too close ({room:.2f}% < {float(min_room_pct):.2f}%)"
+            return True, room, f"Downside room to support: {room:.2f}%"
+    except Exception:
+        return False, None, "Could not validate support/resistance room"
+    return False, None, "No directional signal for room check"
+
+
+def setup_room_score(result: dict, max_points: float = 10.0) -> float:
+    """Reward setups that have clean space before the next support/resistance level."""
+    ok, room, _note = setup_room_check(result, 0.0)
+    if not ok:
+        return 0.0
+    if room is None:
+        return float(max_points)
+    return round(min(max(float(room), 0.0) * 4.0, float(max_points)), 2)
 
 
 def place_option_order(
@@ -1743,6 +1902,7 @@ def manage_open_positions(
     trailing_stop_pct: float,
     force_exit_time: dtime,
     allow_live_orders: bool,
+    force_exit_enabled: bool = True,
 ) -> list[dict]:
     """Manage active option positions across Streamlit refresh cycles."""
     positions = read_active_positions()
@@ -1792,7 +1952,7 @@ def manage_open_positions(
             reason = None
 
             # Force flat before close. This exits winners and losers that did not hit TP/SL.
-            if now_et.time() >= force_exit_time:
+            if force_exit_enabled and now_et.time() >= force_exit_time:
                 reason = "End-of-day forced exit"
 
             # Initial hard stop.
@@ -2016,6 +2176,8 @@ def is_top_candidate(
     min_rvol: float,
     min_atr: float,
     use_rvol_filter: bool,
+    use_sr_filter: bool = False,
+    min_sr_room_pct: float = 0.75,
 ) -> bool:
     """Filter live candidates.
 
@@ -2032,6 +2194,12 @@ def is_top_candidate(
             return False
         if float(result.get("ATR %", 0)) < float(min_atr):
             return False
+        if bool(use_sr_filter):
+            room_ok, room_pct, room_note = setup_room_check(result, float(min_sr_room_pct))
+            result["Room To Move %"] = round(room_pct, 2) if room_pct is not None else None
+            result["Room Check"] = room_note
+            if not room_ok:
+                return False
     except Exception:
         return False
     return True
@@ -2052,12 +2220,15 @@ def make_alert_message(result: dict, option: dict | None) -> str:
         f"PDH/PDL: {result['PDH']} / {result['PDL']}\n"
         f"ORB confirmed: {result.get('ORB Confirmation Close', 'N/A')} at {result.get('ORB Confirmation Time', 'N/A')}\n"
         f"Support/Resistance: {result.get('Nearest Support', 'N/A')} / {result.get('Nearest Resistance', 'N/A')}\n"
+        f"Room check: {result.get('Room Check', 'N/A')}\n"
         f"Why: {result['Reasons']}"
     )
     if option:
         text += (
             f"\n\n<b>Option</b>: {option['Option']}\n"
             f"Mid: ${option['Mid']} | Bid/Ask: {option['Bid']} / {option['Ask']}\n"
+            f"Spread: {option.get('Spread %', 'N/A')}% | Delta: {option.get('Delta', 'N/A')} | Theta: {option.get('Theta', 'N/A')} | IV: {option.get('Implied Vol', 'N/A')}\n"
+            f"Option score: {option.get('Option Score', 'N/A')} | {option.get('Option Score Notes', '')}\n"
             f"Risk/Contract: ${option['Risk / Contract']}"
         )
     return text
@@ -2102,11 +2273,13 @@ def default_config() -> dict:
         "ib": {"host": "127.0.0.1", "paper_port": 7497, "live_port": 7496, "client_id": 11, "account": "", "readonly": False},
         "telegram": {"bot_token": "", "chat_id": "", "send_alerts": False},
         "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 60, "market_timezone": "America/New_York", "scan_only_market_hours": True},
-        "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7},
-        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
+        "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "use_sr_filter": True, "min_sr_room_pct": 0.75, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7},
+        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_enabled": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},
+        "option_filters": dict(DEFAULT_OPTION_FILTERS),
         "watchlist": WATCHLIST,
         "dynamic_watchlist": {"enabled": False, "mode": "Manual", "max_symbols": 5, "refresh_hour": 9, "refresh_minute": 30, "source_universe": WATCHLIST},
+        "scanner": {"auto_run_enabled": True, "auto_run_hour": 9, "auto_run_minute": 40},
         "ibkr_flex": {"token": "", "trade_query_id": "", "base_url": ""},
         "performance": {"original_deposited_capital": 2300.0},
     }
@@ -2278,11 +2451,20 @@ def save_trade_replay(row: dict, option: dict | None = None, event: str = "SIGNA
         "strike": option.get("Strike"),
         "type": option.get("Type"),
         "delta": option.get("Delta"),
+        "estimated_delta": option.get("Estimated Delta"),
+        "gamma": option.get("Gamma"),
+        "theta": option.get("Theta"),
+        "theta_pct_mid": option.get("Theta % Mid"),
+        "vega": option.get("Vega"),
+        "implied_vol": option.get("Implied Vol"),
+        "greek_source": option.get("Greek Source"),
         "bid": option.get("Bid"),
         "ask": option.get("Ask"),
         "mid": option.get("Mid"),
         "spread_pct": option.get("Spread %"),
+        "spread_dollars": option.get("Spread $"),
         "option_score": option.get("Option Score"),
+        "option_score_notes": option.get("Option Score Notes"),
         "risk_per_contract": option.get("Risk / Contract"),
         "quantity": quantity,
         "entry_price": entry_price,

@@ -176,6 +176,18 @@ def create_pending_approval(row: pd.Series, option_clean: dict, option_full: dic
         "type": option_full["Type"],
         "quantity": int(qty),
         "mid": option_full.get("Mid"),
+        "bid": option_full.get("Bid"),
+        "ask": option_full.get("Ask"),
+        "spread_pct": option_full.get("Spread %"),
+        "spread_dollars": option_full.get("Spread $"),
+        "delta": option_full.get("Delta"),
+        "gamma": option_full.get("Gamma"),
+        "theta": option_full.get("Theta"),
+        "theta_pct_mid": option_full.get("Theta % Mid"),
+        "vega": option_full.get("Vega"),
+        "implied_vol": option_full.get("Implied Vol"),
+        "option_score": option_full.get("Option Score"),
+        "option_score_notes": option_full.get("Option Score Notes"),
         "estimated_cost": float(estimated_cost),
         "order_type": order_type,
         "limit_price": limit_price,
@@ -211,6 +223,8 @@ def approval_message(order: dict) -> str:
         f"{escape(str(order.get('option', 'N/A')))}\n"
         f"Qty: <b>{escape(str(order.get('quantity', 0)))}</b>\n"
         f"Mid: ${float(order.get('mid') or 0):.2f}\n"
+        f"Delta: <b>{escape(str(order.get('delta', 'N/A')))}</b> | Spread: <b>{escape(str(order.get('spread_pct', 'N/A')))}%</b>\n"
+        f"Theta: <b>{escape(str(order.get('theta', 'N/A')))}</b> | IV: <b>{escape(str(order.get('implied_vol', 'N/A')))}</b>\n"
         f"Estimated cost: ${float(order.get('estimated_cost') or 0):,.2f}\n"
         f"Order: {escape(str(order.get('order_type', 'LIMIT')))}\n"
         f"{limit_line}\n\n"
@@ -511,6 +525,7 @@ def run_cycle() -> None:
         trailing_trigger_pct=float(risk.get("trailing_trigger_pct", 25.0)),
         trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
         force_exit_time=force_exit_time,
+        force_exit_enabled=bool(risk.get("force_exit_enabled", True)),
         allow_live_orders=can_trade,
     )
     if management_events:
@@ -598,6 +613,8 @@ def run_cycle() -> None:
                 float(strategy.get("min_rvol", 1.5)),
                 float(strategy.get("min_atr", 0.3)),
                 bool(strategy.get("use_rvol_filter", False)),
+                bool(strategy.get("use_sr_filter", True)),
+                float(strategy.get("min_sr_room_pct", 0.75)),
             ):
                 continue
 
@@ -657,7 +674,14 @@ def run_cycle() -> None:
             continue
 
         try:
-            option_full = recommend_option_ib(ib, symbol, row["Signal"], float(row["Price"]), int(strategy.get("option_dte", 7)))
+            option_full = recommend_option_ib(
+                ib,
+                symbol,
+                row["Signal"],
+                float(row["Price"]),
+                int(strategy.get("option_dte", 7)),
+                cfg.get("option_filters", {}),
+            )
         except Exception as exc:
             app_log(f"{symbol}: option pricing error: {exc}", "ERROR")
             continue
@@ -751,6 +775,21 @@ def run_cycle() -> None:
                 "estimated_cost": estimated_cost,
                 "status": status,
                 "broker_status": fill.get("raw_status"),
+                "delta": option_full.get("Delta"),
+                "estimated_delta": option_full.get("Estimated Delta"),
+                "gamma": option_full.get("Gamma"),
+                "theta": option_full.get("Theta"),
+                "theta_pct_mid": option_full.get("Theta % Mid"),
+                "vega": option_full.get("Vega"),
+                "implied_vol": option_full.get("Implied Vol"),
+                "greek_source": option_full.get("Greek Source"),
+                "bid": option_full.get("Bid"),
+                "ask": option_full.get("Ask"),
+                "mid": option_full.get("Mid"),
+                "spread_pct": option_full.get("Spread %"),
+                "spread_dollars": option_full.get("Spread $"),
+                "option_score": option_full.get("Option Score"),
+                "option_score_notes": option_full.get("Option Score Notes"),
                 "score": row["Score"],
                 "confidence": row.get("Confidence"),
                 "grade": row.get("Grade"),

@@ -711,6 +711,7 @@ def render_platform_settings():
         r["trailing_stop_pct"] = st.number_input("Trailing stop distance %", value=float(r.get("trailing_stop_pct", 10.0)), min_value=1.0, max_value=90.0, step=1.0)
         r["entry_cutoff_hour"] = st.number_input("No new entries after hour ET", value=int(r.get("entry_cutoff_hour", 11)), min_value=9, max_value=15, step=1)
         r["entry_cutoff_minute"] = st.number_input("No new entries after minute ET", value=int(r.get("entry_cutoff_minute", 0)), min_value=0, max_value=59, step=1)
+        r["force_exit_enabled"] = st.checkbox("Force exit open trades near end of day", value=bool(r.get("force_exit_enabled", True)))
         r["force_exit_hour"] = st.number_input("Force exit hour ET", value=int(r.get("force_exit_hour", 15)), min_value=9, max_value=15, step=1)
         r["force_exit_minute"] = st.number_input("Force exit minute ET", value=int(r.get("force_exit_minute", 55)), min_value=0, max_value=59, step=1)
         r["max_consecutive_losses"] = st.number_input("Stop after consecutive losses", value=int(r.get("max_consecutive_losses", 2)), min_value=1, max_value=10, step=1)
@@ -726,8 +727,87 @@ def render_platform_settings():
         s["use_rvol_score"] = st.checkbox("Use RVOL bonus in technical score", value=bool(s.get("use_rvol_score", False)))
         s["use_rvol_ranking"] = st.checkbox("Use RVOL bonus in ranking", value=bool(s.get("use_rvol_ranking", False)))
         s["min_atr"] = st.number_input("Minimum ATR %", value=float(s.get("min_atr", 0.3)), min_value=0.0, max_value=10.0, step=0.1)
+        s["use_sr_filter"] = st.checkbox("Require room to nearest support/resistance", value=bool(s.get("use_sr_filter", True)))
+        s["min_sr_room_pct"] = st.number_input("Minimum room to opposing level %", value=float(s.get("min_sr_room_pct", 0.75)), min_value=0.0, max_value=10.0, step=0.1)
         if not s["use_rvol_filter"]:
             st.caption("RVOL is informational only and will not block trades.")
+        if s["use_sr_filter"]:
+            st.caption("CALLs need room before nearest resistance; PUTs need room before nearest support.")
+
+    with st.expander("Option Contract Filters", expanded=False):
+        option_filters = cfg.setdefault("option_filters", {})
+        option_filters["require_live_greeks"] = st.checkbox(
+            "Require live IBKR Greeks",
+            value=bool(option_filters.get("require_live_greeks", True)),
+        )
+        c1, c2 = st.columns(2)
+        option_filters["max_spread_pct"] = c1.number_input(
+            "Maximum spread %",
+            value=float(option_filters.get("max_spread_pct", 10.0)),
+            min_value=1.0,
+            max_value=50.0,
+            step=0.5,
+        )
+        option_filters["excellent_spread_pct"] = c2.number_input(
+            "Excellent spread %",
+            value=float(option_filters.get("excellent_spread_pct", 5.0)),
+            min_value=0.5,
+            max_value=20.0,
+            step=0.5,
+        )
+        c3, c4 = st.columns(2)
+        option_filters["min_abs_delta"] = c3.number_input(
+            "Minimum absolute delta",
+            value=float(option_filters.get("min_abs_delta", 0.45)),
+            min_value=0.05,
+            max_value=0.95,
+            step=0.01,
+        )
+        option_filters["target_abs_delta"] = c4.number_input(
+            "Target absolute delta",
+            value=float(option_filters.get("target_abs_delta", 0.55)),
+            min_value=0.05,
+            max_value=0.95,
+            step=0.01,
+        )
+        c5, c6 = st.columns(2)
+        option_filters["max_abs_delta"] = c5.number_input(
+            "Maximum absolute delta",
+            value=float(option_filters.get("max_abs_delta", 0.80)),
+            min_value=0.05,
+            max_value=1.0,
+            step=0.01,
+        )
+        option_filters["max_spread_dollars"] = c6.number_input(
+            "Maximum spread $",
+            value=float(option_filters.get("max_spread_dollars", 0.75)),
+            min_value=0.0,
+            max_value=10.0,
+            step=0.05,
+        )
+        c7, c8 = st.columns(2)
+        option_filters["max_theta_pct_of_mid"] = c7.number_input(
+            "Maximum theta % of mid",
+            value=float(option_filters.get("max_theta_pct_of_mid", 12.0)),
+            min_value=1.0,
+            max_value=100.0,
+            step=0.5,
+        )
+        option_filters["min_bid"] = c8.number_input(
+            "Minimum bid",
+            value=float(option_filters.get("min_bid", 0.05)),
+            min_value=0.0,
+            max_value=10.0,
+            step=0.05,
+        )
+        option_filters["min_volume"] = st.number_input(
+            "Minimum option volume",
+            value=int(option_filters.get("min_volume", 0)),
+            min_value=0,
+            max_value=100000,
+            step=10,
+        )
+        st.caption("These are hard gates before live order placement. Spread and real delta now decide whether an option is tradeable.")
 
     with st.expander("Watchlist", expanded=False):
         current_watchlist = [str(x).strip().upper() for x in cfg.get("watchlist", WATCHLIST) if str(x).strip()]
@@ -799,6 +879,29 @@ def render_platform_settings():
                             dynamic_ib.disconnect()
                     except Exception:
                         pass
+
+        st.divider()
+        st.markdown("#### Automatic IBKR Scanner")
+        scanner_cfg = cfg.setdefault("scanner", {})
+        scanner_cfg["auto_run_enabled"] = st.checkbox(
+            "Run scanner automatically each morning",
+            value=bool(scanner_cfg.get("auto_run_enabled", True)),
+        )
+        s1, s2 = st.columns(2)
+        scanner_cfg["auto_run_hour"] = int(s1.number_input(
+            "Auto scanner hour ET",
+            value=int(scanner_cfg.get("auto_run_hour", 9)),
+            min_value=4,
+            max_value=15,
+            step=1,
+        ))
+        scanner_cfg["auto_run_minute"] = int(s2.number_input(
+            "Auto scanner minute ET",
+            value=int(scanner_cfg.get("auto_run_minute", 40)),
+            min_value=0,
+            max_value=59,
+            step=1,
+        ))
 
     st.divider()
     st.caption("Connection Settings")
@@ -1846,6 +1949,8 @@ def render_yahoo_backtester_tab(config: dict, default_symbols: list[str]):
                             min_rvol,
                             min_atr,
                             use_rvol_filter,
+                            bool(strategy.get("use_sr_filter", True)),
+                            float(strategy.get("min_sr_room_pct", 0.75)),
                         )
 
                         if qualifies:
@@ -2235,7 +2340,7 @@ def load_saved_scanner_results() -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     return stock_df, option_df, status
 
 
-def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
+def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = "manual") -> None:
     _status_file, stock_file, option_file = scanner_result_paths()
     asyncio.set_event_loop(asyncio.new_event_loop())
     for path in (stock_file, option_file):
@@ -2246,6 +2351,8 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
     write_scanner_job_status({
         "status": "running",
         "started_at": datetime.now().isoformat(timespec="seconds"),
+        "source": source,
+        "run_date": datetime.now(EASTERN).date().isoformat(),
         "symbols": list(scan_symbols),
         "message": "Scanner running",
     })
@@ -2279,6 +2386,8 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
                         float(scan_cfg["strategy"].get("min_rvol", 1.5)),
                         float(scan_cfg["strategy"].get("min_atr", 0.3)),
                         bool(scan_cfg["strategy"].get("use_rvol_filter", False)),
+                        bool(scan_cfg["strategy"].get("use_sr_filter", True)),
+                        float(scan_cfg["strategy"].get("min_sr_room_pct", 0.75)),
                     ):
                         option_candidates.append(clean_for_table(result))
             except Exception as e:
@@ -2312,7 +2421,14 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
                     "message": f"Pricing options for {symbol} ({j + 1}/{len(priced_candidates)})",
                 })
                 try:
-                    option = recommend_option_ib(ib, symbol, row["Signal"], float(row["Price"]), int(scan_cfg["strategy"].get("option_dte", 7)))
+                    option = recommend_option_ib(
+                        ib,
+                        symbol,
+                        row["Signal"],
+                        float(row["Price"]),
+                        int(scan_cfg["strategy"].get("option_dte", 7)),
+                        scan_cfg.get("option_filters", {}),
+                    )
                     if option:
                         option_clean = {k: v for k, v in option.items() if k != "Contract"}
                         option_rows.append({"Symbol": symbol, "Signal": row["Signal"], "Score": row["Score"], "Confidence": row["Confidence"], **option_clean})
@@ -2329,6 +2445,8 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str]) -> None:
             "status": "complete",
             "started_at": read_scanner_job_status().get("started_at"),
             "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "source": source,
+            "run_date": datetime.now(EASTERN).date().isoformat(),
             "symbols": list(scan_symbols),
             "completed": len(scan_symbols),
             "total": len(scan_symbols),
@@ -2357,15 +2475,53 @@ def run_ibkr_scanner_ui(scan_cfg: dict, scan_symbols: list[str]):
         st.info(f"Scanner is already running: {status.get('completed', 0)} / {status.get('total', len(scan_symbols))} symbols.")
         st_autorefresh(interval=2_000, key="scanner_job_refresh")
         return
-    threading.Thread(target=run_ibkr_scanner_job, args=(json.loads(json.dumps(scan_cfg, default=str)), list(scan_symbols)), daemon=True, name="ibkr-scanner-job").start()
+    threading.Thread(target=run_ibkr_scanner_job, args=(json.loads(json.dumps(scan_cfg, default=str)), list(scan_symbols), "manual"), daemon=True, name="ibkr-scanner-job").start()
     st.success("Scanner started in the background. You can switch tabs and come back for results.")
     st_autorefresh(interval=2_000, key="scanner_job_refresh_started")
+
+
+def maybe_start_auto_ibkr_scanner(scan_cfg: dict, scan_symbols: list[str]) -> None:
+    scanner_cfg = scan_cfg.get("scanner", {}) if isinstance(scan_cfg.get("scanner", {}), dict) else {}
+    if not bool(scanner_cfg.get("auto_run_enabled", True)):
+        return
+    now_et = datetime.now(EASTERN)
+    if now_et.weekday() >= 5:
+        return
+    run_time = dtime(int(scanner_cfg.get("auto_run_hour", 9)), int(scanner_cfg.get("auto_run_minute", 40)))
+    if now_et.time() < run_time:
+        return
+    if now_et.time() >= dtime(16, 0):
+        return
+
+    status = read_scanner_job_status()
+    today = now_et.date().isoformat()
+    if status.get("status") == "running" or status.get("run_date") == today:
+        return
+
+    stock_df, _option_df, saved_status = load_saved_scanner_results()
+    if saved_status.get("run_date") == today:
+        return
+    if scanner_results_session_date(stock_df) == now_et.date():
+        return
+
+    session_key = f"auto_ibkr_scanner_started_{today}"
+    if st.session_state.get(session_key):
+        return
+    st.session_state[session_key] = True
+    threading.Thread(
+        target=run_ibkr_scanner_job,
+        args=(json.loads(json.dumps(scan_cfg, default=str)), list(scan_symbols), "auto"),
+        daemon=True,
+        name="auto-ibkr-scanner-job",
+    ).start()
+    app_log(f"Auto IBKR scanner started for {today} at {run_time.strftime('%H:%M')} ET")
 
 
 # Global compact terminal header shown on every page.
 if dashboard_auto_start_enabled(cfg):
     start_trading_engine_once()
     auto_start_news_engine_once()
+maybe_start_auto_ibkr_scanner(cfg, symbols)
 if selected_page == "🏦 Account Status":
     sync_ibkr_account_status(force=False)
     schedule_ibkr_reconnect_refresh()
@@ -2451,6 +2607,45 @@ elif selected_page == "📈 Scanner & Breakdown":
                     st.write("Why:")
                     for reason in breakdown["Reasons"].split(" | "):
                         st.write(f"✓ {reason}")
+
+                    option_details = None
+                    if str(breakdown.get("Signal", "")).upper() in {"CALL", "PUT"}:
+                        with st.spinner("Fetching live option Greeks and spread from IBKR..."):
+                            option_details = recommend_option_ib(
+                                ib,
+                                ticker,
+                                breakdown["Signal"],
+                                float(breakdown["Price"]),
+                                int(cfg["strategy"].get("option_dte", 7)),
+                                cfg.get("option_filters", {}),
+                            )
+                        if option_details:
+                            st.markdown("#### Option Contract")
+                            o1, o2, o3, o4 = st.columns(4)
+                            o1.metric("Option Score", option_details.get("Option Score", "N/A"))
+                            o2.metric("Delta", option_details.get("Delta", "N/A"))
+                            o3.metric("Spread", f"{option_details.get('Spread %', 'N/A')}%")
+                            o4.metric("Mid", f"${float(option_details.get('Mid') or 0):.2f}")
+                            o5, o6, o7, o8 = st.columns(4)
+                            o5.metric("Bid / Ask", f"{option_details.get('Bid', 'N/A')} / {option_details.get('Ask', 'N/A')}")
+                            o6.metric("Theta", option_details.get("Theta", "N/A"))
+                            o7.metric("Gamma", option_details.get("Gamma", "N/A"))
+                            o8.metric("IV", option_details.get("Implied Vol", "N/A"))
+                            notes = option_details.get("Option Score Notes")
+                            if notes:
+                                st.caption(f"Option quality: {notes}")
+                            option_display = {k: v for k, v in option_details.items() if k != "Contract"}
+                            st.dataframe(pd.DataFrame([option_display]), use_container_width=True)
+                        else:
+                            filters = option_filters_from_config(cfg)
+                            st.warning(
+                                "No clean option contract passed the live filters "
+                                f"(spread <= {filters.get('max_spread_pct')}%, "
+                                f"|delta| >= {filters.get('min_abs_delta')}, "
+                                "live Greeks required)."
+                            )
+                    else:
+                        st.info("No option contract priced because the scanner signal is WAIT.")
                     st.dataframe(pd.DataFrame([clean_for_table(breakdown)]), use_container_width=True)
             except Exception as e:
                 st.error(f"Analysis failed: {display_exception_message(e)}")
@@ -2777,6 +2972,7 @@ elif selected_page == "💼 Positions":
                         trailing_trigger_pct=float(r.get("trailing_trigger_pct", 25.0)),
                         trailing_stop_pct=float(r.get("trailing_stop_pct", 10.0)),
                         force_exit_time=dtime(int(r.get("force_exit_hour", 15)), int(r.get("force_exit_minute", 55))),
+                        force_exit_enabled=bool(r.get("force_exit_enabled", True)),
                         allow_live_orders=orders_unlocked_from_config(cfg),
                     )
                 finally:
