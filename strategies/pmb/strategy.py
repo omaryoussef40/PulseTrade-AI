@@ -7,6 +7,7 @@ quality directly using Score + Grade. Confidence is still returned only as a
 compatibility/debug field so older engine/dashboard code does not break.
 """
 
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
@@ -15,6 +16,10 @@ EASTERN = ZoneInfo("America/New_York")
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 MIN_SCORE = 70
 DEFAULT_ORB_MINUTES = 15
+HUGE_ORB_ATR_MULTIPLE = 1.5
+FOLLOW_THROUGH_VOLUME_RATIO = 0.30
+MIDDAY_VOLUME_START = dtime(12, 0)
+MIDDAY_VOLUME_RATIO = 0.40
 
 
 def _normalize_ohlcv(df: pd.DataFrame | None, timezone: ZoneInfo = EASTERN) -> pd.DataFrame:
@@ -88,6 +93,13 @@ def _distance_pct(price: float, level: float) -> float:
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, float(value)))
+
+
+def _candle_range(candle: pd.Series) -> float:
+    try:
+        return max(float(candle["High"]) - float(candle["Low"]), 0.0)
+    except Exception:
+        return 0.0
 
 
 def calculate_vwap(df: pd.DataFrame) -> pd.Series:
@@ -297,9 +309,27 @@ def scan_dataframe(symbol: str, intraday: pd.DataFrame, daily: pd.DataFrame | No
     post_orb_data = today_data.iloc[orb_bars:]
     orb_high = float(opening_range["High"].max())
     orb_low = float(opening_range["Low"].min())
+    first_orb_candle = opening_range.iloc[0]
+    second_orb_candle = post_orb_data.iloc[0]
+    opening_range_size = max(orb_high - orb_low, _candle_range(first_orb_candle))
+    opening_range_volume = float(opening_range["Volume"].sum())
+    average_orb_bar_volume = opening_range_volume / max(len(opening_range), 1)
+    second_orb_volume = float(second_orb_candle.get("Volume", 0) or 0)
+    second_volume_ratio = second_orb_volume / average_orb_bar_volume if average_orb_bar_volume > 0 else 0.0
+    second_candle_volume_ok = bool(second_volume_ratio >= FOLLOW_THROUGH_VOLUME_RATIO)
+    second_orb_close = float(second_orb_candle["Close"])
+    atr_at_orb = float(second_orb_candle.get("ATR", 0) or 0)
+    huge_opening_range = bool(atr_at_orb > 0 and opening_range_size > atr_at_orb * HUGE_ORB_ATR_MULTIPLE)
+    second_candle_continues_up = bool(second_orb_close > orb_high)
+    second_candle_continues_down = bool(second_orb_close < orb_low)
     confirmation_candle = post_orb_data.iloc[-1]
     confirmation_close = float(confirmation_candle["Close"])
     confirmation_time = confirmation_candle.name
+    current_candle_volume = float(confirmation_candle.get("Volume", 0) or 0)
+    midday_volume_ratio = current_candle_volume / opening_range_volume if opening_range_volume > 0 else 0.0
+    confirmation_clock = confirmation_time.time() if hasattr(confirmation_time, "time") else None
+    midday_volume_check_active = bool(confirmation_clock and confirmation_clock >= MIDDAY_VOLUME_START)
+    midday_volume_ok = bool((not midday_volume_check_active) or midday_volume_ratio >= MIDDAY_VOLUME_RATIO)
     orb_confirmed_up = bool(confirmation_close > orb_high)
     orb_confirmed_down = bool(confirmation_close < orb_low)
 
@@ -340,6 +370,15 @@ def scan_dataframe(symbol: str, intraday: pd.DataFrame, daily: pd.DataFrame | No
         else:
             score, reasons, components = put_score, put_reasons, put_components
 
+    opening_exhaustion_block = False
+
+    midday_volume_block = False
+    if signal in {"CALL", "PUT"} and not midday_volume_ok:
+        midday_volume_block = True
+        signal = "WAIT"
+        reasons = list(reasons) + ["Midday volume too weak versus opening range"]
+        components = list(components) + [f"Midday volume block (current {midday_volume_ratio:.2f}x opening range volume; need {MIDDAY_VOLUME_RATIO:.2f}x)"]
+
     confidence = 100.0 if signal in {"CALL", "PUT"} else abs(call_score - put_score)
     grade = _grade(score)
     above_vwap = bool(price > last["VWAP"])
@@ -370,6 +409,22 @@ def scan_dataframe(symbol: str, intraday: pd.DataFrame, daily: pd.DataFrame | No
         "ORB Bars": int(orb_bars),
         "ORB High": round(orb_high, 2),
         "ORB Low": round(orb_low, 2),
+        "Opening Range Size": round(opening_range_size, 2),
+        "Opening Range ATR Multiple": round(opening_range_size / atr_at_orb, 2) if atr_at_orb else None,
+        "Opening Range Volume": round(opening_range_volume, 2),
+        "Average ORB Bar Volume": round(average_orb_bar_volume, 2),
+        "Second Candle Volume": round(second_orb_volume, 2),
+        "Second Candle Volume Ratio": round(second_volume_ratio, 2),
+        "Second Candle Volume OK": second_candle_volume_ok,
+        "Huge Opening Range": huge_opening_range,
+        "Second Candle Continuation Up": second_candle_continues_up,
+        "Second Candle Continuation Down": second_candle_continues_down,
+        "Opening Exhaustion Block": opening_exhaustion_block,
+        "Midday Volume Check Active": midday_volume_check_active,
+        "Current Candle Volume": round(current_candle_volume, 2),
+        "Midday Volume Ratio": round(midday_volume_ratio, 2),
+        "Midday Volume OK": midday_volume_ok,
+        "Midday Volume Block": midday_volume_block,
         "PDH": round(pdh, 2),
         "PDL": round(pdl, 2),
         **sr_levels,

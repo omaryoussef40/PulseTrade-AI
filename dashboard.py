@@ -629,6 +629,7 @@ def render_platform_settings():
         else:
             cfg["automation"]["live_confirm_text"] = ""
         cfg["automation"]["scan_interval_seconds"] = st.number_input("Engine scan interval seconds", value=int(cfg["automation"].get("scan_interval_seconds", 60)), min_value=10, max_value=3600, step=10)
+        cfg["automation"]["live_sync_interval_seconds"] = st.number_input("IBKR live trade sync seconds", value=int(cfg["automation"].get("live_sync_interval_seconds", 15)), min_value=5, max_value=300, step=5)
         cfg["automation"]["scan_only_market_hours"] = st.checkbox("Scan only during market hours", value=bool(cfg["automation"].get("scan_only_market_hours", True)))
         cfg["order"]["type"] = st.selectbox("Order type", ["LIMIT", "MARKET"], index=0 if cfg["order"].get("type", "LIMIT") == "LIMIT" else 1)
         st.caption(f"Trading status: {trading_status_from_config(cfg)}")
@@ -677,9 +678,29 @@ def render_platform_settings():
         r["max_spend_per_trade"] = round(account_size * float(r["max_spend_per_trade_pct"]) / 100.0, 2)
         r["max_daily_capital"] = round(account_size * float(r["max_daily_capital_pct"]) / 100.0, 2)
         st.caption(f"Calculated limits: ${r['max_spend_per_trade']:,.2f} per trade | ${r['max_daily_capital']:,.2f} max daily capital")
+        r["recycle_capital_after_exit"] = st.checkbox(
+            "Recycle capital after closed trades",
+            value=bool(r.get("recycle_capital_after_exit", False)),
+            help="When enabled, closed trades free daily capital for later entries. Max trades per day still counts every entry.",
+        )
+        r["reserve_capital_for_remaining_trades"] = st.checkbox(
+            "Reserve daily capital across remaining trades",
+            value=bool(r.get("reserve_capital_for_remaining_trades", True)),
+        )
+        if r["reserve_capital_for_remaining_trades"]:
+            reserved_budget = min(
+                float(r["max_spend_per_trade"]),
+                float(r["max_daily_capital"]) / max(int(r["max_trades_per_day"]), 1),
+            )
+            st.caption(f"First-entry reserved budget: about ${reserved_budget:,.2f} when no trades are open today.")
         r["max_contracts"] = st.number_input("Max contracts per trade", value=int(r.get("max_contracts", 2)), min_value=1, step=1)
         today_trade_count, today_deployed_capital = get_today_trade_stats()
-        st.caption(f"Today: {today_trade_count} trades | ${today_deployed_capital:,.2f} deployed")
+        if r["recycle_capital_after_exit"]:
+            from bot_core import get_open_position_deployed
+            open_deployed_capital = get_open_position_deployed()
+            st.caption(f"Today: {today_trade_count} trades | ${open_deployed_capital:,.2f} currently open | ${today_deployed_capital:,.2f} gross entries")
+        else:
+            st.caption(f"Today: {today_trade_count} trades | ${today_deployed_capital:,.2f} deployed")
 
     with st.expander("Performance Capital", expanded=False):
         perf = cfg.setdefault("performance", {})
@@ -694,13 +715,14 @@ def render_platform_settings():
     with st.expander("Trade Management", expanded=False):
         r = cfg["risk"]
         s = cfg["strategy"]
+        orb_window_options = [5, 15, 30]
         current_orb_minutes = int(s.get("orb_minutes", 15))
-        if current_orb_minutes not in [15, 30]:
+        if current_orb_minutes not in orb_window_options:
             current_orb_minutes = 15
         s["orb_minutes"] = st.selectbox(
             "ORB window",
-            [15, 30],
-            index=[15, 30].index(current_orb_minutes),
+            orb_window_options,
+            index=orb_window_options.index(current_orb_minutes),
             format_func=lambda minutes: f"{minutes} minutes",
         )
         s["min_session_bars"] = st.number_input("Minimum session bars", value=int(s.get("min_session_bars", 7)), min_value=2, max_value=30, step=1)
@@ -846,7 +868,7 @@ def render_platform_settings():
             "Premarket source universe",
             value=", ".join(default_universe),
             height=90,
-            help="The dynamic scanner ranks this list and saves the top premarket movers.",
+            help="The dynamic scanner ranks this list by unusual premarket volume and proximity to PMB levels.",
         )
         dynamic["source_universe"] = [x.strip().upper() for x in universe_text.replace("\n", ",").split(",") if x.strip()]
 
@@ -957,6 +979,7 @@ with st.sidebar:
             "📊 Performance & Trade Journal",
             "💼 Positions",
             "📈 Strategy Lab",
+            "🧪 Price Action Lab",
             "🧠 Market Intelligence",
             "📈 Scanner & Breakdown",
             "🏦 Account Status",
@@ -2284,7 +2307,21 @@ def read_scanner_job_status() -> dict:
     status_file, _stock_file, _option_file = scanner_result_paths()
     try:
         if status_file.exists():
-            return json.loads(status_file.read_text(encoding="utf-8"))
+            status = json.loads(status_file.read_text(encoding="utf-8"))
+            if status.get("status") == "running":
+                timestamp = status.get("updated_at") or status.get("started_at")
+                try:
+                    started = datetime.fromisoformat(str(timestamp))
+                    age_minutes = (datetime.now() - started).total_seconds() / 60.0
+                    if age_minutes > 15:
+                        return {
+                            **status,
+                            "status": "error",
+                            "message": "Scanner job timed out while waiting for IBKR option data. Run it again.",
+                        }
+                except Exception:
+                    pass
+            return status
     except Exception:
         pass
     return {}
@@ -2367,6 +2404,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
             readonly=bool(scan_cfg["ib"].get("readonly", False)),
         )
         ib = connect_ib(scan_ib_cfg)
+        ib.RequestTimeout = 8
         for i, symbol in enumerate(scan_symbols):
             try:
                 result = scan_symbol_ib(
@@ -2395,6 +2433,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
             write_scanner_job_status({
                 "status": "running",
                 "started_at": read_scanner_job_status().get("started_at"),
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
                 "symbols": list(scan_symbols),
                 "completed": i + 1,
                 "total": len(scan_symbols),
@@ -2404,6 +2443,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
         stock_df = pd.DataFrame(rows)
         if not stock_df.empty:
             stock_df = stock_df.sort_values(["Score", "Confidence", "RVOL", "ATR %"], ascending=[False, False, False, False])
+        stock_df.to_csv(stock_file, index=False)
 
         option_candidate_df = pd.DataFrame(option_candidates)
         if not option_candidate_df.empty:
@@ -2415,6 +2455,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
                 write_scanner_job_status({
                     "status": "running",
                     "started_at": read_scanner_job_status().get("started_at"),
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
                     "symbols": list(scan_symbols),
                     "completed": len(scan_symbols),
                     "total": len(scan_symbols),
@@ -2439,11 +2480,17 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
         if not option_df.empty:
             option_df = option_df.sort_values(["Score", "Option Score"], ascending=[False, False])
 
-        stock_df.to_csv(stock_file, index=False)
         option_df.to_csv(option_file, index=False)
+        final_status = "complete"
+        final_message = "Scanner complete"
+        if stock_df.empty:
+            final_status = "no_data"
+            final_message = "Scanner completed, but IBKR did not return today's completed ORB session bars yet. Try again after 09:50 ET."
+
         write_scanner_job_status({
-            "status": "complete",
+            "status": final_status,
             "started_at": read_scanner_job_status().get("started_at"),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
             "finished_at": datetime.now().isoformat(timespec="seconds"),
             "source": source,
             "run_date": datetime.now(EASTERN).date().isoformat(),
@@ -2452,7 +2499,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
             "total": len(scan_symbols),
             "stock_rows": len(stock_df),
             "option_rows": len(option_df),
-            "message": "Scanner complete",
+            "message": final_message,
         })
     except Exception as e:
         write_scanner_job_status({
@@ -2517,6 +2564,306 @@ def maybe_start_auto_ibkr_scanner(scan_cfg: dict, scan_symbols: list[str]) -> No
     app_log(f"Auto IBKR scanner started for {today} at {run_time.strftime('%H:%M')} ET")
 
 
+PRICE_ACTION_EXPORT = Path(__file__).resolve().parent / "backtester" / "exports" / "price_action_lab.csv"
+
+
+def _price_action_top_candidate(result: dict, min_score: float, min_atr: float, use_rvol_filter: bool, min_rvol: float) -> bool:
+    if not result or str(result.get("Signal", "")).upper() not in {"CALL", "PUT"}:
+        return False
+    try:
+        if float(result.get("Score") or 0) < float(min_score):
+            return False
+        if float(result.get("ATR %") or 0) < float(min_atr):
+            return False
+        if bool(use_rvol_filter) and float(result.get("RVOL") or 0) < float(min_rvol):
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _simulate_price_action_signal(
+    session: pd.DataFrame,
+    signal_time,
+    direction: str,
+    entry_price: float,
+    stop_pct: float,
+    target_r: float,
+) -> dict:
+    direction = str(direction).upper()
+    entry_price = float(entry_price or 0)
+    stop_pct = max(float(stop_pct or 1.0), 0.05)
+    risk_dollars = max(entry_price * stop_pct / 100.0, 0.01)
+    future = session[session.index > signal_time].copy()
+    if future.empty or entry_price <= 0:
+        return {"exit_reason": "No future bars", "r": 0.0, "false_breakout": True, "bars_held": 0}
+
+    if direction == "CALL":
+        stop_price = entry_price - risk_dollars
+        target_price = entry_price + risk_dollars * float(target_r)
+        max_favorable = 0.0
+        for ts, bar in future.iterrows():
+            high = float(bar["High"])
+            low = float(bar["Low"])
+            max_favorable = max(max_favorable, (high - entry_price) / risk_dollars)
+            if low <= stop_price:
+                return {"exit_time": ts, "exit_reason": "Stop", "r": -1.0, "false_breakout": max_favorable < 0.5, "bars_held": int(len(future[future.index <= ts]))}
+            if high >= target_price:
+                return {"exit_time": ts, "exit_reason": "Target", "r": float(target_r), "false_breakout": False, "bars_held": int(len(future[future.index <= ts]))}
+        exit_price = float(future.iloc[-1]["Close"])
+        r_value = (exit_price - entry_price) / risk_dollars
+    else:
+        stop_price = entry_price + risk_dollars
+        target_price = entry_price - risk_dollars * float(target_r)
+        max_favorable = 0.0
+        for ts, bar in future.iterrows():
+            high = float(bar["High"])
+            low = float(bar["Low"])
+            max_favorable = max(max_favorable, (entry_price - low) / risk_dollars)
+            if high >= stop_price:
+                return {"exit_time": ts, "exit_reason": "Stop", "r": -1.0, "false_breakout": max_favorable < 0.5, "bars_held": int(len(future[future.index <= ts]))}
+            if low <= target_price:
+                return {"exit_time": ts, "exit_reason": "Target", "r": float(target_r), "false_breakout": False, "bars_held": int(len(future[future.index <= ts]))}
+        exit_price = float(future.iloc[-1]["Close"])
+        r_value = (entry_price - exit_price) / risk_dollars
+
+    r_value = round(float(r_value), 3)
+    return {
+        "exit_time": future.index[-1],
+        "exit_reason": "Session close",
+        "r": r_value,
+        "false_breakout": bool(max_favorable < 0.5 and r_value <= 0),
+        "bars_held": int(len(future)),
+    }
+
+
+def _max_drawdown_r(values: list[float]) -> float:
+    equity = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for value in values:
+        equity += float(value)
+        peak = max(peak, equity)
+        max_dd = min(max_dd, equity - peak)
+    return round(abs(max_dd), 3)
+
+
+def _summarize_price_action_rows(rows: list[dict]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    summary_rows = []
+    for (symbol, orb), group in df.groupby(["symbol", "orb_minutes"]):
+        r_values = [float(v) for v in group["r"].fillna(0).tolist()]
+        wins = [v for v in r_values if v > 0]
+        losses = [abs(v) for v in r_values if v < 0]
+        trades = len(r_values)
+        win_rate = (len(wins) / trades * 100.0) if trades else 0.0
+        net_r = sum(r_values)
+        avg_r = net_r / trades if trades else 0.0
+        gross_win = sum(wins)
+        gross_loss = sum(losses)
+        profit_factor = (gross_win / gross_loss) if gross_loss > 0 else (gross_win if gross_win > 0 else 0.0)
+        false_breakouts = int(group["false_breakout"].fillna(False).astype(bool).sum())
+        max_dd = _max_drawdown_r(r_values)
+        daily = group.groupby("session_date")["r"].sum()
+        consistency = (float((daily > 0).sum()) / max(len(daily), 1)) * 100.0
+        outlier_penalty = 0.0
+        if trades >= 3 and max(r_values) > max(net_r - max(r_values), 0) + 1.5:
+            outlier_penalty = 8.0
+        score = (
+            net_r * 10.0
+            + avg_r * 25.0
+            + win_rate * 0.20
+            + min(profit_factor, 4.0) * 6.0
+            + consistency * 0.12
+            + min(trades, 7) * 2.0
+            - false_breakouts * 4.0
+            - max_dd * 4.0
+            - outlier_penalty
+        )
+        summary_rows.append({
+            "Symbol": symbol,
+            "ORB": f"{int(orb)}m",
+            "ORB Minutes": int(orb),
+            "Trades": trades,
+            "Win Rate": round(win_rate, 1),
+            "Avg R": round(avg_r, 2),
+            "Net R": round(net_r, 2),
+            "Profit Factor": round(profit_factor, 2),
+            "Max Drawdown R": round(max_dd, 2),
+            "False Breakouts": false_breakouts,
+            "Consistency": round(consistency, 1),
+            "Score": round(score, 1),
+        })
+    return pd.DataFrame(summary_rows).sort_values(["Symbol", "Score"], ascending=[True, False])
+
+
+def run_price_action_lab(
+    lab_symbols: list[str],
+    period: str,
+    force_refresh: bool,
+    min_score: float,
+    min_atr: float,
+    use_rvol_filter: bool,
+    min_rvol: float,
+    stop_pct: float,
+    target_r: float,
+    max_symbols: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if YahooDataClient is None or MarketReplayEngine is None or ReplayConfig is None or scan_replay_history is None:
+        raise RuntimeError("Strategy Lab dependencies are unavailable.")
+    client = YahooDataClient()
+    symbols_to_run = [str(s).strip().upper() for s in lab_symbols if str(s).strip()][:max_symbols]
+    data = client.load_many(symbols_to_run, period=period, interval="5m", force_refresh=force_refresh)
+    rows: list[dict] = []
+    errors: list[dict] = []
+    orb_values = [5, 15, 30]
+    progress = st.progress(0)
+    status = st.empty()
+    total_steps = max(len(orb_values) * max(len(data), 1), 1)
+    step = 0
+
+    for orb_minutes in orb_values:
+        first_signal_minutes = int(orb_minutes) + 5
+        min_session_bars = max(2, int(round(orb_minutes / 5)) + 1)
+        engine = MarketReplayEngine(data, config=ReplayConfig(interval="5m", orb_minutes=orb_minutes, first_signal_minutes=first_signal_minutes, min_session_bars=min_session_bars))
+        seen: set[tuple[str, object]] = set()
+        for symbol in data.keys():
+            step += 1
+            status.caption(f"Testing {symbol} with {orb_minutes}m ORB")
+            progress.progress(min(step / total_steps, 1.0))
+            try:
+                for event in engine.events(symbols=[symbol], only_scanner_allowed=True):
+                    key = (event.symbol, event.session_date)
+                    if key in seen:
+                        continue
+                    result = scan_replay_history(
+                        symbol=event.symbol,
+                        history=event.history,
+                        daily=None,
+                        use_rvol_score=bool(cfg.get("strategy", {}).get("use_rvol_score", False)),
+                        min_score=float(min_score),
+                        orb_minutes=int(orb_minutes),
+                    )
+                    clean = clean_signal_row(result) if clean_signal_row else result
+                    if not _price_action_top_candidate(clean or {}, min_score, min_atr, use_rvol_filter, min_rvol):
+                        continue
+                    session = engine.data[event.symbol][engine.data[event.symbol].index.date == event.session_date]
+                    entry_price = float((clean or {}).get("Price") or event.close)
+                    sim = _simulate_price_action_signal(session, event.timestamp, str((clean or {}).get("Signal")), entry_price, stop_pct, target_r)
+                    rows.append({
+                        "symbol": event.symbol,
+                        "session_date": event.session_date,
+                        "orb_minutes": int(orb_minutes),
+                        "timestamp": event.timestamp,
+                        "signal": (clean or {}).get("Signal"),
+                        "score": (clean or {}).get("Score"),
+                        "grade": (clean or {}).get("Grade"),
+                        "entry_price": round(entry_price, 2),
+                        "r": sim.get("r"),
+                        "exit_reason": sim.get("exit_reason"),
+                        "false_breakout": sim.get("false_breakout"),
+                        "bars_held": sim.get("bars_held"),
+                        "reasons": (clean or {}).get("Reasons"),
+                    })
+                    seen.add(key)
+            except Exception as exc:
+                errors.append({"symbol": symbol, "orb_minutes": orb_minutes, "error": str(exc)})
+    progress.empty()
+    status.empty()
+
+    trades_df = pd.DataFrame(rows)
+    summary_df = _summarize_price_action_rows(rows)
+    recommendation_df = pd.DataFrame()
+    if not summary_df.empty:
+        recommendation_df = summary_df.sort_values(["Symbol", "Score"], ascending=[True, False]).groupby("Symbol", as_index=False).head(1)
+        recommendation_df = recommendation_df.rename(columns={"ORB": "Recommended ORB", "Score": "Recommendation Score"})
+    if not trades_df.empty:
+        PRICE_ACTION_EXPORT.parent.mkdir(parents=True, exist_ok=True)
+        trades_df.to_csv(PRICE_ACTION_EXPORT, index=False)
+    return summary_df, recommendation_df, pd.DataFrame(errors)
+
+
+def render_price_action_lab_tab(cfg: dict, symbols: list[str]) -> None:
+    st.subheader("Price Action Lab")
+    st.caption("Compare 5m, 15m, and 30m ORB behaviour per ticker. This is research only and does not change live trading.")
+    lab_cfg = cfg.setdefault("price_action_lab", {})
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        period = st.selectbox("Lookback", ["7d", "10d", "30d", "60d"], index=["7d", "10d", "30d", "60d"].index(str(lab_cfg.get("period", "10d"))) if str(lab_cfg.get("period", "10d")) in ["7d", "10d", "30d", "60d"] else 1, key="pal_period")
+    with c2:
+        max_symbols = int(st.number_input("Max symbols", min_value=1, max_value=max(len(symbols), 1), value=min(int(lab_cfg.get("max_symbols", 12)), max(len(symbols), 1)), step=1, key="pal_max_symbols"))
+    with c3:
+        min_score = float(st.number_input("Minimum score", min_value=50.0, max_value=100.0, value=float(lab_cfg.get("min_score", cfg.get("strategy", {}).get("min_score", 90))), step=1.0, key="pal_min_score"))
+    with c4:
+        min_atr = float(st.number_input("Minimum ATR %", min_value=0.0, max_value=5.0, value=float(lab_cfg.get("min_atr", cfg.get("strategy", {}).get("min_atr", 0.3))), step=0.05, key="pal_min_atr"))
+
+    c5, c6, c7, c8 = st.columns(4)
+    with c5:
+        stop_pct = float(st.number_input("Underlying stop %", min_value=0.1, max_value=10.0, value=float(lab_cfg.get("stop_pct", 0.75)), step=0.05, key="pal_stop_pct"))
+    with c6:
+        target_r = float(st.number_input("Target R", min_value=0.25, max_value=5.0, value=float(lab_cfg.get("target_r", 1.5)), step=0.25, key="pal_target_r"))
+    with c7:
+        use_rvol_filter = st.checkbox("Use RVOL filter", value=bool(lab_cfg.get("use_rvol_filter", cfg.get("strategy", {}).get("use_rvol_filter", False))), key="pal_use_rvol")
+    with c8:
+        min_rvol = float(st.number_input("Minimum RVOL", min_value=0.0, max_value=10.0, value=float(lab_cfg.get("min_rvol", cfg.get("strategy", {}).get("min_rvol", 1.5))), step=0.1, key="pal_min_rvol"))
+
+    selected_symbols = st.multiselect("Symbols", options=symbols, default=list(symbols[:max_symbols]), key="pal_symbols")
+    force_refresh = st.checkbox("Force data refresh", value=False, key="pal_force_refresh")
+    lab_cfg.update({
+        "period": period,
+        "max_symbols": max_symbols,
+        "min_score": min_score,
+        "min_atr": min_atr,
+        "stop_pct": stop_pct,
+        "target_r": target_r,
+        "use_rvol_filter": bool(use_rvol_filter),
+        "min_rvol": min_rvol,
+    })
+    save_config(cfg)
+
+    if st.button("Run Price Action Lab", type="primary", use_container_width=True):
+        try:
+            summary_df, recommendation_df, errors_df = run_price_action_lab(
+                selected_symbols or symbols,
+                period,
+                force_refresh,
+                min_score,
+                min_atr,
+                bool(use_rvol_filter),
+                min_rvol,
+                stop_pct,
+                target_r,
+                max_symbols,
+            )
+            st.session_state["price_action_summary"] = summary_df
+            st.session_state["price_action_recommendations"] = recommendation_df
+            st.session_state["price_action_errors"] = errors_df
+            st.success("Price Action Lab complete.")
+        except Exception as exc:
+            st.error(f"Price Action Lab failed: {display_exception_message(exc)}")
+
+    summary_df = st.session_state.get("price_action_summary", pd.DataFrame())
+    recommendation_df = st.session_state.get("price_action_recommendations", pd.DataFrame())
+    errors_df = st.session_state.get("price_action_errors", pd.DataFrame())
+
+    if isinstance(recommendation_df, pd.DataFrame) and not recommendation_df.empty:
+        st.markdown("### Recommendations")
+        st.dataframe(recommendation_df, use_container_width=True, hide_index=True)
+    if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
+        st.markdown("### ORB Comparison")
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        st.download_button("Download Price Action Lab CSV", summary_df.to_csv(index=False), "price_action_lab_summary.csv", "text/csv", key="download_price_action_summary")
+    elif PRICE_ACTION_EXPORT.exists():
+        st.info("No current in-session results. Run the lab to generate recommendations.")
+    else:
+        st.info("Run the lab to compare ORB behaviour across your selected tickers.")
+    if isinstance(errors_df, pd.DataFrame) and not errors_df.empty:
+        with st.expander("Data errors", expanded=False):
+            st.dataframe(errors_df, use_container_width=True, hide_index=True)
+
+
 # Global compact terminal header shown on every page.
 if dashboard_auto_start_enabled(cfg):
     start_trading_engine_once()
@@ -2549,6 +2896,8 @@ elif selected_page == "📈 Scanner & Breakdown":
             st.error(f"Scanner failed: {scanner_job_status.get('message', 'Unknown error')}")
         elif scanner_job_status.get("status") == "stale":
             st.warning(scanner_job_status.get("message", "Scanner results are stale. Run the IBKR scanner for today's data."))
+        elif scanner_job_status.get("status") == "no_data":
+            st.warning(scanner_job_status.get("message", "Scanner completed, but no fresh scanner rows were available yet."))
 
         if (isinstance(stock_df, pd.DataFrame) and not stock_df.empty) or (isinstance(option_df, pd.DataFrame) and not option_df.empty):
             st.markdown("### Last Scanner Results")
@@ -2569,7 +2918,7 @@ elif selected_page == "📈 Scanner & Breakdown":
                     st.download_button("Download option ideas", option_df.to_csv(index=False), "option_ideas.csv", "text/csv", key="download_persisted_option_ideas")
                 else:
                     st.info("No clean option contracts found for the filtered setups.")
-        elif scanner_job_status.get("status") != "running":
+        elif scanner_job_status.get("status") not in {"running", "stale", "no_data"}:
             st.info("No scanner results yet. Run the IBKR scanner once and the results will stay here while you navigate.")
 
     with breakdown_col:
@@ -2577,6 +2926,9 @@ elif selected_page == "📈 Scanner & Breakdown":
         st.caption("Analyze one ticker using the same scanner logic.")
         ticker = st.text_input("Ticker", value="", label_visibility="collapsed").strip().upper()
         if st.button("Analyze Ticker", use_container_width=True):
+            if not ticker:
+                st.warning("Enter a ticker first.")
+                st.stop()
             ib = None
             try:
                 breakdown_ib_cfg = IBConfig(
@@ -2587,6 +2939,7 @@ elif selected_page == "📈 Scanner & Breakdown":
                     readonly=ib_cfg.readonly,
                 )
                 ib = connect_ib(breakdown_ib_cfg)
+                ib.RequestTimeout = 8
                 breakdown = scan_symbol_ib(
                     ib,
                     ticker,
@@ -2656,6 +3009,9 @@ elif selected_page == "📈 Scanner & Breakdown":
                         ib.disconnect()
                 except Exception:
                     pass
+
+elif selected_page == "🧪 Price Action Lab":
+    render_price_action_lab_tab(cfg, symbols)
 
 elif selected_page == "💼 Positions":
     start_telegram_decision_worker()

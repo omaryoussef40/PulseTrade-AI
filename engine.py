@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import atexit
+import csv
 import json
 import os
 import subprocess
@@ -27,6 +28,7 @@ from bot_core import (
     clean_for_table,
     connect_ib,
     broker_open_option_symbols,
+    get_open_position_deployed,
     get_today_loss_stats,
     get_today_trade_stats,
     ib_port_from_config,
@@ -41,6 +43,7 @@ from bot_core import (
     orders_unlocked_from_config,
     place_option_order,
     read_active_positions,
+    reconcile_active_positions_with_broker,
     recommend_option_ib,
     reconstruct_option_contract,
     scan_symbol_ib,
@@ -59,6 +62,7 @@ DATA_DIR = BASE_DIR / "data"
 ENGINE_PID_FILE = DATA_DIR / "trading_engine.pid"
 PENDING_APPROVALS_FILE = EXPORT_DIR / "pending_order_approvals.json"
 TELEGRAM_APPROVAL_STATE_FILE = EXPORT_DIR / "telegram_approval_state.json"
+ENGINE_DECISIONS_FILE = EXPORT_DIR / "engine_decisions.csv"
 
 
 def _is_pid_running(pid: int) -> bool:
@@ -147,6 +151,134 @@ def write_json_file(path: Path, data) -> None:
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, default=str)
     tmp.replace(path)
+
+
+def _decision_cell(value):
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, default=str)
+    return value
+
+
+def _decision_row_data(row=None) -> dict:
+    if row is None:
+        return {}
+    if isinstance(row, pd.Series):
+        return clean_for_table(row.to_dict())
+    if isinstance(row, dict):
+        return clean_for_table(row)
+    return {}
+
+
+def log_engine_decision(
+    *,
+    symbol: str = "",
+    decision: str,
+    reason: str = "",
+    row=None,
+    option: dict | None = None,
+    qty: int | None = None,
+    estimated_cost: float | None = None,
+    remaining_capital: float | None = None,
+    remaining_trades: int | None = None,
+    spend_limit: float | None = None,
+    max_spend_per_trade: float | None = None,
+    max_daily_capital: float | None = None,
+) -> None:
+    EXPORT_DIR.mkdir(exist_ok=True)
+    data = _decision_row_data(row)
+    option = option or {}
+    symbol = str(symbol or data.get("Symbol") or option.get("Underlying") or "").upper()
+    record = {
+        "timestamp": datetime.now(EASTERN).isoformat(),
+        "symbol": symbol,
+        "decision": decision,
+        "reason": reason,
+        "signal": data.get("Signal"),
+        "score": data.get("Score"),
+        "grade": data.get("Grade"),
+        "setup_quality": data.get("Setup Quality"),
+        "rank_score": data.get("Rank Score"),
+        "price": data.get("Price"),
+        "rvol": data.get("RVOL"),
+        "atr_pct": data.get("ATR %"),
+        "orb_confirmation_time": data.get("ORB Confirmation Time"),
+        "pdh": data.get("PDH"),
+        "pdl": data.get("PDL"),
+        "nearest_support": data.get("Nearest Support"),
+        "support_distance_pct": data.get("Support Distance %"),
+        "nearest_resistance": data.get("Nearest Resistance"),
+        "resistance_distance_pct": data.get("Resistance Distance %"),
+        "opening_exhaustion_block": data.get("Opening Exhaustion Block"),
+        "midday_volume_block": data.get("Midday Volume Block"),
+        "midday_volume_ratio": data.get("Midday Volume Ratio"),
+        "second_candle_volume_ratio": data.get("Second Candle Volume Ratio"),
+        "reasons": data.get("Reasons"),
+        "option": option.get("Option"),
+        "expiry": option.get("Expiry"),
+        "strike": option.get("Strike"),
+        "type": option.get("Type"),
+        "bid": option.get("Bid"),
+        "ask": option.get("Ask"),
+        "mid": option.get("Mid"),
+        "spread_pct": option.get("Spread %"),
+        "spread_dollars": option.get("Spread $"),
+        "delta": option.get("Delta"),
+        "gamma": option.get("Gamma"),
+        "theta": option.get("Theta"),
+        "theta_pct_mid": option.get("Theta % Mid"),
+        "vega": option.get("Vega"),
+        "implied_vol": option.get("Implied Vol"),
+        "greek_source": option.get("Greek Source"),
+        "option_score": option.get("Option Score"),
+        "option_score_notes": option.get("Option Score Notes"),
+        "qty": qty,
+        "estimated_cost": estimated_cost,
+        "remaining_capital": remaining_capital,
+        "remaining_trades": remaining_trades,
+        "spend_limit": spend_limit,
+        "max_spend_per_trade": max_spend_per_trade,
+        "max_daily_capital": max_daily_capital,
+    }
+    fieldnames = list(record.keys())
+    write_header = not ENGINE_DECISIONS_FILE.exists()
+    with ENGINE_DECISIONS_FILE.open("a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({k: _decision_cell(v) for k, v in record.items()})
+
+
+def top_candidate_reject_reason(result: dict, strategy: dict) -> str:
+    signal = str(result.get("Signal") or "")
+    if signal not in {"CALL", "PUT"}:
+        if result.get("Opening Exhaustion Block"):
+            return "opening exhaustion block"
+        if result.get("Midday Volume Block"):
+            return "midday volume block"
+        return f"non-trade signal: {signal or 'N/A'}"
+    score = float(result.get("Score") or 0)
+    min_score = float(strategy.get("min_score", 70))
+    if score < min_score:
+        return f"score below minimum ({score:.1f} < {min_score:.1f})"
+    atr_pct = float(result.get("ATR %") or 0)
+    min_atr = float(strategy.get("min_atr", 0.3))
+    if atr_pct < min_atr:
+        return f"ATR% below minimum ({atr_pct:.2f} < {min_atr:.2f})"
+    if bool(strategy.get("use_rvol_filter", False)):
+        rvol = float(result.get("RVOL") or 0)
+        min_rvol = float(strategy.get("min_rvol", 1.5))
+        if rvol < min_rvol:
+            return f"RVOL below minimum ({rvol:.2f} < {min_rvol:.2f})"
+    if str(result.get("Room Check") or "").lower() == "blocked":
+        return str(result.get("Room Reason") or "support/resistance room blocked")
+    return "scanner filter rejected"
 
 
 def read_pending_approvals() -> list[dict]:
@@ -243,14 +375,17 @@ def telegram_post(bot_token: str, method: str, payload: dict, timeout: int = 10)
 
 
 def is_telegram_polling_noise(exc: Exception) -> bool:
+    if isinstance(exc, (requests.exceptions.ReadTimeout, requests.exceptions.Timeout)):
+        return True
     message = str(exc)
     return (
-        "Telegram getUpdates failed" in message
+        ("Telegram getUpdates failed" in message or "api.telegram.org" in message)
         and (
             "error_code': 409" in message
             or '"error_code": 409' in message
             or "terminated by other getUpdates request" in message
             or "Read timed out" in message
+            or "read timeout" in message.lower()
         )
     )
 
@@ -380,10 +515,10 @@ def process_telegram_order_callbacks(ib, ib_cfg: IBConfig, tg_cfg: TelegramConfi
     if not tg_cfg.bot_token or not tg_cfg.chat_id:
         return 0
     state = read_json_file(TELEGRAM_APPROVAL_STATE_FILE, {})
-    payload = {"timeout": 1}
+    payload = {"timeout": 3}
     if state.get("offset") is not None:
         payload["offset"] = state["offset"]
-    data = telegram_post(tg_cfg.bot_token, "getUpdates", payload, timeout=5)
+    data = telegram_post(tg_cfg.bot_token, "getUpdates", payload, timeout=12)
     processed = 0
     orders_by_id = {order.get("id"): order for order in read_pending_approvals()}
     for update in data.get("result", []):
@@ -599,14 +734,21 @@ def run_cycle() -> None:
                 int(strategy.get("min_session_bars", 7)),
             )
             if not result:
+                log_engine_decision(symbol=symbol, decision="SCAN_NO_RESULT", reason="IBKR scan returned no PMB result")
                 continue
             session_date = scan_result_session_date(result)
             today_et = datetime.now(EASTERN).date()
             if session_date != today_et:
                 app_log(f"{symbol}: skipped stale scan result | session={session_date} | today={today_et}", "WARN")
+                log_engine_decision(
+                    symbol=symbol,
+                    row=result,
+                    decision="SKIP_STALE_DATA",
+                    reason=f"scan session {session_date} did not match today {today_et}",
+                )
                 continue
             fresh_scan_seen = True
-            if not is_top_candidate(
+            passed_filters = is_top_candidate(
                 result,
                 float(strategy.get("min_score", 70)),
                 0.0,
@@ -615,10 +757,17 @@ def run_cycle() -> None:
                 bool(strategy.get("use_rvol_filter", False)),
                 bool(strategy.get("use_sr_filter", True)),
                 float(strategy.get("min_sr_room_pct", 0.75)),
-            ):
+            )
+            if not passed_filters:
+                log_engine_decision(
+                    symbol=symbol,
+                    row=result,
+                    decision="FILTER_REJECT",
+                    reason=top_candidate_reject_reason(result, strategy),
+                )
                 continue
 
-            candidates.append({
+            candidate = {
                 "Rank Score": opportunity_rank_score(result, None, bool(strategy.get("use_rvol_ranking", False))),
                 **clean_for_table(result),
                 "Option": "Not priced",
@@ -628,9 +777,12 @@ def run_cycle() -> None:
                 "Estimated Cost": 0.0,
                 "_option_full": None,
                 "_option_clean": None,
-            })
+            }
+            candidates.append(candidate)
+            log_engine_decision(symbol=symbol, row=candidate, decision="CANDIDATE", reason="passed stock setup filters")
         except Exception as exc:
             app_log(f"{symbol} scan error: {exc}", "ERROR")
+            log_engine_decision(symbol=symbol, decision="SCAN_ERROR", reason=str(exc))
 
     if can_trade and not fresh_scan_seen:
         app_log("Fresh same-day scan required before live entries. New orders disabled for this cycle.", "WARN")
@@ -651,9 +803,12 @@ def run_cycle() -> None:
     )
     max_selected = int(strategy.get("top_n_tickers", 2))
 
-    current_trade_count, current_deployed = get_today_trade_stats()
+    current_trade_count, daily_deployed = get_today_trade_stats()
+    recycle_capital = bool(risk.get("recycle_capital_after_exit", False))
+    current_deployed = get_open_position_deployed() if recycle_capital else daily_deployed
     remaining_trades = max(0, int(risk.get("max_trades_per_day", 2)) - current_trade_count)
     remaining_capital = max(0.0, max_daily_capital - current_deployed)
+    reserve_capital = bool(risk.get("reserve_capital_for_remaining_trades", True))
     active_symbols = {p.get("symbol") for p in read_active_positions() if p.get("symbol")}
     try:
         active_symbols |= broker_open_option_symbols(ib, account=ib_cfg.account)
@@ -668,9 +823,29 @@ def run_cycle() -> None:
             break
         if remaining_trades <= 0:
             app_log(f"{symbol}: skipped max trades reached")
+            log_engine_decision(
+                symbol=symbol,
+                row=row,
+                decision="SKIP_MAX_TRADES",
+                reason="max trades per day reached",
+                remaining_capital=remaining_capital,
+                remaining_trades=remaining_trades,
+                max_spend_per_trade=max_spend_per_trade,
+                max_daily_capital=max_daily_capital,
+            )
             break
         if symbol in active_symbols:
             app_log(f"{symbol}: skipped active position already exists")
+            log_engine_decision(
+                symbol=symbol,
+                row=row,
+                decision="SKIP_ACTIVE_POSITION",
+                reason="active option position already exists",
+                remaining_capital=remaining_capital,
+                remaining_trades=remaining_trades,
+                max_spend_per_trade=max_spend_per_trade,
+                max_daily_capital=max_daily_capital,
+            )
             continue
 
         try:
@@ -684,9 +859,22 @@ def run_cycle() -> None:
             )
         except Exception as exc:
             app_log(f"{symbol}: option pricing error: {exc}", "ERROR")
+            log_engine_decision(
+                symbol=symbol,
+                row=row,
+                decision="SKIP_OPTION_ERROR",
+                reason=str(exc),
+                remaining_capital=remaining_capital,
+                remaining_trades=remaining_trades,
+                max_spend_per_trade=max_spend_per_trade,
+                max_daily_capital=max_daily_capital,
+            )
             continue
         option_clean = {k: v for k, v in option_full.items() if k != "Contract"} if option_full else None
-        qty = calculate_contract_quantity(float(option_full["Mid"]), max_spend_per_trade, int(risk.get("max_contracts", 2))) if option_full else 0
+        spend_limit = min(max_spend_per_trade, remaining_capital)
+        if reserve_capital and remaining_trades > 0:
+            spend_limit = min(spend_limit, remaining_capital / remaining_trades)
+        qty = calculate_contract_quantity(float(option_full["Mid"]), spend_limit, int(risk.get("max_contracts", 2))) if option_full else 0
         estimated_cost = round(qty * float(option_full["Mid"]) * 100, 2) if option_full and qty else 0.0
         row["Option"] = option_clean["Option"] if option_clean else "No clean contract"
         row["Mid"] = option_clean["Mid"] if option_clean else None
@@ -699,13 +887,55 @@ def run_cycle() -> None:
         if qty <= 0 or option_full is None:
             mid = row.get("Mid")
             contract_cost = float(mid) * 100 if mid else 0.0
-            app_log(f"{symbol}: skipped no affordable clean option | mid={mid} | contract_cost={contract_cost:.2f} | max_spend={max_spend_per_trade:.2f}")
+            app_log(f"{symbol}: skipped no affordable clean option | mid={mid} | contract_cost={contract_cost:.2f} | spend_limit={spend_limit:.2f}")
+            log_engine_decision(
+                symbol=symbol,
+                row=row,
+                option=option_clean,
+                qty=qty,
+                estimated_cost=estimated_cost,
+                decision="SKIP_NO_CLEAN_OPTION",
+                reason=f"no clean option or one contract exceeded spend limit {spend_limit:.2f}",
+                remaining_capital=remaining_capital,
+                remaining_trades=remaining_trades,
+                spend_limit=spend_limit,
+                max_spend_per_trade=max_spend_per_trade,
+                max_daily_capital=max_daily_capital,
+            )
             continue
         if estimated_cost > remaining_capital:
             app_log(f"{symbol}: skipped max daily capital reached")
+            log_engine_decision(
+                symbol=symbol,
+                row=row,
+                option=option_clean,
+                qty=qty,
+                estimated_cost=estimated_cost,
+                decision="SKIP_DAILY_CAPITAL",
+                reason="estimated cost exceeds remaining daily capital",
+                remaining_capital=remaining_capital,
+                remaining_trades=remaining_trades,
+                spend_limit=spend_limit,
+                max_spend_per_trade=max_spend_per_trade,
+                max_daily_capital=max_daily_capital,
+            )
             continue
-        if estimated_cost > max_spend_per_trade:
-            app_log(f"{symbol}: skipped per-trade cap exceeded | estimated_cost={estimated_cost:.2f} | max_spend={max_spend_per_trade:.2f}", "WARN")
+        if estimated_cost > spend_limit:
+            app_log(f"{symbol}: skipped per-trade cap exceeded | estimated_cost={estimated_cost:.2f} | spend_limit={spend_limit:.2f}", "WARN")
+            log_engine_decision(
+                symbol=symbol,
+                row=row,
+                option=option_clean,
+                qty=qty,
+                estimated_cost=estimated_cost,
+                decision="SKIP_TRADE_BUDGET",
+                reason="estimated cost exceeds reserved trade budget",
+                remaining_capital=remaining_capital,
+                remaining_trades=remaining_trades,
+                spend_limit=spend_limit,
+                max_spend_per_trade=max_spend_per_trade,
+                max_daily_capital=max_daily_capital,
+            )
             continue
         selected_count += 1
 
@@ -725,6 +955,20 @@ def run_cycle() -> None:
                 ]
                 if existing:
                     app_log(f"{symbol}: approval already pending | {option_full['Option']}")
+                    log_engine_decision(
+                        symbol=symbol,
+                        row=row,
+                        option=option_clean,
+                        qty=qty,
+                        estimated_cost=estimated_cost,
+                        decision="SKIP_APPROVAL_PENDING",
+                        reason=f"approval already pending for {option_full['Option']}",
+                        remaining_capital=remaining_capital,
+                        remaining_trades=remaining_trades,
+                        spend_limit=spend_limit,
+                        max_spend_per_trade=max_spend_per_trade,
+                        max_daily_capital=max_daily_capital,
+                    )
                     continue
                 pending = create_pending_approval(
                     row,
@@ -753,6 +997,20 @@ def run_cycle() -> None:
                     notes=f"Pending Telegram approval: {pending.get('id')}",
                 )
                 app_log(f"{symbol}: order approval requested | sent={sent} | id={pending.get('id')}")
+                log_engine_decision(
+                    symbol=symbol,
+                    row=row,
+                    option=option_clean,
+                    qty=qty,
+                    estimated_cost=estimated_cost,
+                    decision="PENDING_APPROVAL",
+                    reason=f"Telegram approval requested; sent={sent}; id={pending.get('id')}",
+                    remaining_capital=remaining_capital,
+                    remaining_trades=remaining_trades,
+                    spend_limit=spend_limit,
+                    max_spend_per_trade=max_spend_per_trade,
+                    max_daily_capital=max_daily_capital,
+                )
                 continue
             trade = place_option_order(ib, option_full["Contract"], "BUY", qty, entry_order_type, limit_price, ib_cfg.account)
             fallback_entry_price = float(limit_price if limit_price else option_full["Mid"])
@@ -831,6 +1089,20 @@ def run_cycle() -> None:
             remaining_capital -= estimated_cost
             active_symbols.add(symbol)
             app_log(f"{symbol}: order submitted | qty={qty} | status={status}")
+            log_engine_decision(
+                symbol=symbol,
+                row=row,
+                option=option_clean,
+                qty=qty,
+                estimated_cost=estimated_cost,
+                decision="ORDER_SUBMITTED",
+                reason=f"broker status {status}",
+                remaining_capital=remaining_capital,
+                remaining_trades=remaining_trades,
+                spend_limit=spend_limit,
+                max_spend_per_trade=max_spend_per_trade,
+                max_daily_capital=max_daily_capital,
+            )
         else:
             save_trade_replay(
                 row.to_dict(),
@@ -843,6 +1115,20 @@ def run_cycle() -> None:
                 notes="Qualified setup recorded without order placement",
             )
             app_log(f"{symbol}: signal only | {row['Signal']} | score={row['Score']} | grade={row.get('Grade', 'N/A')}")
+            log_engine_decision(
+                symbol=symbol,
+                row=row,
+                option=option_clean,
+                qty=qty,
+                estimated_cost=estimated_cost,
+                decision="SIGNAL_ONLY",
+                reason="order placement disabled by mode/risk/settings",
+                remaining_capital=remaining_capital,
+                remaining_trades=remaining_trades,
+                spend_limit=spend_limit,
+                max_spend_per_trade=max_spend_per_trade,
+                max_daily_capital=max_daily_capital,
+            )
 
     write_health(last_scan_finish=datetime.now(EASTERN).isoformat(), last_status="Cycle complete", candidates=len(candidates), submitted_orders=submitted, auto_trading=can_trade, last_error="")
     try:
@@ -851,17 +1137,87 @@ def run_cycle() -> None:
         pass
 
 
+def run_broker_sync_cycle() -> None:
+    cfg = load_config()
+    mode = cfg.get("account_mode", "Simulation")
+    ibs = cfg.get("ib", {})
+    risk = cfg.get("risk", {})
+    automation = cfg.get("automation", {})
+
+    if not automation.get("enabled", False):
+        write_health(engine_running=True, mode=mode, last_status="Automation disabled")
+        return
+
+    if automation.get("scan_only_market_hours", True) and not is_market_open_now(cfg):
+        write_health(engine_running=True, market_open=False, mode=mode, last_status="Waiting for market hours")
+        return
+
+    ib_cfg = IBConfig(
+        host=ibs.get("host", "127.0.0.1"),
+        port=ib_port_from_config(cfg),
+        client_id=int(ibs.get("client_id", 11)) + 7,
+        account=ibs.get("account") or None,
+        readonly=bool(ibs.get("readonly", False)),
+    )
+    ib = connect_ib(ib_cfg)
+    write_health(ib_connected=bool(ib.isConnected()), mode=mode, last_status="IBKR sync connected", last_error="")
+    try:
+        imported, message = sync_today_executions_to_trade_log(ib, account=ib_cfg.account)
+        if imported:
+            app_log(f"IBKR execution sync | {message}")
+
+        added_events = sync_active_positions_from_broker(
+            ib,
+            account=ib_cfg.account,
+            stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
+            take_profit_pct=float(risk.get("take_profit_pct", 30.0)),
+            submit_protection=orders_unlocked_from_config(cfg),
+        )
+        reconcile_events = reconcile_active_positions_with_broker(ib, account=ib_cfg.account, log_closures=True)
+        sync_events = list(added_events or []) + list(reconcile_events or [])
+        if sync_events:
+            app_log(f"IBKR live trade sync updated positions | events={len(sync_events)}")
+        write_health(
+            engine_running=True,
+            market_open=is_market_open_now(cfg),
+            ib_connected=True,
+            last_broker_sync=datetime.now(EASTERN).isoformat(),
+            last_status="IBKR live trade sync complete",
+        )
+    finally:
+        try:
+            ib.disconnect()
+        except Exception:
+            pass
+
+
 def main() -> None:
     if not claim_single_engine_instance():
         return
     app_log("Engine started.")
     write_health(engine_running=True, started_at=datetime.now(EASTERN).isoformat(), last_status="Engine started")
+    last_scan = 0.0
+    last_sync = 0.0
     while True:
         try:
             cfg = load_config()
-            interval = int(cfg.get("automation", {}).get("scan_interval_seconds", 60))
-            run_cycle()
-            time.sleep(max(10, interval))
+            automation = cfg.get("automation", {})
+            scan_interval = max(10, int(automation.get("scan_interval_seconds", 60)))
+            sync_interval = max(5, int(automation.get("live_sync_interval_seconds", 15)))
+            now = time.monotonic()
+
+            if now - last_sync >= sync_interval:
+                run_broker_sync_cycle()
+                last_sync = time.monotonic()
+
+            if now - last_scan >= scan_interval:
+                run_cycle()
+                last_scan = time.monotonic()
+                last_sync = last_scan
+
+            next_sync = max(1.0, sync_interval - (time.monotonic() - last_sync))
+            next_scan = max(1.0, scan_interval - (time.monotonic() - last_scan))
+            time.sleep(min(next_sync, next_scan, 5.0))
         except KeyboardInterrupt:
             app_log("Engine stopped by user.")
             write_health(engine_running=False, last_status="Stopped by user")

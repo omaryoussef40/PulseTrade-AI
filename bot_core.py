@@ -428,12 +428,21 @@ def scan_symbol_ib(
     if intraday.empty or len(intraday) < 50:
         return None
 
+    def _result_session_date(result: dict | None):
+        raw = str((result or {}).get("ORB Confirmation Time", "")).strip()
+        if len(raw) < 10:
+            return None
+        try:
+            return datetime.fromisoformat(raw[:10]).date()
+        except Exception:
+            return None
+
     try:
         from strategies.registry import scan_dataframe as strategy_scan_dataframe
     except Exception:
         # Fallback to PMB directly if the registry is unavailable.
         from strategies.pmb.strategy import scan_dataframe as strategy_scan_dataframe
-        return strategy_scan_dataframe(
+        result = strategy_scan_dataframe(
             symbol=symbol,
             intraday=intraday,
             daily=daily,
@@ -443,8 +452,12 @@ def scan_symbol_ib(
             orb_minutes=int(orb_minutes),
             min_session_bars=int(min_session_bars),
         )
+        session_date = _result_session_date(result)
+        if session_date and session_date != datetime.now(EASTERN).date():
+            return None
+        return result
 
-    return strategy_scan_dataframe(
+    result = strategy_scan_dataframe(
         strategy_name=strategy_name or "pmb",
         symbol=symbol,
         intraday=intraday,
@@ -455,6 +468,10 @@ def scan_symbol_ib(
         orb_minutes=int(orb_minutes),
         min_session_bars=int(min_session_bars),
     )
+    session_date = _result_session_date(result)
+    if session_date and session_date != datetime.now(EASTERN).date():
+        return None
+    return result
 
 
 # =========================
@@ -771,31 +788,57 @@ def get_today_trade_stats() -> tuple[int, float]:
         if today_df.empty:
             return 0, 0.0
 
-        trade_count = len(today_df)
-        deployed = 0.0
+        def row_deployed(row: pd.Series) -> float:
+            filled_qty = pd.to_numeric(pd.Series([row.get("filled_quantity")]), errors="coerce").fillna(0).iloc[0]
+            entry_price = pd.to_numeric(pd.Series([row.get("entry_price")]), errors="coerce").fillna(0).iloc[0]
+            if filled_qty > 0 and entry_price > 0:
+                return float(filled_qty * entry_price * 100)
+            estimated = pd.to_numeric(pd.Series([row.get("estimated_cost")]), errors="coerce").fillna(0).iloc[0]
+            if estimated > 0:
+                return float(estimated)
+            quantity = pd.to_numeric(pd.Series([row.get("quantity")]), errors="coerce").fillna(0).iloc[0]
+            limit_price = pd.to_numeric(pd.Series([row.get("limit_price")]), errors="coerce").fillna(0).iloc[0]
+            if quantity > 0 and limit_price > 0:
+                return float(quantity * limit_price * 100)
+            return 0.0
 
-        if {"filled_quantity", "entry_price"}.issubset(today_df.columns):
-            deployed = float(
-                (
-                    pd.to_numeric(today_df["filled_quantity"], errors="coerce").fillna(0)
-                    * pd.to_numeric(today_df["entry_price"], errors="coerce").fillna(0)
-                    * 100
-                ).sum()
+        # A live order is logged immediately by the bot and then again by IBKR
+        # execution sync. Collapse those near-simultaneous duplicate ENTRY rows.
+        deduped: list[dict] = []
+        today_df = today_df.sort_values("timestamp")
+        for _, row in today_df.iterrows():
+            row_time = row["timestamp"]
+            key = (
+                str(row.get("symbol", "")).upper(),
+                str(row.get("signal", "")).upper(),
             )
-        if deployed <= 0 and "estimated_cost" in today_df.columns:
-            deployed = float(pd.to_numeric(today_df["estimated_cost"], errors="coerce").fillna(0).sum())
-        elif deployed <= 0 and {"quantity", "limit_price"}.issubset(today_df.columns):
-            deployed = float(
-                (
-                    pd.to_numeric(today_df["quantity"], errors="coerce").fillna(0)
-                    * pd.to_numeric(today_df["limit_price"], errors="coerce").fillna(0)
-                    * 100
-                ).sum()
-            )
+            deployed_value = row_deployed(row)
+            matched = False
+            for item in deduped:
+                seconds_apart = abs((row_time - item["timestamp"]).total_seconds())
+                if item["key"] == key and seconds_apart <= 120:
+                    item["deployed"] = max(float(item["deployed"]), deployed_value)
+                    matched = True
+                    break
+            if not matched:
+                deduped.append({"key": key, "timestamp": row_time, "deployed": deployed_value})
 
+        trade_count = len(deduped)
+        deployed = float(sum(item["deployed"] for item in deduped))
         return trade_count, deployed
     except Exception:
         return 0, 0.0
+
+
+def get_open_position_deployed() -> float:
+    """Return capital currently deployed in locally tracked open option positions."""
+    deployed = 0.0
+    for pos in read_active_positions():
+        qty = _number_or_none(pos.get("quantity")) or 0
+        entry_price = _number_or_none(pos.get("entry_price")) or 0
+        if qty > 0 and entry_price > 0:
+            deployed += float(qty) * float(entry_price) * 100.0
+    return float(deployed)
 
 
 def opportunity_rank_score(result: dict, option: dict | None, use_rvol_ranking: bool = False) -> float:
@@ -2272,9 +2315,9 @@ def default_config() -> dict:
         "account_mode": "Simulation",
         "ib": {"host": "127.0.0.1", "paper_port": 7497, "live_port": 7496, "client_id": 11, "account": "", "readonly": False},
         "telegram": {"bot_token": "", "chat_id": "", "send_alerts": False},
-        "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 60, "market_timezone": "America/New_York", "scan_only_market_hours": True},
+        "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 60, "live_sync_interval_seconds": 15, "market_timezone": "America/New_York", "scan_only_market_hours": True},
         "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "use_sr_filter": True, "min_sr_room_pct": 0.75, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7},
-        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_enabled": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
+        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "recycle_capital_after_exit": False, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_enabled": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},
         "option_filters": dict(DEFAULT_OPTION_FILTERS),
         "watchlist": WATCHLIST,

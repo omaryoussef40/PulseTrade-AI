@@ -3,8 +3,8 @@ from __future__ import annotations
 """Dynamic premarket watchlist builder.
 
 This module is intentionally separate from the live strategy and order engine.
-It builds a small daily symbol list from premarket action, saves it to exports,
-and exposes a helper that combines it with the user's manual watchlist.
+It builds a small daily symbol list from unusual premarket volume, saves it to
+exports, and exposes a helper that combines it with the user's manual watchlist.
 """
 
 import json
@@ -159,7 +159,7 @@ def score_premarket_symbol(provider, symbol: str, now: datetime | None = None) -
     now = now or datetime.now(EASTERN)
     today = now.astimezone(EASTERN).date() if now.tzinfo else now.date()
 
-    intraday = provider.intraday_bars(symbol, duration="2 D", bar_size="5 mins", use_rth=False)
+    intraday = provider.intraday_bars(symbol, duration="10 D", bar_size="5 mins", use_rth=False)
     if intraday is None or intraday.empty:
         return None
     idx = pd.to_datetime(intraday.index)
@@ -170,7 +170,8 @@ def score_premarket_symbol(provider, symbol: str, now: datetime | None = None) -
         return None
 
     daily = provider.daily_bars(symbol, duration="10 D", use_rth=True)
-    previous_close = _previous_close(daily, today)
+    previous_levels = _previous_day_levels(daily, today)
+    previous_close = previous_levels.get("close")
     if previous_close is None or previous_close <= 0:
         return None
 
@@ -179,40 +180,100 @@ def score_premarket_symbol(provider, symbol: str, now: datetime | None = None) -
     pm_low = float(premarket["Low"].min())
     pm_volume = float(pd.to_numeric(premarket["Volume"], errors="coerce").fillna(0).sum())
     avg_daily_volume = _avg_daily_volume(daily, today)
+    avg_prior_premarket_volume = _avg_prior_premarket_volume(intraday, today)
 
     gap_pct = ((pm_close - previous_close) / previous_close) * 100.0
     range_pct = ((pm_high - pm_low) / previous_close) * 100.0
     premarket_volume_pct = (pm_volume / avg_daily_volume * 100.0) if avg_daily_volume > 0 else 0.0
-    catalyst = _latest_catalyst(symbol)
+    premarket_relative_volume = (pm_volume / avg_prior_premarket_volume) if avg_prior_premarket_volume > 0 else 0.0
+    if premarket_relative_volume > 0:
+        unusual_volume_score = min(premarket_relative_volume * 18.0, 55.0)
+    else:
+        unusual_volume_score = min(premarket_volume_pct * 3.0, 55.0)
 
-    gap_score = min(abs(gap_pct) * 6.0, 30.0)
-    volume_score = min(premarket_volume_pct * 1.5, 30.0)
-    range_score = min(range_pct * 10.0, 20.0)
-    catalyst_score = 20.0 if catalyst else 0.0
-    score = round(gap_score + volume_score + range_score + catalyst_score, 2)
+    liquidity_score = min(premarket_volume_pct * 0.75, 15.0)
+    range_score = min(range_pct * 5.0, 10.0)
+    proximity = _pmb_level_proximity_score(pm_close, previous_close, previous_levels.get("high"), previous_levels.get("low"))
+    catalyst = _latest_catalyst(symbol)
+    catalyst_score = 10.0 if catalyst else 0.0
+    gap_extension_penalty = min(max(abs(gap_pct) - 3.0, 0.0) * 5.0, 15.0)
+    score = round(max(0.0, min(100.0, unusual_volume_score + liquidity_score + range_score + proximity["score"] + catalyst_score - gap_extension_penalty)), 2)
 
     reasons = []
-    if abs(gap_pct) >= 1.5:
-        reasons.append(f"gap {gap_pct:.2f}%")
+    if premarket_relative_volume > 0:
+        reasons.append(f"premarket RVOL {premarket_relative_volume:.2f}x")
     if pm_volume >= 250_000:
         reasons.append(f"premarket volume {int(pm_volume):,}")
+    if proximity["distance_pct"] is not None and proximity["distance_pct"] <= 2.0:
+        reasons.append(f"near {proximity['level_name']} ({proximity['distance_pct']:.2f}%)")
     if range_pct >= 1.0:
         reasons.append(f"range {range_pct:.2f}%")
     if catalyst:
         reasons.append("news catalyst")
+    if abs(gap_pct) >= 3.0:
+        reasons.append(f"extended gap {gap_pct:.2f}%")
 
     return {
         "symbol": symbol,
         "score": score,
+        "scoring_model": "unusual_premarket_volume",
         "gap_pct": round(gap_pct, 2),
         "premarket_range_pct": round(range_pct, 2),
         "premarket_volume": int(pm_volume),
+        "avg_prior_premarket_volume": int(avg_prior_premarket_volume),
+        "premarket_relative_volume": round(premarket_relative_volume, 2),
         "premarket_volume_pct_of_avg_daily": round(premarket_volume_pct, 2),
+        "nearest_pmb_level": proximity["level_name"],
+        "nearest_pmb_level_distance_pct": round(proximity["distance_pct"], 2) if proximity["distance_pct"] is not None else None,
+        "previous_high": round(previous_levels["high"], 2) if previous_levels.get("high") else None,
+        "previous_low": round(previous_levels["low"], 2) if previous_levels.get("low") else None,
         "previous_close": round(previous_close, 2),
         "premarket_last": round(pm_close, 2),
         "has_news": bool(catalyst),
+        "unusual_volume_score": round(unusual_volume_score, 2),
+        "liquidity_score": round(liquidity_score, 2),
+        "range_score": round(range_score, 2),
+        "level_proximity_score": round(proximity["score"], 2),
+        "catalyst_score": round(catalyst_score, 2),
+        "gap_extension_penalty": round(gap_extension_penalty, 2),
         "reason": ", ".join(reasons) if reasons else "premarket activity",
     }
+
+
+def _previous_day_levels(daily: pd.DataFrame, today) -> dict:
+    empty = {"high": None, "low": None, "close": None}
+    if daily is None or daily.empty:
+        return empty
+    df = daily.copy()
+    idx = pd.to_datetime(df.index)
+    prior = df[idx.date < today]
+    if prior.empty:
+        prior = df
+    try:
+        row = prior.dropna(subset=["High", "Low", "Close"]).iloc[-1]
+        return {
+            "high": float(row["High"]),
+            "low": float(row["Low"]),
+            "close": float(row["Close"]),
+        }
+    except Exception:
+        return empty
+
+
+def _pmb_level_proximity_score(price: float, previous_close: float, pdh: float | None, pdl: float | None) -> dict:
+    candidates = []
+    for name, level in [("PDH", pdh), ("PDL", pdl)]:
+        if level and previous_close:
+            distance_pct = abs(float(price) - float(level)) / float(previous_close) * 100.0
+            candidates.append((distance_pct, name))
+    if not candidates:
+        return {"score": 0.0, "level_name": None, "distance_pct": None}
+    distance_pct, level_name = min(candidates, key=lambda item: item[0])
+    if distance_pct > 2.0:
+        score = 0.0
+    else:
+        score = 15.0 * (1.0 - (distance_pct / 2.0))
+    return {"score": max(0.0, score), "level_name": level_name, "distance_pct": distance_pct}
 
 
 def _previous_close(daily: pd.DataFrame, today) -> float | None:
@@ -238,6 +299,27 @@ def _avg_daily_volume(daily: pd.DataFrame, today) -> float:
     if prior.empty:
         prior = df.tail(5)
     return float(pd.to_numeric(prior["Volume"], errors="coerce").fillna(0).mean() or 0.0)
+
+
+def _avg_prior_premarket_volume(intraday: pd.DataFrame, today) -> float:
+    if intraday is None or intraday.empty or "Volume" not in intraday.columns:
+        return 0.0
+    df = intraday.copy()
+    idx = pd.to_datetime(df.index)
+    df = df.assign(_date=idx.date, _time=[ts.time() for ts in idx])
+    prior = df[(df["_date"] < today) & (df["_time"] >= PREMARKET_START) & (df["_time"] < MARKET_OPEN)]
+    if prior.empty:
+        return 0.0
+    volumes = (
+        pd.to_numeric(prior["Volume"], errors="coerce")
+        .fillna(0)
+        .groupby(prior["_date"])
+        .sum()
+    )
+    volumes = volumes[volumes > 0].tail(5)
+    if volumes.empty:
+        return 0.0
+    return float(volumes.mean())
 
 
 def _latest_catalyst(symbol: str):
