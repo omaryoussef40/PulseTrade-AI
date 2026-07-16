@@ -1,1 +1,2 @@
-
+Symbol,Signal,Score,Confidence,Option,Expiry,Strike,Type,Delta,Estimated Delta,Gamma,Theta,Vega,Implied Vol,Greek Source,Bid,Ask,Last,Mid,Spread %,Spread $,Volume,Risk / Contract,Strike Distance,Theta % Mid,Option Score,Option Score Notes,Delta Distance
+RKLB,PUT,96.0,100.0,RKLB 20260724 73 PUT,20260724,73.0,PUT,-0.5294,-0.6,0.041816,-0.235773,0.043206,0.8888,model,4.45,4.75,4.77,4.6,6.5,0.3,14,460.0,1.4599999999999937,5.1,88,acceptable spread 6.5% | delta 0.53 | low theta 5.1% | positive gamma | volume 14,0.020600000000000063

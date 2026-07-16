@@ -609,6 +609,95 @@ def dashboard_auto_start_enabled(config: dict) -> bool:
     return bool(dashboard_cfg.get("auto_start_engines", False))
 
 
+TRADING_STYLE_PRESETS = {
+    "Scalping": {
+        "description": "Fast entries with tighter targets, stricter volume/liquidity gates, and smaller size.",
+        "risk": {
+            "max_trades_per_day": 3,
+            "max_daily_capital_pct": 35.0,
+            "max_spend_per_trade_pct": 15.0,
+            "max_contracts": 2,
+            "stop_loss_pct": 15.0,
+            "take_profit_pct": 20.0,
+            "breakeven_trigger_pct": 12.0,
+            "trailing_trigger_pct": 18.0,
+            "trailing_stop_pct": 8.0,
+            "max_consecutive_losses": 2,
+            "max_daily_drawdown_pct": 4.0,
+            "entry_cutoff_hour": 11,
+            "entry_cutoff_minute": 0,
+        },
+        "strategy": {
+            "min_score": 92,
+            "use_rvol_filter": True,
+            "min_rvol": 0.8,
+            "use_rvol_score": True,
+            "use_rvol_ranking": True,
+            "min_atr": 0.3,
+            "top_n_tickers": 3,
+            "orb_minutes": 5,
+            "first_signal_minutes": 15,
+            "min_session_bars": 2,
+        },
+        "option_filters": {
+            "max_spread_pct": 6.0,
+            "excellent_spread_pct": 3.0,
+            "min_volume": 20,
+        },
+    },
+    "Intraday": {
+        "description": "Fewer trades with wider breathing room for clean momentum continuation.",
+        "risk": {
+            "max_trades_per_day": 2,
+            "max_daily_capital_pct": 45.0,
+            "max_spend_per_trade_pct": 22.0,
+            "max_contracts": 3,
+            "stop_loss_pct": 20.0,
+            "take_profit_pct": 35.0,
+            "breakeven_trigger_pct": 18.0,
+            "trailing_trigger_pct": 28.0,
+            "trailing_stop_pct": 12.0,
+            "max_consecutive_losses": 2,
+            "max_daily_drawdown_pct": 6.0,
+            "entry_cutoff_hour": 11,
+            "entry_cutoff_minute": 0,
+        },
+        "strategy": {
+            "min_score": 90,
+            "use_rvol_filter": True,
+            "min_rvol": 0.5,
+            "use_rvol_score": True,
+            "use_rvol_ranking": True,
+            "min_atr": 0.3,
+            "top_n_tickers": 2,
+            "orb_minutes": 15,
+            "first_signal_minutes": 20,
+            "min_session_bars": 7,
+        },
+        "option_filters": {
+            "max_spread_pct": 8.0,
+            "excellent_spread_pct": 4.0,
+            "min_volume": 10,
+        },
+    },
+}
+
+
+def apply_trading_style_preset(config: dict, preset_name: str) -> dict:
+    preset = TRADING_STYLE_PRESETS[preset_name]
+    for section in ("risk", "strategy", "option_filters"):
+        target = config.setdefault(section, {})
+        target.update(preset.get(section, {}))
+
+    risk = config.setdefault("risk", {})
+    account_size = max(float(risk.get("account_size", 1000.0) or 1000.0), 1.0)
+    risk["max_spend_per_trade"] = round(account_size * float(risk.get("max_spend_per_trade_pct", 0.0)) / 100.0, 2)
+    risk["max_daily_capital"] = round(account_size * float(risk.get("max_daily_capital_pct", 0.0)) / 100.0, 2)
+    config.setdefault("dashboard", {})["trading_style_preset"] = preset_name
+    config.setdefault("dashboard", {})["trading_style_mode"] = preset_name
+    return config
+
+
 def render_platform_settings():
     st.markdown("### Platform Settings")
     st.caption("These settings were previously in the left control panel. They now live here so the sidebar can be used only for navigation.")
@@ -633,6 +722,44 @@ def render_platform_settings():
         cfg["automation"]["scan_only_market_hours"] = st.checkbox("Scan only during market hours", value=bool(cfg["automation"].get("scan_only_market_hours", True)))
         cfg["order"]["type"] = st.selectbox("Order type", ["LIMIT", "MARKET"], index=0 if cfg["order"].get("type", "LIMIT") == "LIMIT" else 1)
         st.caption(f"Trading status: {trading_status_from_config(cfg)}")
+
+    with st.expander("Trading Style & Manual Settings", expanded=True):
+        dashboard_cfg = cfg.setdefault("dashboard", {})
+        style_options = ["Scalping", "Intraday", "Manual"]
+        current_style = str(dashboard_cfg.get("trading_style_mode", dashboard_cfg.get("trading_style_preset", "Manual")))
+        if current_style not in style_options:
+            current_style = "Manual"
+        selected_style = st.radio(
+            "Trading style",
+            style_options,
+            index=style_options.index(current_style),
+            horizontal=True,
+            help="Preset modes overwrite and lock the preset-owned fields below. Manual unlocks them.",
+        )
+        dashboard_cfg["trading_style_mode"] = selected_style
+        if selected_style in TRADING_STYLE_PRESETS:
+            apply_trading_style_preset(cfg, selected_style)
+            preset = TRADING_STYLE_PRESETS[selected_style]
+            st.caption(preset["description"])
+            st.markdown(
+                " | ".join(
+                    [
+                        f"ORB: {preset['strategy']['orb_minutes']}m",
+                        f"Trades/day: {preset['risk']['max_trades_per_day']}",
+                        f"Stop: {preset['risk']['stop_loss_pct']:.0f}%",
+                        f"Target: {preset['risk']['take_profit_pct']:.0f}%",
+                        f"Trail: +{preset['risk']['trailing_trigger_pct']:.0f}% / {preset['risk']['trailing_stop_pct']:.0f}%",
+                        f"RVOL: {preset['strategy']['min_rvol']}",
+                        f"Max spread: {preset['option_filters']['max_spread_pct']:.0f}%",
+                        f"Min option volume: {preset['option_filters']['min_volume']}",
+                    ]
+                )
+            )
+            st.info("Preset mode is active. Switch to Manual to edit the locked fields below.")
+        else:
+            st.caption("Manual mode is active. The controls below can be edited directly.")
+            dashboard_cfg["trading_style_preset"] = "Manual"
+        preset_locked = selected_style != "Manual"
 
     with st.expander("Position Controls", expanded=False):
         r = cfg["risk"]
@@ -664,8 +791,8 @@ def render_platform_settings():
             r["account_size"] = st.number_input("Account size USD", value=float(r.get("account_size", 1000)), min_value=100.0, step=100.0)
 
         account_size = max(float(r.get("account_size", 1000) or 1000), 1.0)
-        r["max_trades_per_day"] = st.number_input("Max trades per day", value=int(r.get("max_trades_per_day", 2)), min_value=1, max_value=10, step=1)
-        s["top_n_tickers"] = st.number_input("Trade only top N tickers", value=int(s.get("top_n_tickers", 2)), min_value=1, max_value=10, step=1)
+        r["max_trades_per_day"] = st.number_input("Max trades per day", value=int(r.get("max_trades_per_day", 2)), min_value=1, max_value=10, step=1, disabled=preset_locked)
+        s["top_n_tickers"] = st.number_input("Trade only top N tickers", value=int(s.get("top_n_tickers", 2)), min_value=1, max_value=10, step=1, disabled=preset_locked)
         default_trade_pct = float(r.get("max_spend_per_trade_pct", 0) or 0)
         if default_trade_pct <= 0:
             default_trade_pct = round(float(r.get("max_spend_per_trade", 250)) / account_size * 100, 2)
@@ -673,8 +800,8 @@ def render_platform_settings():
         if default_daily_pct <= 0:
             default_daily_pct = round(float(r.get("max_daily_capital", 500)) / account_size * 100, 2)
 
-        r["max_spend_per_trade_pct"] = st.number_input("Max amount per trade % of account", value=float(default_trade_pct), min_value=0.1, max_value=100.0, step=0.5)
-        r["max_daily_capital_pct"] = st.number_input("Max daily capital % of account", value=float(default_daily_pct), min_value=0.1, max_value=100.0, step=0.5)
+        r["max_spend_per_trade_pct"] = st.number_input("Max amount per trade % of account", value=float(default_trade_pct), min_value=0.1, max_value=100.0, step=0.5, disabled=preset_locked)
+        r["max_daily_capital_pct"] = st.number_input("Max daily capital % of account", value=float(default_daily_pct), min_value=0.1, max_value=100.0, step=0.5, disabled=preset_locked)
         r["max_spend_per_trade"] = round(account_size * float(r["max_spend_per_trade_pct"]) / 100.0, 2)
         r["max_daily_capital"] = round(account_size * float(r["max_daily_capital_pct"]) / 100.0, 2)
         st.caption(f"Calculated limits: ${r['max_spend_per_trade']:,.2f} per trade | ${r['max_daily_capital']:,.2f} max daily capital")
@@ -693,7 +820,7 @@ def render_platform_settings():
                 float(r["max_daily_capital"]) / max(int(r["max_trades_per_day"]), 1),
             )
             st.caption(f"First-entry reserved budget: about ${reserved_budget:,.2f} when no trades are open today.")
-        r["max_contracts"] = st.number_input("Max contracts per trade", value=int(r.get("max_contracts", 2)), min_value=1, step=1)
+        r["max_contracts"] = st.number_input("Max contracts per trade", value=int(r.get("max_contracts", 2)), min_value=1, step=1, disabled=preset_locked)
         today_trade_count, today_deployed_capital = get_today_trade_stats()
         if r["recycle_capital_after_exit"]:
             from bot_core import get_open_position_deployed
@@ -724,31 +851,32 @@ def render_platform_settings():
             orb_window_options,
             index=orb_window_options.index(current_orb_minutes),
             format_func=lambda minutes: f"{minutes} minutes",
+            disabled=preset_locked,
         )
-        s["min_session_bars"] = st.number_input("Minimum session bars", value=int(s.get("min_session_bars", 7)), min_value=2, max_value=30, step=1)
-        r["stop_loss_pct"] = st.number_input("Option stop loss %", value=float(r.get("stop_loss_pct", 20.0)), min_value=1.0, max_value=90.0, step=1.0)
-        r["take_profit_pct"] = st.number_input("Option take profit %", value=float(r.get("take_profit_pct", 30.0)), min_value=1.0, max_value=300.0, step=1.0)
-        r["breakeven_trigger_pct"] = st.number_input("Move stop to breakeven at +%", value=float(r.get("breakeven_trigger_pct", 15.0)), min_value=1.0, max_value=200.0, step=1.0)
-        r["trailing_trigger_pct"] = st.number_input("Activate trailing stop at +%", value=float(r.get("trailing_trigger_pct", 25.0)), min_value=1.0, max_value=300.0, step=1.0)
-        r["trailing_stop_pct"] = st.number_input("Trailing stop distance %", value=float(r.get("trailing_stop_pct", 10.0)), min_value=1.0, max_value=90.0, step=1.0)
-        r["entry_cutoff_hour"] = st.number_input("No new entries after hour ET", value=int(r.get("entry_cutoff_hour", 11)), min_value=9, max_value=15, step=1)
-        r["entry_cutoff_minute"] = st.number_input("No new entries after minute ET", value=int(r.get("entry_cutoff_minute", 0)), min_value=0, max_value=59, step=1)
+        s["min_session_bars"] = st.number_input("Minimum session bars", value=int(s.get("min_session_bars", 7)), min_value=2, max_value=30, step=1, disabled=preset_locked)
+        r["stop_loss_pct"] = st.number_input("Option stop loss %", value=float(r.get("stop_loss_pct", 20.0)), min_value=1.0, max_value=90.0, step=1.0, disabled=preset_locked)
+        r["take_profit_pct"] = st.number_input("Option take profit %", value=float(r.get("take_profit_pct", 30.0)), min_value=1.0, max_value=300.0, step=1.0, disabled=preset_locked)
+        r["breakeven_trigger_pct"] = st.number_input("Move stop to breakeven at +%", value=float(r.get("breakeven_trigger_pct", 15.0)), min_value=1.0, max_value=200.0, step=1.0, disabled=preset_locked)
+        r["trailing_trigger_pct"] = st.number_input("Activate trailing stop at +%", value=float(r.get("trailing_trigger_pct", 25.0)), min_value=1.0, max_value=300.0, step=1.0, disabled=preset_locked)
+        r["trailing_stop_pct"] = st.number_input("Trailing stop distance %", value=float(r.get("trailing_stop_pct", 10.0)), min_value=1.0, max_value=90.0, step=1.0, disabled=preset_locked)
+        r["entry_cutoff_hour"] = st.number_input("No new entries after hour ET", value=int(r.get("entry_cutoff_hour", 11)), min_value=9, max_value=15, step=1, disabled=preset_locked)
+        r["entry_cutoff_minute"] = st.number_input("No new entries after minute ET", value=int(r.get("entry_cutoff_minute", 0)), min_value=0, max_value=59, step=1, disabled=preset_locked)
         r["force_exit_enabled"] = st.checkbox("Force exit open trades near end of day", value=bool(r.get("force_exit_enabled", True)))
         r["force_exit_hour"] = st.number_input("Force exit hour ET", value=int(r.get("force_exit_hour", 15)), min_value=9, max_value=15, step=1)
         r["force_exit_minute"] = st.number_input("Force exit minute ET", value=int(r.get("force_exit_minute", 55)), min_value=0, max_value=59, step=1)
-        r["max_consecutive_losses"] = st.number_input("Stop after consecutive losses", value=int(r.get("max_consecutive_losses", 2)), min_value=1, max_value=10, step=1)
-        r["max_daily_drawdown_pct"] = st.number_input("Max daily drawdown % of account", value=float(r.get("max_daily_drawdown_pct", 5.0)), min_value=1.0, max_value=50.0, step=1.0)
+        r["max_consecutive_losses"] = st.number_input("Stop after consecutive losses", value=int(r.get("max_consecutive_losses", 2)), min_value=1, max_value=10, step=1, disabled=preset_locked)
+        r["max_daily_drawdown_pct"] = st.number_input("Max daily drawdown % of account", value=float(r.get("max_daily_drawdown_pct", 5.0)), min_value=1.0, max_value=50.0, step=1.0, disabled=preset_locked)
 
     with st.expander("Signal Filters", expanded=False):
         s = cfg["strategy"]
         s["option_dte"] = st.number_input("Target option DTE", value=int(s.get("option_dte", 7)), min_value=0, max_value=45, step=1)
-        s["min_score"] = st.number_input("Minimum score", value=int(s.get("min_score", 70)), min_value=0, max_value=100, step=5)
+        s["min_score"] = st.number_input("Minimum score", value=int(s.get("min_score", 70)), min_value=0, max_value=100, step=5, disabled=preset_locked)
         s["min_confidence"] = st.number_input("Minimum confidence", value=int(s.get("min_confidence", 75)), min_value=0, max_value=100, step=5)
-        s["use_rvol_filter"] = st.checkbox("Use RVOL as required filter", value=bool(s.get("use_rvol_filter", False)))
-        s["min_rvol"] = st.number_input("Minimum RVOL", value=float(s.get("min_rvol", 1.5)), min_value=0.0, max_value=10.0, step=0.1)
-        s["use_rvol_score"] = st.checkbox("Use RVOL bonus in technical score", value=bool(s.get("use_rvol_score", False)))
-        s["use_rvol_ranking"] = st.checkbox("Use RVOL bonus in ranking", value=bool(s.get("use_rvol_ranking", False)))
-        s["min_atr"] = st.number_input("Minimum ATR %", value=float(s.get("min_atr", 0.3)), min_value=0.0, max_value=10.0, step=0.1)
+        s["use_rvol_filter"] = st.checkbox("Use RVOL as required filter", value=bool(s.get("use_rvol_filter", False)), disabled=preset_locked)
+        s["min_rvol"] = st.number_input("Minimum RVOL", value=float(s.get("min_rvol", 1.5)), min_value=0.0, max_value=10.0, step=0.1, disabled=preset_locked)
+        s["use_rvol_score"] = st.checkbox("Use RVOL bonus in technical score", value=bool(s.get("use_rvol_score", False)), disabled=preset_locked)
+        s["use_rvol_ranking"] = st.checkbox("Use RVOL bonus in ranking", value=bool(s.get("use_rvol_ranking", False)), disabled=preset_locked)
+        s["min_atr"] = st.number_input("Minimum ATR %", value=float(s.get("min_atr", 0.3)), min_value=0.0, max_value=10.0, step=0.1, disabled=preset_locked)
         s["use_sr_filter"] = st.checkbox("Require room to nearest support/resistance", value=bool(s.get("use_sr_filter", True)))
         s["min_sr_room_pct"] = st.number_input("Minimum room to opposing level %", value=float(s.get("min_sr_room_pct", 0.75)), min_value=0.0, max_value=10.0, step=0.1)
         if not s["use_rvol_filter"]:
@@ -769,6 +897,7 @@ def render_platform_settings():
             min_value=1.0,
             max_value=50.0,
             step=0.5,
+            disabled=preset_locked,
         )
         option_filters["excellent_spread_pct"] = c2.number_input(
             "Excellent spread %",
@@ -776,6 +905,7 @@ def render_platform_settings():
             min_value=0.5,
             max_value=20.0,
             step=0.5,
+            disabled=preset_locked,
         )
         c3, c4 = st.columns(2)
         option_filters["min_abs_delta"] = c3.number_input(
@@ -828,6 +958,7 @@ def render_platform_settings():
             min_value=0,
             max_value=100000,
             step=10,
+            disabled=preset_locked,
         )
         st.caption("These are hard gates before live order placement. Spread and real delta now decide whether an option is tradeable.")
 

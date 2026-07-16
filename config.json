@@ -26,59 +26,59 @@
   },
   "strategy": {
     "option_dte": 7,
-    "min_score": 90,
+    "min_score": 92,
     "min_confidence": 0,
-    "use_rvol_filter": false,
-    "min_rvol": 0.5,
-    "use_rvol_score": false,
-    "use_rvol_ranking": false,
+    "use_rvol_filter": true,
+    "min_rvol": 0.8,
+    "use_rvol_score": true,
+    "use_rvol_ranking": true,
     "use_sr_filter": true,
     "min_sr_room_pct": 0.75,
     "min_atr": 0.3,
-    "top_n_tickers": 4,
+    "top_n_tickers": 3,
     "active_strategy": "pmb",
-    "orb_minutes": 15,
+    "orb_minutes": 5,
     "first_signal_minutes": 15,
-    "min_session_bars": 4
+    "min_session_bars": 2
   },
   "risk": {
-    "account_size": 4601.92,
+    "account_size": 4323.17,
     "use_ibkr_buying_power": true,
     "max_trades_per_day": 3,
-    "recycle_capital_after_exit": false,
-    "reserve_capital_for_remaining_trades": false,
-    "max_spend_per_trade_pct": 50.0,
-    "max_daily_capital_pct": 80.0,
-    "max_spend_per_trade": 2300.96,
-    "max_daily_capital": 3681.54,
-    "max_contracts": 5,
-    "entry_cutoff_hour": 13,
+    "recycle_capital_after_exit": true,
+    "reserve_capital_for_remaining_trades": true,
+    "max_spend_per_trade_pct": 15.0,
+    "max_daily_capital_pct": 35.0,
+    "max_spend_per_trade": 648.48,
+    "max_daily_capital": 1513.11,
+    "max_contracts": 2,
+    "entry_cutoff_hour": 11,
     "entry_cutoff_minute": 0,
-    "stop_loss_pct": 10.0,
-    "take_profit_pct": 15.0,
-    "breakeven_trigger_pct": 10.0,
-    "trailing_trigger_pct": 10.0,
-    "trailing_stop_pct": 5.0,
+    "stop_loss_pct": 15.0,
+    "take_profit_pct": 20.0,
+    "breakeven_trigger_pct": 12.0,
+    "trailing_trigger_pct": 18.0,
+    "trailing_stop_pct": 8.0,
     "force_exit_enabled": true,
     "force_exit_hour": 15,
     "force_exit_minute": 55,
-    "max_consecutive_losses": 3,
-    "max_daily_drawdown_pct": 20.0
+    "max_consecutive_losses": 2,
+    "max_daily_drawdown_pct": 4.0
   },
   "order": {
     "type": "MARKET"
   },
   "option_filters": {
     "require_live_greeks": false,
-    "max_spread_pct": 10.0,
-    "excellent_spread_pct": 5.0,
+    "max_spread_pct": 6.0,
+    "excellent_spread_pct": 3.0,
     "max_spread_dollars": 0.75,
     "min_abs_delta": 0.45,
     "target_abs_delta": 0.55,
     "max_abs_delta": 0.8,
     "max_theta_pct_of_mid": 12.0,
     "min_bid": 0.05,
-    "min_volume": 0
+    "min_volume": 20
   },
   "watchlist": [
     "SPY",
@@ -232,7 +232,9 @@
     "allow_same_symbol": true
   },
   "dashboard": {
-    "auto_start_engines": true
+    "auto_start_engines": true,
+    "trading_style_mode": "Scalping",
+    "trading_style_preset": "Scalping"
   },
   "price_action_lab": {
     "period": "7d",
