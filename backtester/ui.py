@@ -338,6 +338,21 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         m6.metric("Win Rate", f"{float(metrics.get('win_rate', 0)):,.1f}%")
         m7.metric("Profit Factor", metrics.get("profit_factor", 0))
 
+        if (
+            str(meta.get("data_source", meta.get("provider", ""))).upper() == "IBKR"
+            and isinstance(decisions, pd.DataFrame)
+            and not decisions.empty
+            and "stage" in decisions.columns
+        ):
+            option_data_rejects = int((decisions["stage"].astype(str) == "OPTION_DATA").sum())
+            if option_data_rejects:
+                coverage_pct = 100.0 * (len(decisions) - option_data_rejects) / max(len(decisions), 1)
+                st.warning(
+                    f"IBKR option-history coverage is incomplete: {option_data_rejects:,} of {len(decisions):,} signals "
+                    f"were rejected before simulation because historical option bars were unavailable. "
+                    f"Coverage: {coverage_pct:.1f}%."
+                )
+
         dte_values = _result_dte_values(comparison, trades)
         if dte_values:
             st.markdown("### Option DTE Results")

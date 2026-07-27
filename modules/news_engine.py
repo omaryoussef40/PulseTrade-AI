@@ -418,11 +418,23 @@ def extract_alias_tickers(text: str, watchlist: list[str]) -> list[str]:
     return found
 
 
+def extract_headline_symbol_tickers(headline: str, watchlist: list[str]) -> list[str]:
+    found: list[str] = []
+    headline = headline or ""
+    watch_set = set(watchlist)
+    for symbol in watchlist:
+        if re.search(rf"(?<![A-Za-z0-9]){re.escape(symbol)}(?![A-Za-z0-9])", headline, flags=re.IGNORECASE):
+            found.append(symbol)
+    for symbol in extract_dollar_tickers(headline) + extract_alias_tickers(headline, watchlist):
+        if symbol in watch_set and symbol not in found:
+            found.append(symbol)
+    return found
+
+
 def extract_all_tickers(item: dict[str, Any], watchlist: list[str]) -> list[str]:
     headline, summary, _ = extract_text_fields(item)
-    text = f"{headline} {summary}"
     tickers = []
-    for symbol in extract_api_tickers(item) + extract_dollar_tickers(text) + extract_alias_tickers(text, watchlist):
+    for symbol in extract_headline_symbol_tickers(headline, watchlist):
         if symbol and symbol not in tickers:
             tickers.append(symbol)
     return tickers

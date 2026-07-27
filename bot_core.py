@@ -110,6 +110,10 @@ ACTIVE_POSITIONS_FILE = os.path.join(EXPORT_DIR, "active_positions.json")
 # Trade management defaults for intraday 7 DTE options
 DEFAULT_STOP_LOSS_PCT = 20.0
 DEFAULT_TAKE_PROFIT_PCT = 30.0
+PREMIUM_HEALTH_WARMUP_SECONDS = 150
+PREMIUM_HEALTH_WEAK_DROP_PCT = -10.0
+PREMIUM_HEALTH_UNDERLYING_TOLERANCE_PCT = -0.25
+PREMIUM_HEALTH_TIGHTEN_STOP_BUFFER_PCT = 3.0
 MAX_OPTION_ORDER_CHUNK_QTY = 5
 DEFAULT_BREAKEVEN_TRIGGER_PCT = 15.0
 DEFAULT_TRAILING_TRIGGER_PCT = 25.0
@@ -335,6 +339,7 @@ def calculate_rvol(intraday: pd.DataFrame, today_date) -> float:
     if today_data.empty:
         return 0.0
 
+    current_time = today_data.index[-1].time()
     today_volume = float(today_data["Volume"].sum())
     previous_session_volumes = []
 
@@ -343,7 +348,10 @@ def calculate_rvol(intraday: pd.DataFrame, today_date) -> float:
             continue
         session_data = intraday[intraday.index.date == session_date]
         if len(session_data) >= 50:
-            session_volume = float(session_data["Volume"].sum())
+            session_to_time = session_data[session_data.index.time <= current_time]
+            if session_to_time.empty:
+                continue
+            session_volume = float(session_to_time["Volume"].sum())
             if session_volume > 0:
                 previous_session_volumes.append(session_volume)
 
@@ -564,6 +572,46 @@ def get_snapshot_mid(ib: IB, contract) -> dict:
         "Implied Vol": getattr(greeks, "impliedVol", np.nan) if greeks else np.nan,
         "Greek Source": greek_source,
     }
+
+
+def get_stock_snapshot_price(ib: IB, symbol: str) -> float | None:
+    """Return a quick stock mark using last/market price, then bid/ask midpoint."""
+    if not symbol:
+        return None
+    contract = Stock(str(symbol).upper(), "SMART", "USD")
+    try:
+        qualified = ib.qualifyContracts(contract)
+        if qualified:
+            contract = qualified[0]
+    except Exception:
+        pass
+
+    ticker = ib.reqMktData(contract, "", snapshot=True, regulatorySnapshot=False)
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        ib.sleep(0.25)
+        values = [
+            getattr(ticker, "marketPrice", lambda: np.nan)(),
+            getattr(ticker, "last", np.nan),
+            getattr(ticker, "close", np.nan),
+        ]
+        if any(_finite_number(value) for value in values):
+            break
+
+    market_price = _finite_number(getattr(ticker, "marketPrice", lambda: np.nan)())
+    if market_price and market_price > 0:
+        return market_price
+    last = _finite_number(getattr(ticker, "last", np.nan))
+    if last and last > 0:
+        return last
+    bid = _finite_number(getattr(ticker, "bid", np.nan))
+    ask = _finite_number(getattr(ticker, "ask", np.nan))
+    if bid and ask and bid > 0 and ask > 0:
+        return (bid + ask) / 2.0
+    close = _finite_number(getattr(ticker, "close", np.nan))
+    if close and close > 0:
+        return close
+    return None
 
 
 def _finite_number(value) -> float | None:
@@ -1242,6 +1290,106 @@ def _number_or_none(value) -> float | None:
         return None
 
 
+def _position_age_seconds(pos: dict, now_et: datetime) -> float | None:
+    raw = pos.get("entry_time") or pos.get("timestamp") or pos.get("opened_at")
+    if not raw:
+        return None
+    try:
+        opened = datetime.fromisoformat(str(raw))
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=EASTERN)
+        return max(0.0, (now_et - opened.astimezone(EASTERN)).total_seconds())
+    except Exception:
+        return None
+
+
+def evaluate_premium_health(
+    ib: IB,
+    pos: dict,
+    current_price: float,
+    now_et: datetime,
+) -> list[dict]:
+    """Update premium health fields and tighten the stop when premium behaves poorly."""
+    events: list[dict] = []
+    entry_price = _number_or_none(pos.get("entry_price"))
+    if not entry_price or entry_price <= 0 or not current_price or current_price <= 0:
+        pos["premium_health"] = "Unavailable"
+        pos["premium_health_detail"] = "Missing option entry/current premium."
+        return events
+
+    age_seconds = _position_age_seconds(pos, now_et)
+    premium_change_pct = ((float(current_price) - entry_price) / entry_price) * 100.0
+    pos["premium_change_pct"] = round(premium_change_pct, 2)
+    pos["premium_health_checked_at"] = now_et.isoformat()
+
+    if age_seconds is not None:
+        pos["age_seconds"] = int(age_seconds)
+    if age_seconds is not None and age_seconds < PREMIUM_HEALTH_WARMUP_SECONDS:
+        remaining = int(PREMIUM_HEALTH_WARMUP_SECONDS - age_seconds)
+        pos["premium_health"] = "Warming up"
+        pos["premium_health_detail"] = f"Waiting {remaining}s before judging premium behavior."
+        return events
+
+    entry_underlying = _number_or_none(pos.get("underlying_entry_price"))
+    current_underlying = None
+    directional_underlying_pct = None
+    if entry_underlying and entry_underlying > 0:
+        current_underlying = get_stock_snapshot_price(ib, str(pos.get("symbol") or ""))
+        if current_underlying and current_underlying > 0:
+            raw_underlying_pct = ((current_underlying - entry_underlying) / entry_underlying) * 100.0
+            signal = str(pos.get("signal") or "").upper()
+            directional_underlying_pct = raw_underlying_pct if signal == "CALL" else -raw_underlying_pct
+            pos["underlying_current_price"] = round(float(current_underlying), 2)
+            pos["underlying_move_with_position_pct"] = round(float(directional_underlying_pct), 2)
+
+    if directional_underlying_pct is None:
+        if premium_change_pct <= PREMIUM_HEALTH_WEAK_DROP_PCT:
+            pos["premium_health"] = "Premium weak"
+            pos["premium_health_detail"] = f"Premium {premium_change_pct:.1f}%; stock entry anchor unavailable."
+        else:
+            pos["premium_health"] = "Watching"
+            pos["premium_health_detail"] = f"Premium {premium_change_pct:.1f}%; stock entry anchor unavailable."
+        return events
+
+    weak_premium = (
+        premium_change_pct <= PREMIUM_HEALTH_WEAK_DROP_PCT
+        and directional_underlying_pct >= PREMIUM_HEALTH_UNDERLYING_TOLERANCE_PCT
+    )
+    if weak_premium:
+        old_stop = _number_or_none(pos.get("current_stop_price")) or entry_price * (1 - DEFAULT_STOP_LOSS_PCT / 100.0)
+        tightened_stop = round(max(float(old_stop), float(current_price) * (1 - PREMIUM_HEALTH_TIGHTEN_STOP_BUFFER_PCT / 100.0)), 2)
+        if tightened_stop > float(old_stop) + 0.009:
+            pos["current_stop_price"] = tightened_stop
+            pos["premium_health_stop_tightened_at"] = now_et.isoformat()
+            pos["premium_health_stop_tightened_price"] = tightened_stop
+            events.append({
+                "Symbol": pos.get("symbol"),
+                "Option": pos.get("option"),
+                "Action": "PREMIUM_HEALTH_TIGHTEN_STOP",
+                "Premium %": round(premium_change_pct, 1),
+                "Stock With Trade %": round(directional_underlying_pct, 2),
+                "Old Stop": round(float(old_stop), 2),
+                "New Stop": tightened_stop,
+            })
+        pos["premium_health"] = "Weak - stop tightened"
+        pos["premium_health_detail"] = (
+            f"Premium {premium_change_pct:.1f}% while stock is {directional_underlying_pct:.2f}% with trade."
+        )
+        return events
+
+    if premium_change_pct <= PREMIUM_HEALTH_WEAK_DROP_PCT:
+        pos["premium_health"] = "Weak but stock against"
+        pos["premium_health_detail"] = (
+            f"Premium {premium_change_pct:.1f}%; stock is {directional_underlying_pct:.2f}% with trade."
+        )
+    else:
+        pos["premium_health"] = "Healthy"
+        pos["premium_health_detail"] = (
+            f"Premium {premium_change_pct:.1f}%; stock is {directional_underlying_pct:.2f}% with trade."
+        )
+    return events
+
+
 def _parse_timestamps_utc(values):
     try:
         return pd.to_datetime(values, errors="coerce", utc=True, format="mixed")
@@ -1401,8 +1549,10 @@ def sync_active_positions_from_broker(
             "con_id": broker_pos.get("con_id"),
             "quantity": broker_pos.get("quantity"),
             "entry_price": round(float(entry_price), 2),
+            "underlying_entry_price": _number_or_none(log_row.get("price")) if log_row is not None else None,
             "current_stop_price": round(float(entry_price) * (1 - float(stop_loss_pct) / 100), 2),
             "take_profit_price": round(float(entry_price) * (1 + float(take_profit_pct) / 100), 2),
+            "take_profit_pct": round(float(take_profit_pct), 4),
             "highest_price": round(float(entry_price), 2),
             "breakeven_active": False,
             "trailing_active": False,
@@ -1593,6 +1743,32 @@ def ensure_protective_orders(
         if existing_stop_ids and (existing_take_profit_ids or not want_take_profit):
             pos["ibkr_stop_order_ids"] = existing_stop_ids
             pos["ibkr_take_profit_order_ids"] = existing_take_profit_ids
+            events = []
+            if want_take_profit:
+                for trade in open_sell_trades:
+                    order = getattr(trade, "order", None)
+                    order_type = str(getattr(order, "orderType", "") or "").upper()
+                    if order_type != "LMT":
+                        continue
+                    old_target = float(getattr(order, "lmtPrice", 0) or 0)
+                    if abs(old_target - take_profit_price) <= 0.009:
+                        continue
+                    order.lmtPrice = take_profit_price
+                    if account:
+                        order.account = account
+                    ib.placeOrder(contract, order)
+                    ib.sleep(0.2)
+                    events.append({
+                        "Symbol": pos.get("symbol"),
+                        "Option": pos.get("option"),
+                        "Action": "UPDATE_TP",
+                        "Old TP": round(old_target, 2),
+                        "TP": take_profit_price,
+                        "Order ID": _order_id(order),
+                    })
+            if events:
+                pos["protective_orders_status"] = "Updated"
+                return events
             pos["protective_orders_status"] = "Already protected"
             return []
 
@@ -1639,6 +1815,7 @@ def ensure_protective_orders(
     has_stop = bool(stop_order_id and stop_order_id in existing_order_ids)
     has_take_profit = bool(take_profit_order_id and take_profit_order_id in existing_order_ids)
     stop_trade = None
+    take_profit_trade = None
 
     for trade in open_sell_trades:
         order = getattr(trade, "order", None)
@@ -1650,8 +1827,11 @@ def ensure_protective_orders(
         elif order_type == "LMT" and not has_take_profit:
             pos["ibkr_take_profit_order_id"] = _order_id(order)
             has_take_profit = True
+            take_profit_trade = trade
         elif "STP" in order_type and _order_id(order) == stop_order_id:
             stop_trade = trade
+        elif order_type == "LMT" and _order_id(order) == take_profit_order_id:
+            take_profit_trade = trade
 
     events = []
     oca_group = str(pos.get("ibkr_oca_group") or f"PulseProtect-{pos.get('id') or pos.get('con_id')}-{int(time.time())}")
@@ -1708,6 +1888,22 @@ def ensure_protective_orders(
         ib.sleep(0.2)
         pos["ibkr_take_profit_order_id"] = _order_id(getattr(trade, "order", None))
         events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_TP", "TP": take_profit_price})
+    elif want_take_profit and take_profit_trade is not None:
+        target_order = getattr(take_profit_trade, "order", None)
+        old_target = float(getattr(target_order, "lmtPrice", 0) or 0)
+        if abs(old_target - take_profit_price) > 0.009:
+            target_order.lmtPrice = take_profit_price
+            if account:
+                target_order.account = account
+            ib.placeOrder(contract, target_order)
+            ib.sleep(0.2)
+            events.append({
+                "Symbol": pos.get("symbol"),
+                "Option": pos.get("option"),
+                "Action": "UPDATE_TP",
+                "Old TP": round(old_target, 2),
+                "TP": take_profit_price,
+            })
 
     pos["protective_orders_status"] = "Submitted" if events else "Already protected"
     return events
@@ -1914,8 +2110,10 @@ def add_active_position_from_entry(
         "con_id": getattr(contract, "conId", None),
         "quantity": int(qty),
         "entry_price": round(float(entry_price), 2),
+        "underlying_entry_price": _number_or_none(row.get("Price") or row.get("price")),
         "current_stop_price": round(float(entry_price) * (1 - float(stop_loss_pct) / 100), 2),
         "take_profit_price": round(float(entry_price) * (1 + float(take_profit_pct) / 100), 2),
+        "take_profit_pct": round(float(take_profit_pct), 4),
         "highest_price": round(float(entry_price), 2),
         "breakeven_active": False,
         "trailing_active": False,
@@ -1993,6 +2191,10 @@ def manage_open_positions(
             stop_price = float(pos.get("current_stop_price", entry_price * (1 - stop_loss_pct / 100)))
             take_profit_price = float(pos.get("take_profit_price", entry_price * (1 + take_profit_pct / 100)))
             reason = None
+
+            premium_health_events = evaluate_premium_health(ib, pos, current_price, now_et)
+            events.extend(premium_health_events)
+            stop_price = float(pos.get("current_stop_price", stop_price))
 
             # Force flat before close. This exits winners and losers that did not hit TP/SL.
             if force_exit_enabled and now_et.time() >= force_exit_time:
@@ -2315,13 +2517,13 @@ def default_config() -> dict:
         "account_mode": "Simulation",
         "ib": {"host": "127.0.0.1", "paper_port": 7497, "live_port": 7496, "client_id": 11, "account": "", "readonly": False},
         "telegram": {"bot_token": "", "chat_id": "", "send_alerts": False},
-        "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 60, "live_sync_interval_seconds": 15, "market_timezone": "America/New_York", "scan_only_market_hours": True},
+        "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "approval_mode": "Dashboard", "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 60, "live_sync_interval_seconds": 15, "market_timezone": "America/New_York", "scan_only_market_hours": True},
         "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "use_sr_filter": True, "min_sr_room_pct": 0.75, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7},
         "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "recycle_capital_after_exit": False, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_enabled": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},
         "option_filters": dict(DEFAULT_OPTION_FILTERS),
         "watchlist": WATCHLIST,
-        "dynamic_watchlist": {"enabled": False, "mode": "Manual", "max_symbols": 5, "refresh_hour": 9, "refresh_minute": 30, "source_universe": WATCHLIST},
+        "dynamic_watchlist": {"enabled": True, "mode": "Automatic", "suggestive_only": True, "max_symbols": 8, "refresh_hour": 9, "refresh_minute": 35, "source_universe": WATCHLIST},
         "scanner": {"auto_run_enabled": True, "auto_run_hour": 9, "auto_run_minute": 40},
         "ibkr_flex": {"token": "", "trade_query_id": "", "base_url": ""},
         "performance": {"original_deposited_capital": 2300.0},

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,11 @@ from typing import Any, Iterable
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parents[1]
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "news.db"
+
+try:
+    from modules.news_engine import COMPANY_ALIASES
+except Exception:
+    COMPANY_ALIASES = {}
 
 
 @dataclass(frozen=True)
@@ -92,6 +98,26 @@ def _clean_text(value: Any, max_chars: int = 120) -> str:
     return text
 
 
+def headline_mentions_ticker(headline: str, ticker: str) -> bool:
+    symbol = str(ticker or "").strip().upper().replace("$", "")
+    text = str(headline or "")
+    if not symbol or not text:
+        return False
+    if re.search(rf"(?<![A-Za-z0-9]){re.escape(symbol)}(?![A-Za-z0-9])", text, flags=re.IGNORECASE):
+        return True
+    lower = f" {text.lower()} "
+    for alias in COMPANY_ALIASES.get(symbol, []):
+        alias_l = str(alias or "").strip().lower()
+        if not alias_l:
+            continue
+        if " " in alias_l:
+            if alias_l in lower:
+                return True
+        elif re.search(rf"\b{re.escape(alias_l)}\b", lower):
+            return True
+    return False
+
+
 def _connect(db_path: str | Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(Path(db_path))
     conn.row_factory = sqlite3.Row
@@ -156,6 +182,8 @@ def get_latest_catalyst(
             for row in rows:
                 tickers = [x.upper() for x in _json_list(row["tickers_json"])]
                 if ticker not in tickers:
+                    continue
+                if not headline_mentions_ticker(str(row["headline"] or ""), ticker):
                     continue
                 return TickerCatalyst(
                     ticker=ticker,

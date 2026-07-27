@@ -282,17 +282,32 @@ class IBKRMarketDataProvider:
         ref_date = ref_ts.date()
         target_date = ref_date + timedelta(days=int(option_dte))
 
-        expirations = []
+        chain_expirations = []
         for raw in sorted(chain.expirations):
             try:
                 exp_date = datetime.strptime(str(raw), "%Y%m%d").date()
             except Exception:
                 continue
             if exp_date >= ref_date:
-                expirations.append((str(raw), exp_date))
-        if not expirations:
+                chain_expirations.append((str(raw), exp_date))
+
+        today = datetime.now(self.config.timezone).date()
+        if target_date >= today and chain_expirations:
+            expiry_candidates = sorted(chain_expirations, key=lambda item: abs((item[1] - target_date).days))
+        else:
+            # IBKR's option-chain endpoint generally returns currently listed
+            # expirations, not the historical expirations that existed on an old
+            # replay date. For historical signals, synthesize plausible weekday
+            # expiries around the target DTE and qualify them with includeExpired.
+            generated = []
+            for offset in range(-7, 8):
+                candidate = target_date + timedelta(days=offset)
+                if candidate.weekday() < 5:
+                    generated.append((candidate.strftime("%Y%m%d"), candidate))
+            expiry_candidates = sorted(generated, key=lambda item: abs((item[1] - target_date).days))
+
+        if not expiry_candidates:
             raise RuntimeError(f"No valid expirations for {symbol} on {ref_date}")
-        expiry = min(expirations, key=lambda item: abs((item[1] - target_date).days))[0]
 
         strikes = []
         for raw_strike in chain.strikes:
@@ -306,14 +321,30 @@ class IBKRMarketDataProvider:
         nearby = [s for s in strikes if float(underlying_price) * 0.90 <= s <= float(underlying_price) * 1.10]
         strike_pool = nearby or strikes
         if not strike_pool:
-            raise RuntimeError(f"No valid strikes for {symbol} {expiry}")
-        strike = min(strike_pool, key=lambda value: abs(float(value) - float(underlying_price)))
+            raise RuntimeError(f"No valid strikes for {symbol} near {underlying_price:g}")
+        strike_candidates = sorted(strike_pool, key=lambda value: abs(float(value) - float(underlying_price)))[:7]
 
-        contract = Option(symbol, expiry, strike, right, "SMART", currency="USD", multiplier="100")
-        qualified = ib.qualifyContracts(contract)
-        if not qualified:
-            raise RuntimeError(f"Could not qualify option {symbol} {expiry} {strike:g} {right}")
-        contract = qualified[0]
+        contract = None
+        expiry = None
+        strike = None
+        attempted = []
+        for expiry_value, expiry_date in expiry_candidates[:10]:
+            for strike_value in strike_candidates:
+                attempted.append(f"{expiry_value} {strike_value:g}")
+                candidate_contract = Option(symbol, expiry_value, strike_value, right, "SMART", currency="USD", multiplier="100")
+                if expiry_date < today:
+                    candidate_contract.includeExpired = True
+                qualified = ib.qualifyContracts(candidate_contract)
+                if qualified:
+                    contract = qualified[0]
+                    expiry = expiry_value
+                    strike = float(strike_value)
+                    break
+            if contract is not None:
+                break
+        if contract is None or expiry is None or strike is None:
+            sample = ", ".join(attempted[:12])
+            raise RuntimeError(f"Could not qualify historical option {symbol} {right}; tried {sample}")
 
         end_dt = ref_ts.replace(hour=16, minute=0, second=0, microsecond=0)
         bars = ib.reqHistoricalData(

@@ -278,13 +278,12 @@ def extract_alias_tickers(text: str, watchlist: list[str]) -> list[str]:
 
 def extract_tickers(headline: str, summary: str = "", raw_json: dict[str, Any] | None = None, watchlist: list[str] | None = None) -> list[str]:
     watchlist = normalize_tickers(watchlist or load_watchlist())
-    text = f"{headline or ''} {strip_html(summary or '')}"
+    headline_text = headline or ""
     tickers: list[str] = []
     for symbol in (
-        extract_api_tickers_from_raw(raw_json)
-        + extract_dollar_tickers(text)
-        + extract_uppercase_ticker_mentions(text, watchlist)
-        + extract_alias_tickers(text, watchlist)
+        extract_dollar_tickers(headline_text)
+        + extract_uppercase_ticker_mentions(headline_text, watchlist)
+        + extract_alias_tickers(headline_text, watchlist)
     ):
         if symbol and symbol not in tickers:
             tickers.append(symbol)

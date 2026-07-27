@@ -145,6 +145,7 @@ def calculate_rvol(intraday: pd.DataFrame, today_date) -> float:
     today_data = intraday[intraday.index.date == today_date]
     if today_data.empty:
         return 0.0
+    current_time = today_data.index[-1].time()
     today_volume = float(today_data["Volume"].sum())
     previous_volumes = []
     for session_date in sorted(set(intraday.index.date)):
@@ -152,7 +153,10 @@ def calculate_rvol(intraday: pd.DataFrame, today_date) -> float:
             continue
         session = intraday[intraday.index.date == session_date]
         if len(session) >= 50:
-            vol = float(session["Volume"].sum())
+            session_to_time = session[session.index.time <= current_time]
+            if session_to_time.empty:
+                continue
+            vol = float(session_to_time["Volume"].sum())
             if vol > 0:
                 previous_volumes.append(vol)
     return today_volume / (sum(previous_volumes) / len(previous_volumes)) if previous_volumes else 0.0

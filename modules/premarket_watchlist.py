@@ -3,8 +3,9 @@ from __future__ import annotations
 """Dynamic premarket watchlist builder.
 
 This module is intentionally separate from the live strategy and order engine.
-It builds a small daily symbol list from unusual premarket volume, saves it to
-exports, and exposes a helper that combines it with the user's manual watchlist.
+It builds a small daily suggested symbol list from premarket volume and
+headline-confirmed catalysts, saves it to exports, and exposes a helper that
+combines it with the user's manual watchlist when configured.
 """
 
 import json
@@ -34,6 +35,17 @@ DEFAULT_SOURCE_UNIVERSE = [
     "RBLX", "HOOD", "SOFI", "RKLB", "HIMS", "CRWD",
 ]
 
+CATALYST_CATEGORY_LABELS = {
+    "analyst_upgrade": "upgrade",
+    "analyst_downgrade": "downgrade",
+    "earnings": "earnings",
+    "breaking": "breaking news",
+    "ma": "M&A",
+    "sec": "SEC filing",
+    "lawsuit": "legal catalyst",
+    "options": "options flow",
+}
+
 
 def dynamic_config(config: dict) -> dict:
     raw = config.get("dynamic_watchlist", {}) if isinstance(config, dict) else {}
@@ -41,6 +53,7 @@ def dynamic_config(config: dict) -> dict:
     return {
         "enabled": bool(cfg.get("enabled", False)),
         "mode": str(cfg.get("mode", "Manual")),
+        "suggestive_only": bool(cfg.get("suggestive_only", True)),
         "max_symbols": int(cfg.get("max_symbols", 5)),
         "refresh_hour": int(cfg.get("refresh_hour", 9)),
         "refresh_minute": int(cfg.get("refresh_minute", 30)),
@@ -93,7 +106,7 @@ def is_today_payload(payload: dict, now: datetime | None = None) -> bool:
 
 def today_dynamic_symbols(config: dict, now: datetime | None = None) -> list[str]:
     cfg = dynamic_config(config)
-    if not cfg["enabled"]:
+    if not cfg["enabled"] or cfg["suggestive_only"]:
         return []
     payload = load_dynamic_payload()
     if not is_today_payload(payload, now):
@@ -195,7 +208,8 @@ def score_premarket_symbol(provider, symbol: str, now: datetime | None = None) -
     range_score = min(range_pct * 5.0, 10.0)
     proximity = _pmb_level_proximity_score(pm_close, previous_close, previous_levels.get("high"), previous_levels.get("low"))
     catalyst = _latest_catalyst(symbol)
-    catalyst_score = 10.0 if catalyst else 0.0
+    catalyst_categories = [str(c).lower() for c in getattr(catalyst, "categories", ())] if catalyst else []
+    catalyst_score = _catalyst_score(catalyst)
     gap_extension_penalty = min(max(abs(gap_pct) - 3.0, 0.0) * 5.0, 15.0)
     score = round(max(0.0, min(100.0, unusual_volume_score + liquidity_score + range_score + proximity["score"] + catalyst_score - gap_extension_penalty)), 2)
 
@@ -204,12 +218,22 @@ def score_premarket_symbol(provider, symbol: str, now: datetime | None = None) -
         reasons.append(f"premarket RVOL {premarket_relative_volume:.2f}x")
     if pm_volume >= 250_000:
         reasons.append(f"premarket volume {int(pm_volume):,}")
+    if abs(gap_pct) >= 1.5:
+        reasons.append(f"gap {gap_pct:+.2f}%")
     if proximity["distance_pct"] is not None and proximity["distance_pct"] <= 2.0:
         reasons.append(f"near {proximity['level_name']} ({proximity['distance_pct']:.2f}%)")
     if range_pct >= 1.0:
         reasons.append(f"range {range_pct:.2f}%")
     if catalyst:
-        reasons.append("news catalyst")
+        catalyst_labels = [
+            CATALYST_CATEGORY_LABELS.get(category, category.replace("_", " "))
+            for category in catalyst_categories
+            if category in CATALYST_CATEGORY_LABELS
+        ]
+        if catalyst_labels:
+            reasons.append(" / ".join(catalyst_labels[:2]))
+        else:
+            reasons.append("headline news")
     if abs(gap_pct) >= 3.0:
         reasons.append(f"extended gap {gap_pct:.2f}%")
 
@@ -230,6 +254,10 @@ def score_premarket_symbol(provider, symbol: str, now: datetime | None = None) -
         "previous_close": round(previous_close, 2),
         "premarket_last": round(pm_close, 2),
         "has_news": bool(catalyst),
+        "news_headline": getattr(catalyst, "headline", "") if catalyst else "",
+        "news_impact_score": int(getattr(catalyst, "impact_score", 0) or 0) if catalyst else 0,
+        "news_categories": catalyst_categories,
+        "news_sentiment": str(getattr(catalyst, "sentiment", "") or "") if catalyst else "",
         "unusual_volume_score": round(unusual_volume_score, 2),
         "liquidity_score": round(liquidity_score, 2),
         "range_score": round(range_score, 2),
@@ -326,6 +354,20 @@ def _latest_catalyst(symbol: str):
     try:
         from modules.news_bridge import get_latest_catalyst
 
-        return get_latest_catalyst(symbol, min_impact=70, lookback_hours=24)
+        return get_latest_catalyst(symbol, min_impact=60, lookback_hours=24)
     except Exception:
         return None
+
+
+def _catalyst_score(catalyst) -> float:
+    if not catalyst:
+        return 0.0
+    categories = {str(c).lower() for c in getattr(catalyst, "categories", ())}
+    base = min(float(getattr(catalyst, "impact_score", 0) or 0) * 0.22, 18.0)
+    if categories & {"analyst_upgrade", "analyst_downgrade"}:
+        base += 7.0
+    if "earnings" in categories:
+        base += 8.0
+    if categories & {"breaking", "ma", "sec", "lawsuit"}:
+        base += 5.0
+    return min(base, 30.0)
