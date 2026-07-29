@@ -34,6 +34,8 @@ class OptionSimulationConfig:
     max_daily_exposure_pct: float = 40.0
     max_spend_per_trade: float = 250.0
     max_daily_capital: float = 500.0
+    recycle_capital_after_exit: bool = False
+    reserve_capital_for_remaining_trades: bool = True
     # 0 = no fixed contract cap; size by budget/buying power.
     max_contracts: int = 0
     option_dte: int = 7
@@ -47,7 +49,11 @@ class OptionSimulationConfig:
     breakeven_trigger_pct: float = 15.0
     trailing_trigger_pct: float = 25.0
     trailing_stop_pct: float = 10.0
+    entry_cutoff_time: dtime = dtime(11, 0)
+    force_exit_enabled: bool = True
     force_exit_time: dtime = dtime(15, 55)
+    max_consecutive_losses: int = 2
+    max_daily_drawdown_pct: float = 5.0
     commission_per_contract: float = 0.65
     slippage_pct: float = 2.0
     theta_decay_pct_per_day: float = 5.0
@@ -248,6 +254,7 @@ def calculate_position_size(
     config: OptionSimulationConfig,
     daily_capital_used: float,
     day_start_equity: float | None = None,
+    remaining_trades: int | None = None,
 ) -> PositionSize:
     buying_power_before = float(account.buying_power)
     current_equity = float(account.equity)
@@ -267,6 +274,8 @@ def calculate_position_size(
             max_daily_capital = current_equity
 
     remaining_daily_capital = max(0.0, float(max_daily_capital) - float(daily_capital_used))
+    if bool(getattr(config, "reserve_capital_for_remaining_trades", True)) and remaining_trades and int(remaining_trades) > 0:
+        remaining_daily_capital = min(remaining_daily_capital, remaining_daily_capital / int(remaining_trades))
 
     allowed_budget = min(
         position_budget,
@@ -380,6 +389,7 @@ def _simulate_single_trade(
     account: SimulatedAccount,
     daily_capital_used: float,
     day_start_equity: float | None = None,
+    remaining_trades: int | None = None,
 ) -> tuple[dict | None, dict, float]:
     symbol = str(signal_row.get("symbol") or signal_row.get("Symbol") or "").strip().upper()
     signal = str(signal_row.get("signal") or signal_row.get("Signal") or "").strip().upper()
@@ -437,7 +447,14 @@ def _simulate_single_trade(
 
     entry_premium_mid = round(float(option_bars.iloc[0]["Close"]), 2) if uses_real_option_bars else estimate_entry_premium(entry_underlying, config)
     entry_premium = round(entry_premium_mid * (1 + float(config.slippage_pct) / 100.0), 2)
-    sizing = calculate_position_size(entry_premium, account, config, daily_capital_used, day_start_equity=day_start_equity)
+    sizing = calculate_position_size(
+        entry_premium,
+        account,
+        config,
+        daily_capital_used,
+        day_start_equity=day_start_equity,
+        remaining_trades=remaining_trades,
+    )
 
     if sizing.quantity <= 0:
         return None, _base_decision(
@@ -514,7 +531,7 @@ def _simulate_single_trade(
         pnl_pct = ((current_premium - entry_premium) / entry_premium) * 100.0 if entry_premium else 0.0
 
         reason = None
-        if ts.time() >= config.force_exit_time:
+        if bool(getattr(config, "force_exit_enabled", True)) and ts.time() >= config.force_exit_time:
             reason = "End-of-day forced exit"
         elif trailing_active and current_premium <= current_stop:
             reason = "Trailing stop hit"
@@ -562,11 +579,14 @@ def _simulate_single_trade(
             exit_reason = reason
             break
 
-    if exit_reason == "End-of-day forced exit" and not uses_real_option_bars:
+    if exit_reason == "End-of-day forced exit" and not bool(getattr(config, "force_exit_enabled", True)):
+        exit_reason = "Session close"
+
+    if exit_reason in {"End-of-day forced exit", "Session close"} and not uses_real_option_bars:
         final_minutes_held = max(0.0, (exit_ts - entry_ts).total_seconds() / 60.0)
         exit_pricing_components = _price_model_components(signal, entry_underlying, exit_underlying, entry_premium_mid, final_minutes_held, config)
         exit_premium_mid = float(exit_pricing_components["mark"])
-    elif exit_reason == "End-of-day forced exit" and uses_real_option_bars:
+    elif exit_reason in {"End-of-day forced exit", "Session close"} and uses_real_option_bars:
         exit_premium_mid = round(float(price_bars.iloc[-1]["Close"]), 2)
 
     # Directional consistency guard for the Yahoo approximate pricing model.
@@ -597,7 +617,11 @@ def _simulate_single_trade(
     hold_minutes = round(max(0.0, (exit_ts - entry_ts).total_seconds() / 60.0), 1)
 
     account.close_position(exit_credit=exit_credit, realized_pnl=realized_pnl, commissions=total_commissions)
-    daily_capital_used = round(float(daily_capital_used) + sizing.entry_cost, 2)
+    daily_capital_used = (
+        round(float(daily_capital_used) + sizing.entry_cost, 2)
+        if not bool(getattr(config, "recycle_capital_after_exit", False))
+        else round(float(daily_capital_used), 2)
+    )
 
     trade = {
         "entry_time": entry_ts,
@@ -718,6 +742,8 @@ def simulate_option_trades_with_decisions(
     day_trade_counts: dict[str, int] = {}
     day_capital_used: dict[str, float] = {}
     day_start_equity: dict[str, float] = {}
+    day_realized_pnl: dict[str, float] = {}
+    day_consecutive_losses: dict[str, int] = {}
     traded_symbols_by_day: dict[str, set[str]] = {}
 
     if not clean_data:
@@ -735,7 +761,40 @@ def simulate_option_trades_with_decisions(
         day_key = ts.date().isoformat()
 
         day_start_equity.setdefault(day_key, float(account.equity))
+        max_daily_loss = -abs(float(day_start_equity[day_key]) * float(getattr(config, "max_daily_drawdown_pct", 5.0)) / 100.0)
 
+        if ts.time() > getattr(config, "entry_cutoff_time", dtime(11, 0)):
+            decisions.append(_base_decision(
+                row_dict,
+                "SKIPPED",
+                "Entry cutoff time passed",
+                "RISK",
+                entry_cutoff_time=str(getattr(config, "entry_cutoff_time", dtime(11, 0))),
+                buying_power_before=round(account.buying_power, 2),
+            ))
+            continue
+        if day_consecutive_losses.get(day_key, 0) >= int(getattr(config, "max_consecutive_losses", 2)):
+            decisions.append(_base_decision(
+                row_dict,
+                "SKIPPED",
+                "Consecutive loss risk lock active",
+                "RISK",
+                consecutive_losses=day_consecutive_losses.get(day_key, 0),
+                max_consecutive_losses=int(getattr(config, "max_consecutive_losses", 2)),
+                buying_power_before=round(account.buying_power, 2),
+            ))
+            continue
+        if float(day_realized_pnl.get(day_key, 0.0)) <= max_daily_loss:
+            decisions.append(_base_decision(
+                row_dict,
+                "SKIPPED",
+                "Daily drawdown risk lock active",
+                "RISK",
+                realized_pnl_today=round(float(day_realized_pnl.get(day_key, 0.0)), 2),
+                max_daily_loss=round(float(max_daily_loss), 2),
+                buying_power_before=round(account.buying_power, 2),
+            ))
+            continue
         if day_trade_counts.get(day_key, 0) >= int(config.max_trades_per_day):
             decisions.append(_base_decision(row_dict, "SKIPPED", "Max trades/day reached", "RISK", max_trades_per_day=int(config.max_trades_per_day), buying_power_before=round(account.buying_power, 2)))
             continue
@@ -750,6 +809,7 @@ def simulate_option_trades_with_decisions(
             account,
             day_capital_used.get(day_key, 0.0),
             day_start_equity.get(day_key, float(account.equity)),
+            max(0, int(config.max_trades_per_day) - day_trade_counts.get(day_key, 0)),
         )
         if trade is None:
             decisions.append(decision)
@@ -758,6 +818,9 @@ def simulate_option_trades_with_decisions(
         trades.append(trade)
         day_trade_counts[day_key] = day_trade_counts.get(day_key, 0) + 1
         day_capital_used[day_key] = new_daily_used
+        trade_pnl = float(trade.get("realized_pnl", 0.0) or 0.0)
+        day_realized_pnl[day_key] = round(float(day_realized_pnl.get(day_key, 0.0)) + trade_pnl, 2)
+        day_consecutive_losses[day_key] = day_consecutive_losses.get(day_key, 0) + 1 if trade_pnl < 0 else 0
         traded_symbols_by_day.setdefault(day_key, set()).add(symbol)
         decision["trade_no"] = len(trades)
         decisions.append(decision)

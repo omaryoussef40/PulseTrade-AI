@@ -47,6 +47,7 @@ from bot_core import (
     recommend_option_ib,
     reconstruct_option_contract,
     scan_symbol_ib,
+    send_position_closed_telegram_message,
     send_telegram_message,
     save_trade_replay,
     sync_active_positions_from_broker,
@@ -64,6 +65,17 @@ PENDING_APPROVALS_FILE = EXPORT_DIR / "pending_order_approvals.json"
 TELEGRAM_APPROVAL_STATE_FILE = EXPORT_DIR / "telegram_approval_state.json"
 ENGINE_DECISIONS_FILE = EXPORT_DIR / "engine_decisions.csv"
 CURRENT_SCAN_CANDIDATES_FILE = EXPORT_DIR / "current_scan_candidates.json"
+
+
+def notify_position_close_events(tg_cfg: TelegramConfig, events: list[dict] | None) -> int:
+    sent = 0
+    for event in events or []:
+        try:
+            if send_position_closed_telegram_message(tg_cfg, event):
+                sent += 1
+        except Exception as exc:
+            app_log(f"Telegram close alert failed for {event.get('Symbol')}: {exc}", "WARN")
+    return sent
 
 
 def _is_pid_running(pid: int) -> bool:
@@ -788,6 +800,9 @@ def run_cycle() -> None:
     )
     if management_events:
         app_log(f"Managed open positions | events={len(management_events)}")
+        close_alerts = notify_position_close_events(tg_cfg, management_events)
+        if close_alerts:
+            app_log(f"Telegram position close alerts sent | count={close_alerts}")
 
     consecutive_losses, realized_pnl_today = get_today_loss_stats()
     account_size = max(float(risk.get("account_size", 1000) or 1000), 1.0)
@@ -1527,6 +1542,15 @@ def run_broker_sync_cycle() -> None:
         sync_events = list(added_events or []) + list(reconcile_events or [])
         if sync_events:
             app_log(f"IBKR live trade sync updated positions | events={len(sync_events)}")
+            close_alerts = notify_position_close_events(
+                TelegramConfig(
+                    bot_token=cfg.get("telegram", {}).get("bot_token", ""),
+                    chat_id=cfg.get("telegram", {}).get("chat_id", ""),
+                ),
+                sync_events,
+            )
+            if close_alerts:
+                app_log(f"Telegram position close alerts sent | count={close_alerts}")
         write_health(
             engine_running=True,
             market_open=is_market_open_now(cfg),

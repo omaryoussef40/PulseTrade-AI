@@ -57,6 +57,8 @@ class StrategyLabSettings:
     # Backward-compatible fixed-dollar fields. Used only when sizing_method is fixed_dollar.
     max_spend_per_trade: float = 250.0
     max_daily_capital: float = 500.0
+    recycle_capital_after_exit: bool = False
+    reserve_capital_for_remaining_trades: bool = True
     # 0 = no fixed contract cap; Strategy Lab sizes by budget.
     max_contracts: int = 0
     option_dte_values: tuple[int, ...] = (7,)
@@ -65,8 +67,13 @@ class StrategyLabSettings:
     breakeven_trigger_pct: float = 15.0
     trailing_trigger_pct: float = 25.0
     trailing_stop_pct: float = 10.0
+    entry_cutoff_hour: int = 11
+    entry_cutoff_minute: int = 0
+    force_exit_enabled: bool = True
     force_exit_hour: int = 15
     force_exit_minute: int = 55
+    max_consecutive_losses: int = 2
+    max_daily_drawdown_pct: float = 5.0
     premium_pct: float = 0.0025
     slippage_pct: float = 2.0
     allow_same_symbol_same_day: bool = False
@@ -339,6 +346,8 @@ class StrategyLabController:
                 max_daily_exposure_pct=float(settings.max_daily_exposure_pct),
                 max_spend_per_trade=float(settings.max_spend_per_trade),
                 max_daily_capital=float(settings.max_daily_capital),
+                recycle_capital_after_exit=bool(settings.recycle_capital_after_exit),
+                reserve_capital_for_remaining_trades=bool(settings.reserve_capital_for_remaining_trades),
                 max_contracts=int(settings.max_contracts),
                 option_dte=int(option_dte),
                 option_bars_provider=option_bars_provider,
@@ -347,7 +356,11 @@ class StrategyLabController:
                 breakeven_trigger_pct=float(settings.breakeven_trigger_pct),
                 trailing_trigger_pct=float(settings.trailing_trigger_pct),
                 trailing_stop_pct=float(settings.trailing_stop_pct),
+                entry_cutoff_time=dtime(int(settings.entry_cutoff_hour), int(settings.entry_cutoff_minute)),
+                force_exit_enabled=bool(settings.force_exit_enabled),
                 force_exit_time=dtime(int(settings.force_exit_hour), int(settings.force_exit_minute)),
+                max_consecutive_losses=int(settings.max_consecutive_losses),
+                max_daily_drawdown_pct=float(settings.max_daily_drawdown_pct),
                 premium_pct=float(settings.premium_pct),
                 slippage_pct=float(settings.slippage_pct),
                 allow_same_symbol_same_day=bool(settings.allow_same_symbol_same_day),

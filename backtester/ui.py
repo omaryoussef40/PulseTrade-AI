@@ -103,7 +103,7 @@ def _render_dte_result(dte: int, comparison: pd.DataFrame, trades: pd.DataFrame)
     st.plotly_chart(fig, use_container_width=True)
 
 
-def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbols: list[str], selected_strategies: list[str], period: str, interval: str, max_symbols: int, force_refresh: bool, data_source: str, orb_minutes: int, first_signal_minutes: int, min_session_bars: int, visual_updates: bool, option_dte_values: list[int], premium_pct_ui: float, slippage_pct: float, allow_same_symbol: bool) -> None:
+def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbols: list[str], selected_strategies: list[str], period: str, interval: str, max_symbols: int, force_refresh: bool, data_source: str, orb_minutes: int, first_signal_minutes: int, min_session_bars: int, visual_updates: bool, option_dte_values: list[int], premium_pct_ui: float, slippage_pct: float, allow_same_symbol: bool, risk_overrides: dict | None = None) -> None:
     config.setdefault("strategy_lab", {})
     config["watchlist"] = list(selected_symbols)
     config["strategy_lab"] = {
@@ -123,6 +123,8 @@ def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbo
         "slippage_pct": float(slippage_pct),
         "allow_same_symbol": bool(allow_same_symbol),
     }
+    if risk_overrides:
+        config["strategy_lab"].update(risk_overrides)
     if save_config is not None:
         save_config(config)
 
@@ -240,8 +242,21 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
                 max_spend = st.number_input("Max spend/trade USD", min_value=50.0, value=float(risk.get("max_spend_per_trade", 250)), step=50.0, key="sl_spend")
                 default_daily_capital = max(float(risk.get("max_daily_capital", 0) or 0), float(risk.get("account_size", 1000)), float(max_spend))
                 max_daily_capital = st.number_input("Max daily capital USD", min_value=50.0, value=default_daily_capital, step=50.0, key="sl_daily_cap")
+            reserve_capital = st.checkbox("Reserve capital for remaining trades", value=bool(lab_cfg.get("reserve_capital_for_remaining_trades", risk.get("reserve_capital_for_remaining_trades", True))), key="sl_reserve_capital")
+            recycle_capital = st.checkbox("Recycle capital after exits", value=bool(lab_cfg.get("recycle_capital_after_exit", risk.get("recycle_capital_after_exit", False))), key="sl_recycle_capital")
+            max_contracts = st.number_input("Max contracts/trade", min_value=0, max_value=100, value=int(lab_cfg.get("max_contracts", risk.get("max_contracts", 0) or 0)), step=1, key="sl_max_contracts", help="0 means no fixed contract cap.")
             stop_loss = st.number_input("Stop loss %", min_value=1.0, max_value=90.0, value=float(risk.get("stop_loss_pct", 20.0)), step=1.0, key="sl_stop")
             take_profit = st.number_input("Take profit %", min_value=1.0, max_value=300.0, value=float(risk.get("take_profit_pct", 30.0)), step=1.0, key="sl_tp")
+            breakeven_trigger = st.number_input("Move stop to breakeven at +%", min_value=1.0, max_value=200.0, value=float(lab_cfg.get("breakeven_trigger_pct", risk.get("breakeven_trigger_pct", 15.0))), step=1.0, key="sl_breakeven")
+            trailing_trigger = st.number_input("Activate trailing stop at +%", min_value=1.0, max_value=300.0, value=float(lab_cfg.get("trailing_trigger_pct", risk.get("trailing_trigger_pct", 25.0))), step=1.0, key="sl_trailing_trigger")
+            trailing_stop = st.number_input("Trailing stop distance %", min_value=1.0, max_value=90.0, value=float(lab_cfg.get("trailing_stop_pct", risk.get("trailing_stop_pct", 10.0))), step=1.0, key="sl_trailing_stop")
+            entry_cutoff_hour = st.number_input("No entries after hour ET", min_value=9, max_value=15, value=int(lab_cfg.get("entry_cutoff_hour", risk.get("entry_cutoff_hour", 11))), step=1, key="sl_entry_cutoff_hour")
+            entry_cutoff_minute = st.number_input("No entries after minute ET", min_value=0, max_value=59, value=int(lab_cfg.get("entry_cutoff_minute", risk.get("entry_cutoff_minute", 0))), step=1, key="sl_entry_cutoff_minute")
+            force_exit_enabled = st.checkbox("Force exit near end of day", value=bool(lab_cfg.get("force_exit_enabled", risk.get("force_exit_enabled", True))), key="sl_force_exit_enabled")
+            force_exit_hour = st.number_input("Force exit hour ET", min_value=9, max_value=15, value=int(lab_cfg.get("force_exit_hour", risk.get("force_exit_hour", 15))), step=1, key="sl_force_exit_hour")
+            force_exit_minute = st.number_input("Force exit minute ET", min_value=0, max_value=59, value=int(lab_cfg.get("force_exit_minute", risk.get("force_exit_minute", 55))), step=1, key="sl_force_exit_minute")
+            max_consecutive_losses = st.number_input("Stop after consecutive losses", min_value=1, max_value=10, value=int(lab_cfg.get("max_consecutive_losses", risk.get("max_consecutive_losses", 2))), step=1, key="sl_max_consecutive_losses")
+            max_daily_drawdown_pct = st.number_input("Max daily drawdown %", min_value=1.0, max_value=50.0, value=float(lab_cfg.get("max_daily_drawdown_pct", risk.get("max_daily_drawdown_pct", 5.0))), step=1.0, key="sl_max_daily_drawdown")
             saved_dtes = [int(v) for v in lab_cfg.get("option_dte_values", [7, 14]) if int(v) in [7, 14]]
             option_dte_values = st.multiselect("Compare option DTE", [7, 14], default=saved_dtes or [7, 14], format_func=lambda value: f"{value} DTE", key="sl_option_dtes")
             premium_pct_ui = st.number_input("Entry premium % of stock", min_value=0.1, max_value=10.0, value=float(lab_cfg.get("premium_pct_ui", 0.25)), step=0.05, key="sl_premium_v092")
@@ -269,22 +284,64 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         max_daily_exposure_pct=float(daily_exposure_pct),
         max_spend_per_trade=float(max_spend),
         max_daily_capital=float(max_daily_capital),
-        max_contracts=0,  # 0 = unlimited; Strategy Lab buys as many contracts as budget allows.
+        recycle_capital_after_exit=bool(recycle_capital),
+        reserve_capital_for_remaining_trades=bool(reserve_capital),
+        max_contracts=int(max_contracts),
         option_dte_values=tuple(int(v) for v in option_dte_values),
         stop_loss_pct=float(stop_loss),
         take_profit_pct=float(take_profit),
-        breakeven_trigger_pct=float(risk.get("breakeven_trigger_pct", 15.0)),
-        trailing_trigger_pct=float(risk.get("trailing_trigger_pct", 25.0)),
-        trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
-        force_exit_hour=int(risk.get("force_exit_hour", 15)),
-        force_exit_minute=int(risk.get("force_exit_minute", 55)),
+        breakeven_trigger_pct=float(breakeven_trigger),
+        trailing_trigger_pct=float(trailing_trigger),
+        trailing_stop_pct=float(trailing_stop),
+        entry_cutoff_hour=int(entry_cutoff_hour),
+        entry_cutoff_minute=int(entry_cutoff_minute),
+        force_exit_enabled=bool(force_exit_enabled),
+        force_exit_hour=int(force_exit_hour),
+        force_exit_minute=int(force_exit_minute),
+        max_consecutive_losses=int(max_consecutive_losses),
+        max_daily_drawdown_pct=float(max_daily_drawdown_pct),
         premium_pct=float(premium_pct_ui) / 100.0,
         slippage_pct=float(slippage_pct),
         allow_same_symbol_same_day=bool(allow_same_symbol),
         selected_strategies=tuple(selected_strategies),
         data_source=str(data_source),
     )
-    _save_strategy_lab_settings(config, symbols, selected_all_symbols, selected_strategies, period, interval, max_symbols, force_refresh, data_source, orb_minutes, first_signal_minutes, min_session_bars, visual_updates, list(option_dte_values), premium_pct_ui, slippage_pct, allow_same_symbol)
+    _save_strategy_lab_settings(
+        config,
+        symbols,
+        selected_all_symbols,
+        selected_strategies,
+        period,
+        interval,
+        max_symbols,
+        force_refresh,
+        data_source,
+        orb_minutes,
+        first_signal_minutes,
+        min_session_bars,
+        visual_updates,
+        list(option_dte_values),
+        premium_pct_ui,
+        slippage_pct,
+        allow_same_symbol,
+        {
+            "max_contracts": int(max_contracts),
+            "recycle_capital_after_exit": bool(recycle_capital),
+            "reserve_capital_for_remaining_trades": bool(reserve_capital),
+            "stop_loss_pct": float(stop_loss),
+            "take_profit_pct": float(take_profit),
+            "breakeven_trigger_pct": float(breakeven_trigger),
+            "trailing_trigger_pct": float(trailing_trigger),
+            "trailing_stop_pct": float(trailing_stop),
+            "entry_cutoff_hour": int(entry_cutoff_hour),
+            "entry_cutoff_minute": int(entry_cutoff_minute),
+            "force_exit_enabled": bool(force_exit_enabled),
+            "force_exit_hour": int(force_exit_hour),
+            "force_exit_minute": int(force_exit_minute),
+            "max_consecutive_losses": int(max_consecutive_losses),
+            "max_daily_drawdown_pct": float(max_daily_drawdown_pct),
+        },
+    )
 
     if st.button("Run Backtest", use_container_width=True, key="sl_run"):
         if not symbols:

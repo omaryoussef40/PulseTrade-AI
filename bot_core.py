@@ -20,6 +20,7 @@ import json
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta, time as dtime
+from html import escape
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -162,6 +163,55 @@ def send_telegram_message(cfg: TelegramConfig, text: str) -> bool:
         return response.status_code == 200
     except Exception:
         return False
+
+
+def format_position_closed_telegram_message(event: dict) -> str:
+    symbol = escape(str(event.get("Symbol") or event.get("symbol") or ""))
+    option = escape(str(event.get("Option") or event.get("option") or ""))
+    reason = escape(str(event.get("Reason") or event.get("exit_reason") or "Position closed"))
+    status = escape(str(event.get("Status") or event.get("status") or ""))
+    qty = event.get("Quantity") or event.get("quantity") or event.get("Qty")
+
+    pnl = _number_or_none(event.get("P/L $"))
+    if pnl is None:
+        pnl = _number_or_none(event.get("realized_pnl"))
+    pnl = float(pnl or 0.0)
+    pnl_label = f"+${pnl:,.2f}" if pnl > 0 else f"-${abs(pnl):,.2f}" if pnl < 0 else "$0.00"
+
+    entry = _number_or_none(event.get("Entry") or event.get("entry_price"))
+    exit_price = _number_or_none(event.get("Current") or event.get("exit_price"))
+    lines = [
+        "<b>Position Closed</b>",
+        f"Symbol: <b>{symbol}</b>",
+    ]
+    if option:
+        lines.append(f"Option: <b>{option}</b>")
+    if qty:
+        lines.append(f"Qty: <b>{escape(str(qty))}</b>")
+    lines.extend([
+        f"Reason: <b>{reason}</b>",
+        f"P/L: <b>{pnl_label}</b>",
+    ])
+    if entry is not None:
+        lines.append(f"Entry: <b>${float(entry):,.2f}</b>")
+    if exit_price is not None:
+        lines.append(f"Exit: <b>${float(exit_price):,.2f}</b>")
+    if status:
+        lines.append(f"Status: {status}")
+    return "\n".join(lines)
+
+
+def send_position_closed_telegram_message(cfg: TelegramConfig, event: dict) -> bool:
+    action = str(event.get("Action") or event.get("action") or "").upper()
+    reason = str(event.get("Reason") or event.get("exit_reason") or "")
+    status = str(event.get("Status") or event.get("status") or "")
+    is_broker_closed = action == "REMOVED" and (
+        "Position not found at IBKR" in reason
+        or "no broker position exists" in status
+    )
+    if action not in {"EXIT", "EXTERNAL_CLOSE"} and not is_broker_closed:
+        return False
+    return send_telegram_message(cfg, format_position_closed_telegram_message(event))
 
 
 def log_alert(row: dict):
@@ -1954,6 +2004,58 @@ def _position_matches_broker_position(pos: dict, broker_pos) -> bool:
     )
 
 
+def _latest_logged_exit_for_position(pos: dict) -> dict:
+    if not os.path.exists(TRADE_LOG_FILE):
+        return {}
+    try:
+        df = pd.read_csv(TRADE_LOG_FILE)
+    except Exception:
+        return {}
+    if df.empty or "event" not in df.columns:
+        return {}
+
+    exits = df[df["event"].fillna("").astype(str).str.upper().isin(["EXIT", "EXTERNAL_CLOSE"])].copy()
+    if exits.empty:
+        return {}
+
+    option = str(pos.get("option") or "")
+    con_id = str(pos.get("con_id") or "")
+    symbol = str(pos.get("symbol") or "").upper()
+    mask = pd.Series(False, index=exits.index)
+    if option and "option" in exits.columns:
+        mask = mask | exits["option"].fillna("").astype(str).eq(option)
+    if con_id and "con_id" in exits.columns:
+        mask = mask | exits["con_id"].fillna("").astype(str).eq(con_id)
+    if not option and not con_id and symbol and "symbol" in exits.columns:
+        mask = mask | exits["symbol"].fillna("").astype(str).str.upper().eq(symbol)
+
+    matches = exits[mask].copy()
+    if matches.empty:
+        return {}
+    if "timestamp" in matches.columns:
+        matches["_ts"] = pd.to_datetime(matches["timestamp"], errors="coerce", utc=True)
+        entry_ts = pd.to_datetime(pos.get("entry_time") or pos.get("timestamp") or pos.get("opened_at"), errors="coerce", utc=True)
+        if not pd.isna(entry_ts):
+            matches = matches[matches["_ts"].isna() | (matches["_ts"] >= entry_ts)]
+            if matches.empty:
+                return {}
+        matches = matches.sort_values("_ts", na_position="first")
+    row = matches.iloc[-1].to_dict()
+    return {str(k): v for k, v in row.items() if k != "_ts"}
+
+
+def _infer_broker_close_reason(pos: dict, exit_price: float | None, fallback: str) -> str:
+    if exit_price is None:
+        return fallback
+    stop_price = _number_or_none(pos.get("current_stop_price"))
+    take_profit_price = _number_or_none(pos.get("take_profit_price"))
+    if stop_price is not None and float(exit_price) <= float(stop_price) + 0.01:
+        return "Protective stop filled"
+    if take_profit_price is not None and float(exit_price) >= float(take_profit_price) - 0.01:
+        return "Protective take profit filled"
+    return fallback
+
+
 def reconcile_active_positions_with_broker(ib: IB, account: str | None = None, log_closures: bool = True) -> list[dict]:
     """Remove or resize bot-managed positions that no longer exist at IBKR.
 
@@ -1993,11 +2095,24 @@ def reconcile_active_positions_with_broker(ib: IB, account: str | None = None, l
         local_qty = int(pos.get("quantity", 0) or 0)
 
         if broker_qty <= 0:
+            logged_exit = _latest_logged_exit_for_position(pos)
+            exit_price = _number_or_none(logged_exit.get("exit_price"))
+            entry_price = _number_or_none(pos.get("entry_price"))
+            realized_pnl = _number_or_none(logged_exit.get("realized_pnl"))
+            if realized_pnl is None and exit_price is not None and entry_price is not None:
+                realized_pnl = round((float(exit_price) - float(entry_price)) * max(local_qty, 0) * 100, 2)
+            close_reason = str(logged_exit.get("exit_reason") or "").strip()
+            if not close_reason:
+                close_reason = _infer_broker_close_reason(pos, exit_price, "Position not found at IBKR")
             events.append({
                 "Symbol": pos.get("symbol"),
                 "Option": pos.get("option"),
                 "Action": "REMOVED",
-                "Reason": "Position not found at IBKR",
+                "Reason": close_reason,
+                "Quantity": local_qty,
+                "Entry": entry_price,
+                "Current": exit_price,
+                "P/L $": round(float(realized_pnl or 0.0), 2),
                 "Status": "Closed manually or no broker position exists",
             })
             if log_closures:
@@ -2247,6 +2362,7 @@ def manage_open_positions(
                     "Option": pos.get("option"),
                     "Action": "EXIT",
                     "Reason": reason,
+                    "Quantity": pos.get("quantity"),
                     "Entry": entry_price,
                     "Current": round(current_price, 2),
                     "P/L %": round(pnl_pct, 1),

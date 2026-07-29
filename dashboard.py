@@ -1975,6 +1975,17 @@ def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig
                                 f"Market close submitted for {position.get('symbol')} | "
                                 f"status {getattr(trade.orderStatus, 'status', 'Submitted')} | est P/L ${realized:,.2f}"
                             )
+                            send_position_closed_telegram_message(tg_cfg, {
+                                "Symbol": position.get("symbol"),
+                                "Option": position.get("option"),
+                                "Action": "EXIT",
+                                "Reason": "Dashboard market close",
+                                "Quantity": position.get("quantity"),
+                                "Entry": position.get("entry_price"),
+                                "Current": exit_price,
+                                "P/L $": realized,
+                                "Status": str(getattr(trade.orderStatus, "status", "Submitted")),
+                            })
                             st.rerun(scope="fragment")
                         except Exception as exc:
                             st.error(f"Market close failed: {display_exception_message(exc)}")
@@ -3019,15 +3030,28 @@ def render_yahoo_backtester_tab(config: dict, default_symbols: list[str]):
     with sim_col1:
         sim_starting_capital = st.number_input("Backtest capital USD", min_value=100.0, value=float(risk.get("account_size", 1000)), step=100.0, key="bt_sim_capital")
         sim_max_trades = st.number_input("Max trades/day", min_value=1, max_value=10, value=int(risk.get("max_trades_per_day", 2)), step=1, key="bt_sim_max_trades")
+        sim_max_contracts = st.number_input("Max contracts/trade", min_value=0, max_value=100, value=int(risk.get("max_contracts", 0) or 0), step=1, key="bt_sim_max_contracts", help="0 means no fixed contract cap.")
     with sim_col2:
         sim_spend = st.number_input("Max spend/trade USD", min_value=50.0, value=float(risk.get("max_spend_per_trade", 250)), step=50.0, key="bt_sim_spend")
         sim_daily_cap = st.number_input("Max daily capital USD", min_value=50.0, value=float(risk.get("max_daily_capital", 500)), step=50.0, key="bt_sim_daily_cap")
+        sim_reserve_capital = st.checkbox("Reserve capital for remaining trades", value=bool(risk.get("reserve_capital_for_remaining_trades", True)), key="bt_sim_reserve_capital")
+        sim_recycle_capital = st.checkbox("Recycle capital after exits", value=bool(risk.get("recycle_capital_after_exit", False)), key="bt_sim_recycle_capital")
     with sim_col3:
         sim_stop = st.number_input("Stop loss %", min_value=1.0, max_value=90.0, value=float(risk.get("stop_loss_pct", 20.0)), step=1.0, key="bt_sim_stop")
         sim_tp = st.number_input("Take profit %", min_value=1.0, max_value=300.0, value=float(risk.get("take_profit_pct", 30.0)), step=1.0, key="bt_sim_tp")
+        sim_breakeven = st.number_input("Move stop to breakeven at +%", min_value=1.0, max_value=200.0, value=float(risk.get("breakeven_trigger_pct", 15.0)), step=1.0, key="bt_sim_breakeven")
+        sim_trailing_trigger = st.number_input("Activate trailing stop at +%", min_value=1.0, max_value=300.0, value=float(risk.get("trailing_trigger_pct", 25.0)), step=1.0, key="bt_sim_trailing_trigger")
+        sim_trailing_stop = st.number_input("Trailing stop distance %", min_value=1.0, max_value=90.0, value=float(risk.get("trailing_stop_pct", 10.0)), step=1.0, key="bt_sim_trailing_stop")
     with sim_col4:
         sim_premium_pct = st.number_input("Entry premium % of stock", min_value=0.5, max_value=10.0, value=2.5, step=0.1, key="bt_sim_premium_pct")
         sim_slippage = st.number_input("Slippage %", min_value=0.0, max_value=20.0, value=2.0, step=0.5, key="bt_sim_slippage")
+        sim_entry_cutoff_hour = st.number_input("No entries after hour ET", min_value=9, max_value=15, value=int(risk.get("entry_cutoff_hour", 11)), step=1, key="bt_sim_entry_cutoff_hour")
+        sim_entry_cutoff_minute = st.number_input("No entries after minute ET", min_value=0, max_value=59, value=int(risk.get("entry_cutoff_minute", 0)), step=1, key="bt_sim_entry_cutoff_minute")
+        sim_force_exit_enabled = st.checkbox("Force exit near end of day", value=bool(risk.get("force_exit_enabled", True)), key="bt_sim_force_exit_enabled")
+        sim_force_exit_hour = st.number_input("Force exit hour ET", min_value=9, max_value=15, value=int(risk.get("force_exit_hour", 15)), step=1, key="bt_sim_force_exit_hour")
+        sim_force_exit_minute = st.number_input("Force exit minute ET", min_value=0, max_value=59, value=int(risk.get("force_exit_minute", 55)), step=1, key="bt_sim_force_exit_minute")
+        sim_max_losses = st.number_input("Stop after consecutive losses", min_value=1, max_value=10, value=int(risk.get("max_consecutive_losses", 2)), step=1, key="bt_sim_max_losses")
+        sim_max_daily_dd = st.number_input("Max daily drawdown %", min_value=1.0, max_value=50.0, value=float(risk.get("max_daily_drawdown_pct", 5.0)), step=1.0, key="bt_sim_max_daily_dd")
 
     sim_run_col, sim_note_col = st.columns([2, 1])
     with sim_run_col:
@@ -3058,13 +3082,19 @@ def render_yahoo_backtester_tab(config: dict, default_symbols: list[str]):
                     max_trades_per_day=int(sim_max_trades),
                     max_spend_per_trade=float(sim_spend),
                     max_daily_capital=float(sim_daily_cap),
-                    max_contracts=int(risk.get("max_contracts", 2)),
+                    recycle_capital_after_exit=bool(sim_recycle_capital),
+                    reserve_capital_for_remaining_trades=bool(sim_reserve_capital),
+                    max_contracts=int(sim_max_contracts),
                     stop_loss_pct=float(sim_stop),
                     take_profit_pct=float(sim_tp),
-                    breakeven_trigger_pct=float(risk.get("breakeven_trigger_pct", 15.0)),
-                    trailing_trigger_pct=float(risk.get("trailing_trigger_pct", 25.0)),
-                    trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
-                    force_exit_time=dtime(int(risk.get("force_exit_hour", 15)), int(risk.get("force_exit_minute", 55))),
+                    breakeven_trigger_pct=float(sim_breakeven),
+                    trailing_trigger_pct=float(sim_trailing_trigger),
+                    trailing_stop_pct=float(sim_trailing_stop),
+                    entry_cutoff_time=dtime(int(sim_entry_cutoff_hour), int(sim_entry_cutoff_minute)),
+                    force_exit_enabled=bool(sim_force_exit_enabled),
+                    force_exit_time=dtime(int(sim_force_exit_hour), int(sim_force_exit_minute)),
+                    max_consecutive_losses=int(sim_max_losses),
+                    max_daily_drawdown_pct=float(sim_max_daily_dd),
                     premium_pct=float(sim_premium_pct) / 100.0,
                     slippage_pct=float(sim_slippage),
                     allow_same_symbol_same_day=bool(allow_same_symbol),
