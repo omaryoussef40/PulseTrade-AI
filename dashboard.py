@@ -1888,76 +1888,6 @@ def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig
     except Exception as exc:
         st.warning(f"Could not fetch live IBKR positions: {display_exception_message(exc)}")
 
-    st.markdown("### Bot-Managed Positions")
-    active_positions = read_active_positions()
-    if active_positions:
-        active_df, live_pnl_error = enrich_active_positions_with_live_pnl(active_positions)
-        if "premium_health" in active_df.columns:
-            active_df["Premium Health"] = active_df["premium_health"].fillna("Not checked")
-        else:
-            active_df["Premium Health"] = "Not checked"
-        if live_pnl_error:
-            st.caption(f"Live P/L unavailable: {live_pnl_error}")
-
-        live_rows = active_df.to_dict("records")
-        for idx, position in enumerate(active_positions):
-            live_row = live_rows[idx] if idx < len(live_rows) else position
-            health_label = str(position.get("premium_health") or "Not checked")
-            health_detail = str(position.get("premium_health_detail") or "")
-            pnl_value = _number_or_none(live_row.get("Live P/L"))
-            pnl_style = "color:#16833a;" if pnl_value and pnl_value > 0 else "color:#c2410c;" if pnl_value and pnl_value < 0 else ""
-            live_premium_pct = _number_or_none(live_row.get("Live Premium %"))
-            if live_premium_pct is None:
-                live_premium_pct = _number_or_none(position.get("premium_change_pct"))
-            live_stock_with_trade_pct = _number_or_none(live_row.get("Live Stock With Trade %"))
-            if live_stock_with_trade_pct is None:
-                live_stock_with_trade_pct = _number_or_none(position.get("underlying_move_with_position_pct"))
-            display_health_label = health_label
-            display_health_detail = health_detail
-            if live_premium_pct is not None and live_stock_with_trade_pct is not None:
-                display_health_detail = (
-                    f"Live premium {live_premium_pct:.1f}%; stock is {live_stock_with_trade_pct:.2f}% with trade."
-                )
-                if live_premium_pct <= PREMIUM_HEALTH_WEAK_DROP_PCT:
-                    display_health_label = (
-                        "Weak - stop check pending"
-                        if live_stock_with_trade_pct >= PREMIUM_HEALTH_UNDERLYING_TOLERANCE_PCT
-                        else "Weak but stock against"
-                    )
-                else:
-                    display_health_label = "Healthy"
-            health_is_weak = "weak" in display_health_label.lower()
-            with st.container(border=True):
-                action_cols = st.columns([2.2, 2.2, 2.4])
-                with action_cols[0]:
-                    st.markdown(f"**{position.get('symbol', 'N/A')} {position.get('signal', '')}**")
-                    st.caption(str(position.get("option") or ""))
-                    st.caption(f"Qty {position.get('quantity', 'N/A')} | Entry {_fmt_money_cell(position.get('entry_price'))}")
-                with action_cols[1]:
-                    st.markdown(
-                        f"""
-                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:.35rem .7rem;">
-                            <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Live Price</div><div style="font-weight:800;">{_fmt_money_cell(live_row.get("Live Price"))}</div></div>
-                            <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Live P/L</div><div style="font-weight:800;{pnl_style}">{_fmt_money_cell(live_row.get("Live P/L"))}</div></div>
-                            <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Premium</div><div style="font-weight:800;">{_fmt_pct_cell(live_premium_pct)}</div></div>
-                            <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Stock With Trade</div><div style="font-weight:800;">{_fmt_pct_cell(live_stock_with_trade_pct)}</div></div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                with action_cols[2]:
-                    if health_is_weak:
-                        st.warning(f"{display_health_label}: {display_health_detail}" if display_health_detail else display_health_label)
-                    else:
-                        st.info(f"{display_health_label}: {display_health_detail}" if display_health_detail else display_health_label)
-                    st.caption(
-                        f"Stop {_fmt_money_cell(position.get('current_stop_price'))} | "
-                        f"TP {_fmt_money_cell(position.get('take_profit_price'))}"
-                    )
-                st.caption("Close controls are below this live P/L area so they do not refresh every 5 seconds.")
-    else:
-        st.info("No bot-managed positions. Engine is waiting for a valid signal.")
-
     if st.button("Sync Bot Positions With IBKR", icon=":material/sync:", use_container_width=True):
         sync_ib = None
         try:
@@ -1988,115 +1918,116 @@ def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig
                 pass
 
 
-def render_position_close_controls(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) -> None:
+def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) -> None:
     orders_unlocked = orders_unlocked_from_config(cfg_snapshot)
     readonly = bool(cfg_snapshot.get("ib", {}).get("readonly", False))
     active_positions = read_active_positions()
 
-    st.markdown("### Position Actions")
+    st.markdown("### Bot-Managed Positions")
     if not active_positions:
-        st.info("No bot-managed positions available to close.")
+        st.info("No bot-managed positions. Engine is waiting for a valid signal.")
         return
 
-    labels = []
     for idx, position in enumerate(active_positions):
-        option = str(position.get("option") or "").strip()
-        label = (
-            f"{position.get('symbol', 'N/A')} {position.get('signal', '')} | "
-            f"Qty {position.get('quantity', 'N/A')} | Entry {_fmt_money_cell(position.get('entry_price'))}"
+        position_id = str(position.get("id") or f"{position.get('symbol')}_{idx}")
+        estimated_cost = (
+            float(_number_or_none(position.get("entry_price")) or 0)
+            * float(_number_or_none(position.get("quantity")) or 0)
+            * 100.0
         )
-        labels.append(f"{label} | {option}" if option else label)
-
-    selected_label = st.selectbox("Position to close", labels, key="close_position_selector")
-    selected_idx = labels.index(selected_label)
-    position = active_positions[selected_idx]
-    position_id = str(position.get("id") or f"{position.get('symbol')}_{selected_idx}")
-    estimated_cost = (
-        float(_number_or_none(position.get("entry_price")) or 0)
-        * float(_number_or_none(position.get("quantity")) or 0)
-        * 100.0
-    )
-
-    with st.container(border=True):
-        st.markdown(f"**Close Brief: {position.get('symbol', 'N/A')} {position.get('signal', '')}**")
-        st.caption(str(position.get("option") or ""))
-        brief_cols = st.columns(4)
-        brief_cols[0].metric("Qty", position.get("quantity", "N/A"))
-        brief_cols[1].metric("Entry", _fmt_money_cell(position.get("entry_price")))
-        brief_cols[2].metric("Position Cost", f"${estimated_cost:,.2f}")
-        brief_cols[3].metric("Order", "Market Sell")
-        st.caption(
-            f"Stop {_fmt_money_cell(position.get('current_stop_price'))} | "
-            f"TP {_fmt_money_cell(position.get('take_profit_price'))}"
-        )
-
+        premium_change_pct = _number_or_none(position.get("premium_change_pct"))
+        stock_with_trade_pct = _number_or_none(position.get("underlying_move_with_position_pct"))
+        health_label = str(position.get("premium_health") or "Not checked")
+        health_detail = str(position.get("premium_health_detail") or "")
         close_disabled = not orders_unlocked or readonly
-        close_cols = st.columns([1, 2])
-        with close_cols[0]:
-            if st.button(
-                "Close Position",
-                key=f"close_market_static_{position_id}",
-                type="primary",
-                icon=":material/close:",
-                use_container_width=True,
-                disabled=close_disabled,
-                help="Submit a market sell order for the selected option position.",
-            ):
-                close_ib = None
-                try:
-                    close_ib = connect_ib(dashboard_ib_cfg(309, readonly=False))
-                    contract = reconstruct_option_contract(position)
-                    qualified = close_ib.qualifyContracts(contract)
-                    if qualified:
-                        contract = qualified[0]
-                    market = get_snapshot_mid(close_ib, contract)
-                    exit_price = _number_or_none(market.get("Mid")) or _number_or_none(position.get("entry_price"))
-                    trade, realized = submit_exit_order(
-                        close_ib,
-                        position,
-                        exit_price,
-                        "Dashboard market close",
-                        account=ib_cfg_snapshot.account,
-                        use_market=True,
-                    )
-                    closed_keys = _active_position_keys(position)
-                    remaining_positions = []
-                    for pos in read_active_positions():
-                        same_id = bool(position.get("id")) and str(pos.get("id") or "") == position_id
-                        same_contract = bool(closed_keys) and bool(_active_position_keys(pos) & closed_keys)
-                        if same_id or same_contract:
-                            continue
-                        remaining_positions.append(pos)
-                    write_active_positions(remaining_positions)
-                    st.success(
-                        f"Market close submitted for {position.get('symbol')} | "
-                        f"status {getattr(trade.orderStatus, 'status', 'Submitted')} | est P/L ${realized:,.2f}"
-                    )
-                    send_position_closed_telegram_message(tg_cfg, {
-                        "Symbol": position.get("symbol"),
-                        "Option": position.get("option"),
-                        "Action": "EXIT",
-                        "Reason": "Dashboard market close",
-                        "Quantity": position.get("quantity"),
-                        "Entry": position.get("entry_price"),
-                        "Current": exit_price,
-                        "P/L $": realized,
-                        "Status": str(getattr(trade.orderStatus, "status", "Submitted")),
-                    })
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Market close failed: {display_exception_message(exc)}")
-                finally:
+
+        with st.container(border=True):
+            row_cols = st.columns([2.2, 2.2, 2.2, 1.4])
+            with row_cols[0]:
+                st.markdown(f"**{position.get('symbol', 'N/A')} {position.get('signal', '')}**")
+                st.caption(str(position.get("option") or ""))
+                st.caption(f"Qty {position.get('quantity', 'N/A')} | Entry {_fmt_money_cell(position.get('entry_price'))}")
+            with row_cols[1]:
+                st.markdown(
+                    f"""
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:.35rem .7rem;">
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Cost</div><div style="font-weight:800;">${estimated_cost:,.2f}</div></div>
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Premium</div><div style="font-weight:800;">{_fmt_pct_cell(premium_change_pct)}</div></div>
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Stop</div><div style="font-weight:800;">{_fmt_money_cell(position.get("current_stop_price"))}</div></div>
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">TP</div><div style="font-weight:800;">{_fmt_money_cell(position.get("take_profit_price"))}</div></div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            with row_cols[2]:
+                if stock_with_trade_pct is not None:
+                    st.caption(f"Stock with trade: {_fmt_pct_cell(stock_with_trade_pct)}")
+                if health_detail:
+                    st.info(f"{health_label}: {health_detail}")
+                else:
+                    st.info(health_label)
+            with row_cols[3]:
+                if st.button(
+                    "Close Position",
+                    key=f"close_market_static_{position_id}",
+                    type="primary",
+                    icon=":material/close:",
+                    use_container_width=True,
+                    disabled=close_disabled,
+                    help="Submit a market sell order for this option position.",
+                ):
+                    close_ib = None
                     try:
-                        if close_ib and close_ib.isConnected():
-                            close_ib.disconnect()
-                    except Exception:
-                        pass
-        with close_cols[1]:
-            if close_disabled:
-                st.caption("Order safety gates required before this button is enabled.")
-            else:
-                st.caption("This action block is outside the live P/L refresh fragment.")
+                        close_ib = connect_ib(dashboard_ib_cfg(309, readonly=False))
+                        contract = reconstruct_option_contract(position)
+                        qualified = close_ib.qualifyContracts(contract)
+                        if qualified:
+                            contract = qualified[0]
+                        market = get_snapshot_mid(close_ib, contract)
+                        exit_price = _number_or_none(market.get("Mid")) or _number_or_none(position.get("entry_price"))
+                        trade, realized = submit_exit_order(
+                            close_ib,
+                            position,
+                            exit_price,
+                            "Dashboard market close",
+                            account=ib_cfg_snapshot.account,
+                            use_market=True,
+                        )
+                        closed_keys = _active_position_keys(position)
+                        remaining_positions = []
+                        for pos in read_active_positions():
+                            same_id = bool(position.get("id")) and str(pos.get("id") or "") == position_id
+                            same_contract = bool(closed_keys) and bool(_active_position_keys(pos) & closed_keys)
+                            if same_id or same_contract:
+                                continue
+                            remaining_positions.append(pos)
+                        write_active_positions(remaining_positions)
+                        st.success(
+                            f"Market close submitted for {position.get('symbol')} | "
+                            f"status {getattr(trade.orderStatus, 'status', 'Submitted')} | est P/L ${realized:,.2f}"
+                        )
+                        send_position_closed_telegram_message(tg_cfg, {
+                            "Symbol": position.get("symbol"),
+                            "Option": position.get("option"),
+                            "Action": "EXIT",
+                            "Reason": "Dashboard market close",
+                            "Quantity": position.get("quantity"),
+                            "Entry": position.get("entry_price"),
+                            "Current": exit_price,
+                            "P/L $": realized,
+                            "Status": str(getattr(trade.orderStatus, "status", "Submitted")),
+                        })
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Market close failed: {display_exception_message(exc)}")
+                    finally:
+                        try:
+                            if close_ib and close_ib.isConnected():
+                                close_ib.disconnect()
+                        except Exception:
+                            pass
+                if close_disabled:
+                    st.caption("Order safety gates required.")
 
 
 def style_live_pnl_table(df: pd.DataFrame):
@@ -2384,8 +2315,52 @@ def start_telegram_decision_worker() -> None:
     threading.Thread(target=worker, daemon=True, name="telegram-decision-worker").start()
 
 
+def manual_option_chain_for_price(ib, symbol: str, stock, stock_price: float, dte_target: int) -> tuple[str | None, list[float]]:
+    params = ib.reqSecDefOptParams(symbol, "", stock.secType, stock.conId)
+    if not params:
+        return None, []
+
+    today = datetime.now(EASTERN).date()
+    target = today + timedelta(days=dte_target)
+    choices = []
+    for chain in params:
+        expirations = []
+        for raw_expiry in sorted(getattr(chain, "expirations", []) or []):
+            try:
+                expiry_date = datetime.strptime(raw_expiry, "%Y%m%d").date()
+            except Exception:
+                continue
+            if expiry_date >= today:
+                expirations.append((raw_expiry, expiry_date))
+
+        strikes = sorted(float(strike) for strike in (getattr(chain, "strikes", []) or []) if strike and strike > 0)
+        if not expirations or not strikes:
+            continue
+
+        closest_strike_distance = min(abs(strike - stock_price) for strike in strikes)
+        spans_price = min(strikes) <= stock_price <= max(strikes)
+        trading_class = str(getattr(chain, "tradingClass", "") or "").upper()
+        for expiry, expiry_date in expirations:
+            choices.append((
+                abs((expiry_date - target).days),
+                0 if str(getattr(chain, "exchange", "")).upper() == "SMART" else 1,
+                0 if trading_class in {"", symbol.upper()} else 1,
+                0 if spans_price else 1,
+                closest_strike_distance,
+                expiry,
+                strikes,
+            ))
+
+    if not choices:
+        return None, []
+
+    best = min(choices, key=lambda item: item[:5])
+    return best[5], best[6]
+
+
 def load_manual_option_defaults(symbol: str, signal: str, dte_target: int) -> dict:
     ib = connect_ib(dashboard_ib_cfg(302, readonly=True))
+    ib.RequestTimeout = 4
     try:
         stock = qualify_stock(ib, symbol)
         stock_market = get_snapshot_mid(ib, stock)
@@ -2395,18 +2370,33 @@ def load_manual_option_defaults(symbol: str, signal: str, dte_target: int) -> di
         if stock_price is None or pd.isna(stock_price) or float(stock_price) <= 0:
             raise ValueError(f"No live stock price available for {symbol}.")
 
-        expiry, strikes = get_option_expiry_and_strikes(ib, symbol, dte_target)
+        expiry, strikes = manual_option_chain_for_price(ib, symbol, stock, float(stock_price), dte_target)
         if not expiry or not strikes:
             raise ValueError(f"No option chain found for {symbol}.")
 
-        strike = min(strikes, key=lambda value: abs(float(value) - float(stock_price)))
         right = "C" if signal == "CALL" else "P"
-        contract = Option(symbol, expiry, float(strike), right, "SMART", currency="USD", multiplier="100")
-        qualified = ib.qualifyContracts(contract)
-        if qualified:
-            contract = qualified[0]
+        ranked_strikes = sorted(strikes, key=lambda value: abs(float(value) - float(stock_price)))
+        candidate_contracts = [
+            Option(symbol, expiry, float(candidate_strike), right, "SMART", currency="USD", multiplier="100")
+            for candidate_strike in ranked_strikes[:48]
+        ]
+        qualified_contracts = ib.qualifyContracts(*candidate_contracts)
+        contract = min(
+            qualified_contracts,
+            key=lambda qualified_contract: abs(float(getattr(qualified_contract, "strike", 0) or 0) - float(stock_price)),
+        ) if qualified_contracts else None
+        strike = float(getattr(contract, "strike", 0) or 0) if contract is not None else None
+        if contract is None or strike is None:
+            raise ValueError(f"No qualified {signal} option contract found near ${float(stock_price):.2f} for {symbol}.")
         option_market = get_snapshot_mid(ib, contract)
         mid = option_market.get("Mid")
+        price_source = "quote mid"
+        if mid is None or pd.isna(mid) or float(mid) <= 0:
+            mid = option_market.get("Model Price")
+            price_source = "IBKR model price"
+        if mid is None or pd.isna(mid) or float(mid) <= 0:
+            mid = option_market.get("Last")
+            price_source = "last trade"
         quote_warning = ""
         if mid is None or pd.isna(mid) or float(mid) <= 0:
             mid = 0.0
@@ -2414,6 +2404,8 @@ def load_manual_option_defaults(symbol: str, signal: str, dte_target: int) -> di
                 f"No live option quote returned for {symbol} {expiry} {strike:g} {signal}. "
                 "This is common outside market hours or on illiquid contracts."
             )
+        elif price_source != "quote mid":
+            quote_warning = f"Used {price_source}; live bid/ask midpoint was unavailable."
 
         return {
             "expiry": expiry,
@@ -3992,7 +3984,7 @@ elif selected_page == "💼 Positions":
         })
 
     render_live_positions_fragment(cfg, ib_cfg, health)
-    render_position_close_controls(cfg, ib_cfg)
+    render_bot_managed_positions(cfg, ib_cfg)
 
     approval_mode = approval_mode_from_config(cfg)
     configured_scan_interval = max(10, int(cfg.get("automation", {}).get("scan_interval_seconds", 60)))
@@ -4213,6 +4205,7 @@ elif selected_page == "💼 Positions":
             }
 
         def submit_manual_popup_order(order: dict) -> None:
+            st.session_state["manual_order_submitting"] = True
             orders = read_pending_approvals()
             if not any(str(existing.get("id")) == str(order.get("id")) for existing in orders):
                 orders.append(order)
@@ -4220,7 +4213,7 @@ elif selected_page == "💼 Positions":
             approval_ib = None
             try:
                 approval_ib = connect_ib(dashboard_ib_cfg(308, readonly=False))
-                status = submit_approved_order(approval_ib, dashboard_ib_cfg(308, readonly=False), order)
+                status = submit_approved_order(approval_ib, dashboard_ib_cfg(308, readonly=False), order, max_wait_seconds=3)
                 update_pending_approval(
                     order["id"],
                     decision_at=datetime.now(EASTERN).isoformat(),
@@ -4239,6 +4232,7 @@ elif selected_page == "💼 Positions":
                 )
                 st.error(f"Order submit failed: {display_exception_message(exc)}")
             finally:
+                st.session_state["manual_order_submitting"] = False
                 try:
                     if approval_ib and approval_ib.isConnected():
                         approval_ib.disconnect()
@@ -4272,11 +4266,15 @@ elif selected_page == "💼 Positions":
             if not orders_unlocked:
                 st.warning("Order placement is locked by the current automation/safety settings.")
             confirm_cols = st.columns(2)
+            submitting = bool(st.session_state.get("manual_order_submitting"))
+            if submitting:
+                st.info("Submitting order to IBKR...")
             with confirm_cols[0]:
-                if st.button("Place Order", key="manual_popup_confirm", use_container_width=True, disabled=not orders_unlocked):
-                    submit_manual_popup_order(order)
+                if st.button("Place Order", key="manual_popup_confirm", use_container_width=True, disabled=not orders_unlocked or submitting):
+                    with st.spinner("Submitting order to IBKR..."):
+                        submit_manual_popup_order(order)
             with confirm_cols[1]:
-                if st.button("Cancel", key="manual_popup_cancel", use_container_width=True):
+                if st.button("Cancel", key="manual_popup_cancel", use_container_width=True, disabled=submitting):
                     st.session_state.pop("manual_order_pending_popup", None)
                     st.rerun()
 

@@ -1,16 +1,16 @@
 {
-  "last_scan_finish": "2026-08-03T10:31:07.953523-04:00",
+  "last_scan_finish": "2026-08-04T14:04:18.082528-04:00",
   "last_status": "Account summary synced",
   "candidates": 0,
-  "updated_at": "2026-08-04T02:41:35.110772-04:00",
+  "updated_at": "2026-08-04T15:14:29.180056-04:00",
   "ib_connected": true,
   "mode": "Live",
   "last_error": "",
   "engine_running": true,
-  "market_open": false,
-  "last_broker_sync": "2026-08-03T10:31:23.132062-04:00",
-  "last_scan_start": "2026-08-03T10:31:03.480881-04:00",
+  "market_open": true,
+  "last_broker_sync": "2026-08-04T14:05:04.105721-04:00",
+  "last_scan_start": "2026-08-04T14:05:18.211846-04:00",
   "submitted_orders": 0,
-  "auto_trading": false,
-  "started_at": "2026-08-04T01:09:31.706449-04:00"
+  "auto_trading": true,
+  "started_at": "2026-08-04T14:00:44.800561-04:00"
 }

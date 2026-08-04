@@ -566,7 +566,7 @@ def update_pending_approval(order_id: str, **updates) -> dict | None:
     return updated
 
 
-def submit_approved_order(ib, ib_cfg: IBConfig, order: dict) -> str:
+def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: int = 60) -> str:
     contract = reconstruct_option_contract(order)
     qualified = ib.qualifyContracts(contract)
     if qualified:
@@ -574,7 +574,7 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict) -> str:
     qty = int(order.get("quantity") or 0)
     order_type = str(order.get("order_type") or "LIMIT")
     limit_price = float(order.get("limit_price") or order.get("mid") or 0) if order_type == "LIMIT" else None
-    trade = place_option_order(ib, contract, "BUY", qty, order_type, limit_price, ib_cfg.account)
+    trade = place_option_order(ib, contract, "BUY", qty, order_type, limit_price, ib_cfg.account, max_wait_seconds=max_wait_seconds)
     fallback_entry_price = float(limit_price if limit_price else order.get("mid") or 0)
     fill = trade_fill_details(trade, qty, fallback_entry_price)
     status = str(fill["status"])

@@ -703,6 +703,7 @@ def get_snapshot_mid(ib: IB, contract) -> dict:
         "Ask": ask,
         "Last": last,
         "Mid": mid,
+        "Model Price": getattr(greeks, "optPrice", np.nan) if greeks else np.nan,
         "Spread %": spread_pct,
         "Volume": ticker.volume if ticker.volume else 0,
         "Delta": getattr(greeks, "delta", np.nan) if greeks else np.nan,
@@ -1135,6 +1136,7 @@ def place_option_order(
     order_type: str,
     limit_price: float | None,
     account: str | None = None,
+    max_wait_seconds: int = 60,
 ):
     if quantity <= 0:
         raise ValueError("Quantity must be greater than zero")
@@ -1152,7 +1154,7 @@ def place_option_order(
     submitted_at = datetime.now(EASTERN)
     trade = ib.placeOrder(option_contract, order)
     execution_fills = []
-    for attempt in range(60):
+    for attempt in range(max(0, int(max_wait_seconds))):
         ib.sleep(1)
         status = str(getattr(trade.orderStatus, "status", "") or "")
         filled = float(getattr(trade.orderStatus, "filled", 0) or 0)
