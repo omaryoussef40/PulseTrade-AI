@@ -615,6 +615,7 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict) -> str:
         "rank_score": order.get("rank_score"),
         "reasons": order.get("reasons"),
     })
+    approval_label = str(order.get("approval_mode") or "Order").strip() or "Order"
     save_trade_replay(
         order.get("raw_signal") or {},
         order.get("option_data") or {},
@@ -623,7 +624,7 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict) -> str:
         quantity=filled_qty or qty,
         entry_price=entry_price,
         estimated_cost=order.get("estimated_cost"),
-        notes=f"Telegram approval submitted: {order.get('id')}",
+        notes=f"{approval_label} approval submitted: {order.get('id')}",
     )
     if filled_qty > 0:
         cfg = load_config()
@@ -1079,14 +1080,22 @@ def run_cycle() -> None:
             )
             continue
 
+        spend_limit = min(max_spend_per_trade, remaining_capital)
+        if liquidity_available and liquidity_available > 0:
+            spend_limit = min(spend_limit, liquidity_available)
+        if reserve_capital and remaining_trades > 0:
+            spend_limit = min(spend_limit, remaining_capital / remaining_trades)
+
         try:
+            option_filters = dict(cfg.get("option_filters", {}) or {})
+            option_filters["_max_contract_cost"] = spend_limit
             option_full = recommend_option_ib(
                 ib,
                 symbol,
                 row["Signal"],
                 float(row["Price"]),
                 int(strategy.get("option_dte", 7)),
-                cfg.get("option_filters", {}),
+                option_filters,
             )
         except Exception as exc:
             app_log(f"{symbol}: option pricing error: {exc}", "ERROR")
@@ -1112,11 +1121,6 @@ def run_cycle() -> None:
             )
             continue
         option_clean = {k: v for k, v in option_full.items() if k != "Contract"} if option_full else None
-        spend_limit = min(max_spend_per_trade, remaining_capital)
-        if liquidity_available and liquidity_available > 0:
-            spend_limit = min(spend_limit, liquidity_available)
-        if reserve_capital and remaining_trades > 0:
-            spend_limit = min(spend_limit, remaining_capital / remaining_trades)
         qty = calculate_contract_quantity(float(option_full["Mid"]), spend_limit, int(risk.get("max_contracts", 2))) if option_full else 0
         estimated_cost = round(qty * float(option_full["Mid"]) * 100, 2) if option_full and qty else 0.0
         row["Option"] = option_clean["Option"] if option_clean else "No clean contract"

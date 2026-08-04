@@ -1361,29 +1361,53 @@ with st.sidebar:
     )
     sidebar_page_labels = {
         "📊 Performance & Trade Journal": "📊  Overview",
-        "💼 Positions": "💼  Positions",
-        "📈 Strategy Lab": "🎯  Strategy",
-        "🧪 Price Action Lab": "🧪  Price Action",
+        "🤖 AI AUDIT": "🤖  AI AUDIT",
+        "💼 Positions": "💼  Live Trading",
+        "📈 Strategy Lab": "🎯  Backtesting",
         "🧠 Market Intelligence": "🧠  Market Intel",
         "📈 Scanner & Breakdown": "📡  Scanner",
         "🏦 Account Status": "💳  Account",
         "📝 Logs": "📝  Logs",
     }
+    sidebar_pages = [
+        "📊 Performance & Trade Journal",
+        "🤖 AI AUDIT",
+        "💼 Positions",
+        "📈 Strategy Lab",
+        "🧠 Market Intelligence",
+        "📈 Scanner & Breakdown",
+        "🏦 Account Status",
+        "📝 Logs",
+    ]
+    sidebar_page_slugs = {
+        "📊 Performance & Trade Journal": "overview",
+        "🤖 AI AUDIT": "ai-audit",
+        "💼 Positions": "live-trading",
+        "📈 Strategy Lab": "backtesting",
+        "🧠 Market Intelligence": "market-intel",
+        "📈 Scanner & Breakdown": "scanner",
+        "🏦 Account Status": "account",
+        "📝 Logs": "logs",
+    }
+    slug_to_sidebar_page = {slug: page for page, slug in sidebar_page_slugs.items()}
+    slug_to_sidebar_page.update({
+        "positions": "💼 Positions",
+        "strategy": "📈 Strategy Lab",
+        "price-action": "📈 Scanner & Breakdown",
+    })
+    query_page = st.query_params.get("page", "overview")
+    default_sidebar_page = slug_to_sidebar_page.get(str(query_page), sidebar_pages[0])
     selected_page = st.radio(
         "Menu",
-        [
-            "📊 Performance & Trade Journal",
-            "💼 Positions",
-            "📈 Strategy Lab",
-            "🧪 Price Action Lab",
-            "🧠 Market Intelligence",
-            "📈 Scanner & Breakdown",
-            "🏦 Account Status",
-            "📝 Logs",
-        ],
+        sidebar_pages,
+        index=sidebar_pages.index(default_sidebar_page),
         format_func=lambda page: sidebar_page_labels.get(page, page),
         label_visibility="collapsed",
+        key="sidebar_selected_page",
     )
+    selected_page_slug = sidebar_page_slugs.get(selected_page, "overview")
+    if st.query_params.get("page") != selected_page_slug:
+        st.query_params["page"] = selected_page_slug
     sidebar_health = read_health()
     engine_label = "Engine Running" if bool(sidebar_health.get("engine_running", False)) else "Engine Stopped"
     dot_color = "#16a34a" if bool(sidebar_health.get("engine_running", False)) else "#dc2626"
@@ -1835,9 +1859,6 @@ def _fmt_pct_cell(value) -> str:
 
 @st.fragment(run_every="5s")
 def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig, health_snapshot: dict) -> None:
-    orders_unlocked = orders_unlocked_from_config(cfg_snapshot)
-    readonly = bool(cfg_snapshot.get("ib", {}).get("readonly", False))
-
     st.markdown("### Live IBKR Positions")
     try:
         broker_positions = cached_ibkr_positions(
@@ -1881,7 +1902,6 @@ def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig
         live_rows = active_df.to_dict("records")
         for idx, position in enumerate(active_positions):
             live_row = live_rows[idx] if idx < len(live_rows) else position
-            position_id = str(position.get("id") or f"{position.get('symbol')}_{idx}")
             health_label = str(position.get("premium_health") or "Not checked")
             health_detail = str(position.get("premium_health_detail") or "")
             pnl_value = _number_or_none(live_row.get("Live P/L"))
@@ -1908,7 +1928,7 @@ def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig
                     display_health_label = "Healthy"
             health_is_weak = "weak" in display_health_label.lower()
             with st.container(border=True):
-                action_cols = st.columns([2.2, 2.2, 2.4, 1.8])
+                action_cols = st.columns([2.2, 2.2, 2.4])
                 with action_cols[0]:
                     st.markdown(f"**{position.get('symbol', 'N/A')} {position.get('signal', '')}**")
                     st.caption(str(position.get("option") or ""))
@@ -1934,69 +1954,7 @@ def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig
                         f"Stop {_fmt_money_cell(position.get('current_stop_price'))} | "
                         f"TP {_fmt_money_cell(position.get('take_profit_price'))}"
                     )
-                with action_cols[3]:
-                    close_disabled = not orders_unlocked or readonly
-                    if st.button(
-                        "Close Market",
-                        key=f"close_market_{position_id}",
-                        type="primary",
-                        icon=":material/close:",
-                        use_container_width=True,
-                        disabled=close_disabled,
-                        help="Submit a market sell order for this option position.",
-                    ):
-                        close_ib = None
-                        try:
-                            close_ib = connect_ib(dashboard_ib_cfg(309, readonly=False))
-                            contract = reconstruct_option_contract(position)
-                            qualified = close_ib.qualifyContracts(contract)
-                            if qualified:
-                                contract = qualified[0]
-                            market = get_snapshot_mid(close_ib, contract)
-                            exit_price = _number_or_none(market.get("Mid")) or _number_or_none(position.get("entry_price"))
-                            trade, realized = submit_exit_order(
-                                close_ib,
-                                position,
-                                exit_price,
-                                "Dashboard market close",
-                                account=ib_cfg_snapshot.account,
-                                use_market=True,
-                            )
-                            closed_keys = _active_position_keys(position)
-                            remaining_positions = []
-                            for pos in read_active_positions():
-                                same_id = bool(position.get("id")) and str(pos.get("id") or "") == position_id
-                                same_contract = bool(closed_keys) and bool(_active_position_keys(pos) & closed_keys)
-                                if same_id or same_contract:
-                                    continue
-                                remaining_positions.append(pos)
-                            write_active_positions(remaining_positions)
-                            st.success(
-                                f"Market close submitted for {position.get('symbol')} | "
-                                f"status {getattr(trade.orderStatus, 'status', 'Submitted')} | est P/L ${realized:,.2f}"
-                            )
-                            send_position_closed_telegram_message(tg_cfg, {
-                                "Symbol": position.get("symbol"),
-                                "Option": position.get("option"),
-                                "Action": "EXIT",
-                                "Reason": "Dashboard market close",
-                                "Quantity": position.get("quantity"),
-                                "Entry": position.get("entry_price"),
-                                "Current": exit_price,
-                                "P/L $": realized,
-                                "Status": str(getattr(trade.orderStatus, "status", "Submitted")),
-                            })
-                            st.rerun(scope="fragment")
-                        except Exception as exc:
-                            st.error(f"Market close failed: {display_exception_message(exc)}")
-                        finally:
-                            try:
-                                if close_ib and close_ib.isConnected():
-                                    close_ib.disconnect()
-                            except Exception:
-                                pass
-                    if close_disabled:
-                        st.caption("Order safety gates required.")
+                st.caption("Close controls are below this live P/L area so they do not refresh every 5 seconds.")
     else:
         st.info("No bot-managed positions. Engine is waiting for a valid signal.")
 
@@ -2028,6 +1986,117 @@ def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig
                     sync_ib.disconnect()
             except Exception:
                 pass
+
+
+def render_position_close_controls(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) -> None:
+    orders_unlocked = orders_unlocked_from_config(cfg_snapshot)
+    readonly = bool(cfg_snapshot.get("ib", {}).get("readonly", False))
+    active_positions = read_active_positions()
+
+    st.markdown("### Position Actions")
+    if not active_positions:
+        st.info("No bot-managed positions available to close.")
+        return
+
+    labels = []
+    for idx, position in enumerate(active_positions):
+        option = str(position.get("option") or "").strip()
+        label = (
+            f"{position.get('symbol', 'N/A')} {position.get('signal', '')} | "
+            f"Qty {position.get('quantity', 'N/A')} | Entry {_fmt_money_cell(position.get('entry_price'))}"
+        )
+        labels.append(f"{label} | {option}" if option else label)
+
+    selected_label = st.selectbox("Position to close", labels, key="close_position_selector")
+    selected_idx = labels.index(selected_label)
+    position = active_positions[selected_idx]
+    position_id = str(position.get("id") or f"{position.get('symbol')}_{selected_idx}")
+    estimated_cost = (
+        float(_number_or_none(position.get("entry_price")) or 0)
+        * float(_number_or_none(position.get("quantity")) or 0)
+        * 100.0
+    )
+
+    with st.container(border=True):
+        st.markdown(f"**Close Brief: {position.get('symbol', 'N/A')} {position.get('signal', '')}**")
+        st.caption(str(position.get("option") or ""))
+        brief_cols = st.columns(4)
+        brief_cols[0].metric("Qty", position.get("quantity", "N/A"))
+        brief_cols[1].metric("Entry", _fmt_money_cell(position.get("entry_price")))
+        brief_cols[2].metric("Position Cost", f"${estimated_cost:,.2f}")
+        brief_cols[3].metric("Order", "Market Sell")
+        st.caption(
+            f"Stop {_fmt_money_cell(position.get('current_stop_price'))} | "
+            f"TP {_fmt_money_cell(position.get('take_profit_price'))}"
+        )
+
+        close_disabled = not orders_unlocked or readonly
+        close_cols = st.columns([1, 2])
+        with close_cols[0]:
+            if st.button(
+                "Close Position",
+                key=f"close_market_static_{position_id}",
+                type="primary",
+                icon=":material/close:",
+                use_container_width=True,
+                disabled=close_disabled,
+                help="Submit a market sell order for the selected option position.",
+            ):
+                close_ib = None
+                try:
+                    close_ib = connect_ib(dashboard_ib_cfg(309, readonly=False))
+                    contract = reconstruct_option_contract(position)
+                    qualified = close_ib.qualifyContracts(contract)
+                    if qualified:
+                        contract = qualified[0]
+                    market = get_snapshot_mid(close_ib, contract)
+                    exit_price = _number_or_none(market.get("Mid")) or _number_or_none(position.get("entry_price"))
+                    trade, realized = submit_exit_order(
+                        close_ib,
+                        position,
+                        exit_price,
+                        "Dashboard market close",
+                        account=ib_cfg_snapshot.account,
+                        use_market=True,
+                    )
+                    closed_keys = _active_position_keys(position)
+                    remaining_positions = []
+                    for pos in read_active_positions():
+                        same_id = bool(position.get("id")) and str(pos.get("id") or "") == position_id
+                        same_contract = bool(closed_keys) and bool(_active_position_keys(pos) & closed_keys)
+                        if same_id or same_contract:
+                            continue
+                        remaining_positions.append(pos)
+                    write_active_positions(remaining_positions)
+                    st.success(
+                        f"Market close submitted for {position.get('symbol')} | "
+                        f"status {getattr(trade.orderStatus, 'status', 'Submitted')} | est P/L ${realized:,.2f}"
+                    )
+                    send_position_closed_telegram_message(tg_cfg, {
+                        "Symbol": position.get("symbol"),
+                        "Option": position.get("option"),
+                        "Action": "EXIT",
+                        "Reason": "Dashboard market close",
+                        "Quantity": position.get("quantity"),
+                        "Entry": position.get("entry_price"),
+                        "Current": exit_price,
+                        "P/L $": realized,
+                        "Status": str(getattr(trade.orderStatus, "status", "Submitted")),
+                    })
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Market close failed: {display_exception_message(exc)}")
+                finally:
+                    try:
+                        if close_ib and close_ib.isConnected():
+                            close_ib.disconnect()
+                    except Exception:
+                        pass
+        with close_cols[1]:
+            if close_disabled:
+                st.caption("Order safety gates required before this button is enabled.")
+            else:
+                st.caption("This action block is outside the live P/L refresh fragment.")
 
 
 def style_live_pnl_table(df: pd.DataFrame):
@@ -3923,6 +3992,7 @@ elif selected_page == "💼 Positions":
         })
 
     render_live_positions_fragment(cfg, ib_cfg, health)
+    render_position_close_controls(cfg, ib_cfg)
 
     approval_mode = approval_mode_from_config(cfg)
     configured_scan_interval = max(10, int(cfg.get("automation", {}).get("scan_interval_seconds", 60)))
@@ -4107,132 +4177,133 @@ elif selected_page == "💼 Positions":
         manual_qty = m9.number_input("Quantity", value=1, min_value=1, step=1, key="manual_order_qty")
         manual_order_type = m10.selectbox("Order type", ["LIMIT", "MARKET"], key="manual_order_type")
 
-        def approval_status_label(order: dict) -> str:
-            status = str(order.get("status", "unknown")).lower()
-            symbol = order.get("symbol", "N/A")
-            signal = order.get("signal", "N/A")
-            if status in ["pending", "sent"]:
-                return f"⏳ {symbol} {signal} awaiting Telegram decision"
-            if status == "test_confirmed":
-                return f"✅ {symbol} test approved from Telegram"
-            if status == "submitted":
-                return f"✅ {symbol} {signal} approved and submitted"
-            if status == "rejected":
-                return f"❌ {symbol} {signal} rejected from Telegram"
-            if status == "failed":
-                return f"⚠️ {symbol} {signal} approval failed"
-            return f"{symbol} {signal}: {status}"
+        def build_manual_order_payload() -> dict:
+            option_label = f"{manual_symbol} {manual_expiry} {manual_strike:g} {manual_signal}"
+            mid_or_limit = float(manual_mid or manual_limit or 0)
+            return {
+                "id": make_approval_id(manual_symbol, manual_signal),
+                "status": "pending",
+                "created_at": datetime.now(EASTERN).isoformat(),
+                "approval_mode": "Dashboard",
+                "symbol": manual_symbol,
+                "signal": manual_signal,
+                "option": option_label,
+                "expiry": manual_expiry,
+                "strike": float(manual_strike),
+                "type": manual_signal,
+                "quantity": int(manual_qty),
+                "mid": mid_or_limit,
+                "estimated_cost": round(float(manual_qty) * mid_or_limit * 100, 2),
+                "order_type": manual_order_type,
+                "limit_price": float(manual_limit) if manual_order_type == "LIMIT" else None,
+                "account_mode": mode,
+                "score": "MANUAL",
+                "grade": "Manual",
+                "setup_quality": "Manual order",
+                "rank_score": 0,
+                "reasons": "Manual order entered and approved from Positions tab.",
+                "raw_signal": {"Symbol": manual_symbol, "Signal": manual_signal},
+                "option_data": {
+                    "Option": option_label,
+                    "Expiry": manual_expiry,
+                    "Strike": float(manual_strike),
+                    "Type": manual_signal,
+                    "Mid": mid_or_limit,
+                },
+            }
 
-        action_cols = st.columns(3)
-        with action_cols[0]:
-            if st.button("Send Manual Order Approval", use_container_width=True):
-                if not manual_symbol or not manual_expiry or manual_strike <= 0:
-                    st.error("Enter symbol, expiry, and strike before sending approval.")
-                elif manual_order_type == "LIMIT" and manual_limit <= 0:
-                    st.error("Limit orders need a limit price greater than zero.")
-                else:
-                    option_label = f"{manual_symbol} {manual_expiry} {manual_strike:g} {manual_signal}"
-                    pending = {
-                        "id": make_approval_id(manual_symbol, manual_signal),
-                        "status": "pending",
-                        "created_at": datetime.now(EASTERN).isoformat(),
-                        "symbol": manual_symbol,
-                        "signal": manual_signal,
-                        "option": option_label,
-                        "expiry": manual_expiry,
-                        "strike": float(manual_strike),
-                        "type": manual_signal,
-                        "quantity": int(manual_qty),
-                        "mid": float(manual_mid or manual_limit or 0),
-                        "estimated_cost": round(float(manual_qty) * float(manual_mid or manual_limit or 0) * 100, 2),
-                        "order_type": manual_order_type,
-                        "limit_price": float(manual_limit) if manual_order_type == "LIMIT" else None,
-                        "account_mode": mode,
-                        "score": "MANUAL",
-                        "grade": "Manual",
-                        "setup_quality": "Manual order",
-                        "rank_score": 0,
-                        "reasons": "Manual order entered from Positions tab.",
-                        "raw_signal": {"Symbol": manual_symbol, "Signal": manual_signal},
-                        "option_data": {"Option": option_label, "Expiry": manual_expiry, "Strike": float(manual_strike), "Type": manual_signal, "Mid": float(manual_mid or manual_limit or 0)},
-                    }
-                    orders = read_pending_approvals()
-                    orders.append(pending)
-                    write_pending_approvals(orders)
-                    try:
-                        sent = send_order_approval_message(tg_cfg, pending)
-                        if sent:
-                            st.success(f"Manual approval sent: {pending['id']}")
-                        else:
-                            st.error("Telegram token/chat ID missing.")
-                    except Exception as e:
-                        st.error(f"Telegram approval failed: {e}")
-
-        with action_cols[1]:
-            if st.button("Send Telegram Test", use_container_width=True):
-                test_symbol = manual_symbol or "TEST"
-                test_order = {
-                    "id": make_approval_id(test_symbol, "TEST"),
-                    "status": "pending",
-                    "created_at": datetime.now(EASTERN).isoformat(),
-                    "symbol": test_symbol,
-                    "signal": "TEST",
-                    "option": "Telegram approval test",
-                    "expiry": manual_expiry or datetime.now(EASTERN).strftime("%Y%m%d"),
-                    "strike": float(manual_strike or 1),
-                    "type": "CALL",
-                    "quantity": 1,
-                    "mid": 0,
-                    "estimated_cost": 0,
-                    "order_type": "TEST",
-                    "limit_price": None,
-                    "account_mode": mode,
-                    "score": "TEST",
-                    "grade": "Test",
-                    "setup_quality": "Telegram button test",
-                    "rank_score": 0,
-                    "reasons": "This is a Telegram Confirm/Reject test. Confirm will not submit an IBKR order.",
-                    "test_order": True,
-                    "raw_signal": {"Symbol": test_symbol, "Signal": "TEST"},
-                    "option_data": {},
-                }
-                orders = read_pending_approvals()
-                orders.append(test_order)
+        def submit_manual_popup_order(order: dict) -> None:
+            orders = read_pending_approvals()
+            if not any(str(existing.get("id")) == str(order.get("id")) for existing in orders):
+                orders.append(order)
                 write_pending_approvals(orders)
-                try:
-                    sent = send_order_approval_message(tg_cfg, test_order)
-                    if sent:
-                        st.success(f"Telegram test sent: {test_order['id']}")
-                    else:
-                        st.error("Telegram token/chat ID missing.")
-                except Exception as e:
-                    st.error(f"Telegram test failed: {e}")
-
-        with action_cols[2]:
-            st.caption("Telegram Decision Status")
-            approvals = read_pending_approvals()
-            latest_approval = approvals[-1] if approvals else {}
-            if latest_approval:
-                st.markdown(f"**{approval_status_label(latest_approval)}**")
-                st.caption(f"Order ID: {latest_approval.get('id', 'N/A')}")
-            else:
-                st.info("No Telegram approvals sent yet.")
-
-            recent = approvals[-5:]
-            if recent:
-                st.dataframe(
-                    pd.DataFrame([
-                        {
-                            "symbol": o.get("symbol"),
-                            "side": o.get("signal"),
-                            "status": o.get("status"),
-                            "created": o.get("created_at"),
-                        }
-                        for o in reversed(recent)
-                    ]),
-                    use_container_width=True,
-                    hide_index=True,
+            approval_ib = None
+            try:
+                approval_ib = connect_ib(dashboard_ib_cfg(308, readonly=False))
+                status = submit_approved_order(approval_ib, dashboard_ib_cfg(308, readonly=False), order)
+                update_pending_approval(
+                    order["id"],
+                    decision_at=datetime.now(EASTERN).isoformat(),
+                    decision_source="dashboard_popup",
                 )
+                st.session_state["manual_order_last_status"] = f"Submitted {order.get('symbol')} {order.get('signal')}: {status}"
+                st.session_state.pop("manual_order_pending_popup", None)
+                st.rerun()
+            except Exception as exc:
+                update_pending_approval(
+                    order.get("id", ""),
+                    status="failed",
+                    failed_at=datetime.now(EASTERN).isoformat(),
+                    decision_source="dashboard_popup",
+                    error=str(exc),
+                )
+                st.error(f"Order submit failed: {display_exception_message(exc)}")
+            finally:
+                try:
+                    if approval_ib and approval_ib.isConnected():
+                        approval_ib.disconnect()
+                except Exception:
+                    pass
+
+        def render_manual_order_confirmation(order: dict) -> None:
+            order_type_label = str(order.get("order_type", "LIMIT"))
+            limit_label = f"${float(order.get('limit_price') or 0):.2f}" if order.get("limit_price") else "Market"
+            position_cost = float(order.get("estimated_cost") or 0)
+            st.markdown(f"**Order Brief: {order.get('symbol')} {order.get('signal')}**")
+            st.caption(str(order.get("option", "")))
+            st.markdown(
+                f"""
+                <div style="border:1px solid #e5e7eb;border-radius:8px;padding:0.85rem;margin:0.75rem 0;background:#f8fafc;">
+                    <div style="font-size:0.82rem;color:#64748b;font-weight:800;margin-bottom:0.35rem;">Position Cost</div>
+                    <div style="font-size:1.6rem;font-weight:800;color:#111827;">${position_cost:,.2f}</div>
+                    <div style="font-size:0.86rem;color:#475569;margin-top:0.35rem;">
+                        {int(order.get("quantity") or 0)} contract(s) x ${float(order.get("mid") or order.get("limit_price") or 0):.2f} x 100 multiplier
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            review_cols = st.columns(4)
+            review_cols[0].metric("Qty", order.get("quantity", 0))
+            review_cols[1].metric("Side", order.get("signal", "N/A"))
+            review_cols[2].metric("Order", order_type_label)
+            review_cols[3].metric("Price", limit_label)
+            st.caption(f"Account mode: {order.get('account_mode', 'N/A')} | Expiry: {order.get('expiry', 'N/A')} | Strike: {order.get('strike', 'N/A')}")
+            if not orders_unlocked:
+                st.warning("Order placement is locked by the current automation/safety settings.")
+            confirm_cols = st.columns(2)
+            with confirm_cols[0]:
+                if st.button("Place Order", key="manual_popup_confirm", use_container_width=True, disabled=not orders_unlocked):
+                    submit_manual_popup_order(order)
+            with confirm_cols[1]:
+                if st.button("Cancel", key="manual_popup_cancel", use_container_width=True):
+                    st.session_state.pop("manual_order_pending_popup", None)
+                    st.rerun()
+
+        dialog = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+        if dialog is not None:
+            @dialog("Confirm Manual Order")
+            def manual_order_confirmation_dialog(order: dict) -> None:
+                render_manual_order_confirmation(order)
+
+        if st.button("Review Manual Order", use_container_width=True):
+            if not manual_symbol or not manual_expiry or manual_strike <= 0:
+                st.error("Enter symbol, expiry, and strike before reviewing the order.")
+            elif manual_order_type == "LIMIT" and manual_limit <= 0:
+                st.error("Limit orders need a limit price greater than zero.")
+            else:
+                st.session_state["manual_order_pending_popup"] = build_manual_order_payload()
+
+        if st.session_state.get("manual_order_last_status"):
+            st.success(st.session_state["manual_order_last_status"])
+        pending_popup_order = st.session_state.get("manual_order_pending_popup")
+        if isinstance(pending_popup_order, dict):
+            if dialog is not None:
+                manual_order_confirmation_dialog(pending_popup_order)
+            else:
+                with st.container(border=True):
+                    st.markdown("#### Confirm Manual Order")
+                    render_manual_order_confirmation(pending_popup_order)
 
     if st.button("Manage Open Positions Now", use_container_width=True):
         try:
@@ -4263,8 +4334,11 @@ elif selected_page == "💼 Positions":
         except Exception as e:
             clean_ui_error("Position management failed", e)
 
-elif selected_page == "📊 Performance & Trade Journal":
-    st.subheader("Performance & Trade Journal")
+elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
+    if selected_page == "🤖 AI AUDIT":
+        st.subheader("AI AUDIT")
+    else:
+        st.subheader("Performance & Trade Journal")
 
     def _parse_dashboard_timestamps(values):
         try:
@@ -4497,6 +4571,58 @@ elif selected_page == "📊 Performance & Trade Journal":
             unsafe_allow_html=True,
         )
 
+    def _shift_month(month_anchor, months: int):
+        year = int(month_anchor.year) + ((int(month_anchor.month) - 1 + int(months)) // 12)
+        month = ((int(month_anchor.month) - 1 + int(months)) % 12) + 1
+        return month_anchor.replace(year=year, month=month, day=1)
+
+    def _calendar_available_years(exits_df: pd.DataFrame, fallback_year: int) -> list[int]:
+        years = {int(fallback_year)}
+        if isinstance(exits_df, pd.DataFrame) and not exits_df.empty and "timestamp" in exits_df.columns:
+            parsed_years = pd.to_numeric(exits_df["timestamp"].dt.year, errors="coerce").dropna().astype(int).tolist()
+            years.update(parsed_years)
+        min_year = min(years)
+        max_year = max(years)
+        years.update(range(min_year - 1, max_year + 2))
+        return sorted(years)
+
+    def _render_calendar_controls(default_anchor, exits_df: pd.DataFrame):
+        key = "performance_calendar_anchor"
+        default_month_start = default_anchor.replace(day=1)
+        current = st.session_state.get(key)
+        if not current:
+            current = default_month_start
+        if hasattr(current, "date"):
+            current = current.date()
+        current = current.replace(day=1)
+
+        nav_cols = st.columns(5)
+        with nav_cols[0]:
+            previous_year_clicked = st.button("Prev Year", key="perf_cal_prev_year", use_container_width=True)
+        with nav_cols[1]:
+            previous_month_clicked = st.button("Prev Month", key="perf_cal_prev_month", use_container_width=True)
+        with nav_cols[2]:
+            current_clicked = st.button("Current", key="perf_cal_current", use_container_width=True)
+        with nav_cols[3]:
+            next_month_clicked = st.button("Next Month", key="perf_cal_next_month", use_container_width=True)
+        with nav_cols[4]:
+            next_year_clicked = st.button("Next Year", key="perf_cal_next_year", use_container_width=True)
+
+        if previous_year_clicked:
+            current = _shift_month(current, -12)
+        elif previous_month_clicked:
+            current = _shift_month(current, -1)
+        elif next_month_clicked:
+            current = _shift_month(current, 1)
+        elif next_year_clicked:
+            current = _shift_month(current, 12)
+        elif current_clicked:
+            current = datetime.now(EASTERN).date().replace(day=1)
+
+        current = current.replace(year=int(current.year), month=int(current.month), day=1)
+        st.session_state[key] = current
+        return current
+
     def _format_signed_money(value) -> str:
         try:
             amount = float(value)
@@ -4575,6 +4701,661 @@ elif selected_page == "📊 Performance & Trade Journal":
             unsafe_allow_html=True,
         )
 
+    def _safe_trade_text(value, fallback: str = "") -> str:
+        if value is None:
+            return fallback
+        try:
+            if pd.isna(value):
+                return fallback
+        except Exception:
+            pass
+        text = str(value).strip()
+        return text if text else fallback
+
+    def _top_value_counts(df: pd.DataFrame, column: str, limit: int = 3) -> list[str]:
+        if df.empty or column not in df.columns:
+            return []
+        values = df[column].fillna("").astype(str).str.strip()
+        values = values[values.ne("")]
+        if values.empty:
+            return []
+        return [f"{idx} ({count})" for idx, count in values.value_counts().head(limit).items()]
+
+    def _normalized_trade_key_parts(df: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+        fallback = pd.Series([""] * len(df), index=df.index, dtype="object")
+        symbol = df.get("symbol", fallback).fillna("").astype(str).str.upper().str.strip()
+        signal = df.get("signal", fallback).fillna("").astype(str).str.upper().str.strip()
+        option = df.get("option", fallback).fillna("").astype(str).str.upper().str.replace(r"\s+", " ", regex=True).str.strip()
+        con_id = pd.to_numeric(df.get("con_id", pd.Series([0] * len(df), index=df.index)), errors="coerce").fillna(0).astype(int).astype(str)
+        return symbol, signal, option, con_id
+
+    def _collapse_logical_trade_rows(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty or "timestamp" not in df.columns:
+            return df.copy()
+        out = df.copy().sort_values("timestamp")
+        event = out.get("event", pd.Series([""] * len(out), index=out.index)).fillna("").astype(str).str.upper().str.strip()
+        symbol, signal, option, con_id = _normalized_trade_key_parts(out)
+        date_key = out["timestamp"].dt.date.astype(str)
+        minute_key = out["timestamp"].dt.floor("min").astype(str)
+        contract_key = con_id.where(con_id.ne("0"), symbol + "|" + signal + "|" + option)
+        out["_logical_trade_key"] = date_key + "|" + event + "|" + contract_key + "|" + minute_key
+
+        numeric_sum_cols = [c for c in ["quantity", "filled_quantity", "realized_pnl", "estimated_cost", "commission"] if c in out.columns]
+        weighted_price_cols = [c for c in ["entry_price", "exit_price", "limit_price"] if c in out.columns]
+        first_cols = [c for c in out.columns if c not in set(numeric_sum_cols + weighted_price_cols + ["_logical_trade_key"])]
+        rows = []
+        for _, group in out.groupby("_logical_trade_key", sort=False):
+            row = group.iloc[0][first_cols].to_dict()
+            qty = pd.to_numeric(group.get("quantity", pd.Series(dtype=float)), errors="coerce").abs().fillna(0.0)
+            for col in numeric_sum_cols:
+                row[col] = float(pd.to_numeric(group[col], errors="coerce").fillna(0.0).sum())
+            for col in weighted_price_cols:
+                prices = pd.to_numeric(group[col], errors="coerce")
+                valid = prices.notna()
+                if valid.any() and qty[valid].sum() > 0:
+                    row[col] = float((prices[valid] * qty[valid]).sum() / qty[valid].sum())
+                elif valid.any():
+                    row[col] = float(prices[valid].iloc[-1])
+                else:
+                    row[col] = pd.NA
+            source_values = group.get("source", pd.Series(dtype=str)).dropna().astype(str).str.strip()
+            if not source_values.empty:
+                row["source"] = ", ".join(source_values.drop_duplicates().tolist())
+            external_values = group.get("external_id", pd.Series(dtype=str)).dropna().astype(str).str.strip()
+            if not external_values.empty:
+                row["external_id"] = ",".join(external_values.tolist())
+            if "timestamp" in row:
+                row["timestamp"] = group["timestamp"].max()
+            rows.append(row)
+        collapsed = pd.DataFrame(rows)
+        for col in ["quantity", "filled_quantity"]:
+            if col in collapsed.columns:
+                values = pd.to_numeric(collapsed[col], errors="coerce")
+                collapsed[col] = values.apply(lambda v: int(v) if pd.notna(v) and float(v).is_integer() else v)
+        return collapsed.sort_values("timestamp") if "timestamp" in collapsed.columns else collapsed
+
+    def _trade_audit_contract_key(row: pd.Series) -> str:
+        con_id = pd.to_numeric(pd.Series([row.get("con_id")]), errors="coerce").fillna(0).iloc[0]
+        if con_id:
+            return f"conid:{int(con_id)}"
+        symbol = _safe_trade_text(row.get("symbol")).upper()
+        signal = _safe_trade_text(row.get("signal")).upper()
+        option = re.sub(r"\s+", " ", _safe_trade_text(row.get("option")).upper()).strip()
+        return f"{symbol}|{signal}|{option}"
+
+    def _match_entry_for_exit(exit_row: pd.Series, entries_df: pd.DataFrame) -> pd.Series | None:
+        if entries_df.empty or "timestamp" not in entries_df.columns:
+            return None
+        exit_time = exit_row.get("timestamp")
+        if pd.isna(exit_time):
+            return None
+        entries = entries_df[entries_df["timestamp"] <= exit_time].copy()
+        if entries.empty:
+            return None
+        key = _trade_audit_contract_key(exit_row)
+        matches = entries[entries.apply(_trade_audit_contract_key, axis=1) == key]
+        if matches.empty:
+            symbol = _safe_trade_text(exit_row.get("symbol")).upper()
+            signal = _safe_trade_text(exit_row.get("signal")).upper()
+            matches = entries[
+                entries.get("symbol", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq(symbol)
+                & entries.get("signal", pd.Series(dtype=str)).fillna("").astype(str).str.upper().eq(signal)
+            ]
+        if matches.empty:
+            return None
+        return matches.sort_values("timestamp").iloc[-1]
+
+    def _load_audit_intraday(symbols: list[str], start_date, end_date) -> tuple[dict[str, pd.DataFrame], list[str]]:
+        errors = []
+        data: dict[str, pd.DataFrame] = {}
+        if YahooDataClient is None:
+            return data, ["YahooDataClient is unavailable, so post-trade price tracking cannot run."]
+        client = YahooDataClient()
+        today_et = datetime.now(EASTERN).date()
+        for symbol in sorted({str(s).upper().strip() for s in symbols if str(s).strip()}):
+            loaded = pd.DataFrame()
+            try:
+                if (today_et - end_date).days <= 7:
+                    loaded = client.load(symbol=symbol, period="10d", interval="1m", force_refresh=False)
+                if loaded.empty:
+                    loaded = client.load(
+                        symbol=symbol,
+                        period=None,
+                        start=start_date - timedelta(days=2),
+                        end=end_date + timedelta(days=2),
+                        interval="5m",
+                        force_refresh=False,
+                    )
+            except Exception as exc:
+                errors.append(f"{symbol}: {display_exception_message(exc)}")
+                loaded = pd.DataFrame()
+            if loaded is not None and not loaded.empty:
+                data[symbol] = loaded.sort_index()
+            else:
+                errors.append(f"{symbol}: no intraday bars returned.")
+        return data, errors
+
+    def _price_at_or_before(bars: pd.DataFrame, timestamp) -> float | None:
+        if bars.empty or pd.isna(timestamp):
+            return None
+        prior = bars[bars.index <= timestamp]
+        if prior.empty:
+            later = bars[bars.index >= timestamp]
+            prior = later.head(1)
+        if prior.empty:
+            return None
+        return _number_or_none(prior.iloc[-1].get("Close"))
+
+    def _orb_read(bars: pd.DataFrame, trade_time, direction: str, entry_underlying: float | None) -> str:
+        if bars.empty or pd.isna(trade_time) or entry_underlying is None:
+            return "ORB unavailable"
+        session_day = trade_time.date()
+        session = bars[bars.index.date == session_day]
+        if session.empty:
+            return "ORB unavailable"
+        open_ts = pd.Timestamp(datetime.combine(session_day, dtime(9, 30)), tz=EASTERN)
+        reads = []
+        for minutes in [5, 15]:
+            orb = session[(session.index >= open_ts) & (session.index < open_ts + timedelta(minutes=minutes))]
+            if orb.empty:
+                continue
+            high = float(orb["High"].max())
+            low = float(orb["Low"].min())
+            if direction == "PUT":
+                passed = entry_underlying < low
+                reads.append(f"{minutes}m {'confirmed' if passed else 'not confirmed'}")
+            else:
+                passed = entry_underlying > high
+                reads.append(f"{minutes}m {'confirmed' if passed else 'not confirmed'}")
+        return ", ".join(reads) if reads else "ORB unavailable"
+
+    def _directional_pct(start: float | None, end: float | None, direction: str) -> float | None:
+        if start is None or end is None or start <= 0:
+            return None
+        raw = (float(end) - float(start)) / float(start) * 100.0
+        return -raw if direction == "PUT" else raw
+
+    def _build_deep_trade_audit(exits_df: pd.DataFrame, entries_df: pd.DataFrame, start_date, end_date, config: dict) -> dict:
+        if exits_df.empty:
+            return {"rows": pd.DataFrame(), "summary": ["No closed trades are selected."], "errors": []}
+        symbols = exits_df.get("symbol", pd.Series(dtype=str)).dropna().astype(str).str.upper().tolist()
+        bars_by_symbol, errors = _load_audit_intraday(symbols, start_date, end_date)
+        rows = []
+        risk = config.get("risk", {}) if isinstance(config, dict) else {}
+        strategy = config.get("strategy", {}) if isinstance(config, dict) else {}
+        stop_loss = float(risk.get("stop_loss_pct", 20.0) or 20.0)
+        take_profit = float(risk.get("take_profit_pct", 30.0) or 30.0)
+        trailing_trigger = float(risk.get("trailing_trigger_pct", 25.0) or 25.0)
+        trailing_stop = float(risk.get("trailing_stop_pct", 10.0) or 10.0)
+        configured_orb = int(strategy.get("orb_minutes", 15) or 15)
+
+        for _, exit_row in exits_df.sort_values("timestamp").iterrows():
+            symbol = _safe_trade_text(exit_row.get("symbol")).upper()
+            direction = _safe_trade_text(exit_row.get("signal"), "CALL").upper()
+            bars = bars_by_symbol.get(symbol, pd.DataFrame())
+            exit_time = exit_row.get("timestamp")
+            entry_row = _match_entry_for_exit(exit_row, entries_df)
+            entry_time = entry_row.get("timestamp") if entry_row is not None else pd.NaT
+            entry_px = _price_at_or_before(bars, entry_time)
+            exit_px = _price_at_or_before(bars, exit_time)
+            post_30 = bars[(bars.index > exit_time) & (bars.index <= exit_time + timedelta(minutes=30))] if not bars.empty and pd.notna(exit_time) else pd.DataFrame()
+            post_60 = bars[(bars.index > exit_time) & (bars.index <= exit_time + timedelta(minutes=60))] if not bars.empty and pd.notna(exit_time) else pd.DataFrame()
+            post_day = bars[(bars.index > exit_time) & (bars.index.date == exit_time.date())] if not bars.empty and pd.notna(exit_time) else pd.DataFrame()
+            during = bars[(bars.index >= entry_time) & (bars.index <= exit_time)] if not bars.empty and pd.notna(entry_time) and pd.notna(exit_time) else pd.DataFrame()
+
+            after_30_px = _number_or_none(post_30.iloc[-1].get("Close")) if not post_30.empty else None
+            after_60_px = _number_or_none(post_60.iloc[-1].get("Close")) if not post_60.empty else None
+            day_close_px = _number_or_none(post_day.iloc[-1].get("Close")) if not post_day.empty else None
+            move_trade = _directional_pct(entry_px, exit_px, direction)
+            move_30 = _directional_pct(exit_px, after_30_px, direction)
+            move_60 = _directional_pct(exit_px, after_60_px, direction)
+            move_day = _directional_pct(exit_px, day_close_px, direction)
+            if direction == "PUT":
+                best_after_day = float(post_day["Low"].min()) if not post_day.empty else None
+                worst_during = float(during["High"].max()) if not during.empty else None
+            else:
+                best_after_day = float(post_day["High"].max()) if not post_day.empty else None
+                worst_during = float(during["Low"].min()) if not during.empty else None
+            best_after_move = _directional_pct(exit_px, best_after_day, direction)
+            adverse_during = _directional_pct(entry_px, worst_during, "PUT" if direction == "CALL" else "CALL")
+
+            pnl = float(exit_row.get("realized_pnl", 0.0) or 0.0)
+            if move_day is None:
+                exit_verdict = "Need more same-day bars"
+            elif pnl > 0 and move_day > 0.35:
+                exit_verdict = "Early exit: stock kept moving into day close"
+            elif pnl < 0 and move_day > 0.35:
+                exit_verdict = "Possible stop too tight: stock recovered into day close"
+            elif pnl < 0 and move_day <= -0.25:
+                exit_verdict = "Exit likely protected capital into day close"
+            elif pnl > 0 and move_day <= -0.25:
+                exit_verdict = "Exit looked well timed into day close"
+            else:
+                exit_verdict = "Exit was reasonable"
+
+            rows.append({
+                "Symbol": symbol,
+                "Side": direction,
+                "Close Time": exit_time.strftime("%m/%d %H:%M") if pd.notna(exit_time) else "",
+                "P/L": round(pnl, 2),
+                "Stock Move In Trade": f"{move_trade:+.2f}%" if move_trade is not None else "N/A",
+                "Next 30m": f"{move_30:+.2f}%" if move_30 is not None else "N/A",
+                "Next 60m": f"{move_60:+.2f}%" if move_60 is not None else "N/A",
+                "To Day Close": f"{move_day:+.2f}%" if move_day is not None else "N/A",
+                "Best To Day Close": f"{best_after_move:+.2f}%" if best_after_move is not None else "N/A",
+                "Adverse During": f"{adverse_during:+.2f}%" if adverse_during is not None else "N/A",
+                "ORB Check": _orb_read(bars, entry_time if pd.notna(entry_time) else exit_time, direction, entry_px),
+                "Exit Read": exit_verdict,
+            })
+
+        audit_df = pd.DataFrame(rows)
+        summary = []
+        if not audit_df.empty:
+            early = int(audit_df["Exit Read"].astype(str).str.contains("Early exit|recovered", case=False, regex=True).sum())
+            protected = int(audit_df["Exit Read"].astype(str).str.contains("protected|well timed", case=False, regex=True).sum())
+            orb_5 = int(audit_df["ORB Check"].astype(str).str.contains("5m confirmed").sum())
+            orb_15 = int(audit_df["ORB Check"].astype(str).str.contains("15m confirmed").sum())
+            summary.append(f"Post-exit audit: {early} trade(s) had meaningful favorable movement from exit to the last candle of the day; {protected} exit(s) looked protective or well timed.")
+            summary.append(f"ORB audit: 5m confirmed {orb_5}/{len(audit_df)} selected trades; 15m confirmed {orb_15}/{len(audit_df)}. Current engine ORB is {configured_orb}m.")
+            if early >= max(1, len(audit_df) // 2):
+                summary.append(f"Consider testing a wider trailing stop than {trailing_stop:.0f}% or delaying take-profit exits beyond {take_profit:.0f}% in Strategy Lab before changing live settings.")
+            if protected >= max(1, len(audit_df) // 2):
+                summary.append(f"Your current stop/trailing framework protected several trades; avoid loosening the {stop_loss:.0f}% stop unless the backtester confirms it.")
+            if orb_5 > orb_15:
+                summary.append("5m ORB confirmed more trades than 15m in this sample; test 5m ORB for earlier entries, but watch false breakouts.")
+            elif orb_15 >= orb_5 and orb_15:
+                summary.append("15m ORB held up as a cleaner confirmation in this sample.")
+            summary.append(f"Settings reviewed: stop {stop_loss:.0f}%, target {take_profit:.0f}%, trailing trigger +{trailing_trigger:.0f}%, trailing distance {trailing_stop:.0f}%, ORB {configured_orb}m.")
+        return {"rows": audit_df, "summary": summary, "errors": errors[:5]}
+
+    def _render_deep_trade_audit(exits_df: pd.DataFrame, entries_df: pd.DataFrame, start_date, end_date) -> None:
+        st.markdown(
+            """
+            <style>
+            .pt-audit-wrap {
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                background: #ffffff;
+                padding: 1rem;
+                margin: 0.5rem 0 1.25rem;
+            }
+            .pt-audit-head {
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 0.75rem;
+                margin-bottom: 0.85rem;
+            }
+            .pt-audit-head h3 {
+                margin: 0;
+                color: #111827;
+                font-size: 1.02rem;
+                line-height: 1.25;
+            }
+            .pt-audit-head p {
+                margin: 0.22rem 0 0;
+                color: #64748b;
+                font-size: 0.84rem;
+                line-height: 1.35;
+            }
+            .pt-audit-range {
+                color: #475569;
+                font-size: 0.78rem;
+                font-weight: 800;
+                white-space: nowrap;
+            }
+            .pt-audit-summary {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                gap: 0.65rem;
+                margin-top: 0.85rem;
+            }
+            .pt-audit-card {
+                border: 1px solid #e5e7eb;
+                border-left: 4px solid #0b82ff;
+                border-radius: 8px;
+                background: #f8fafc;
+                padding: 0.75rem 0.85rem;
+            }
+            .pt-audit-card strong {
+                display: block;
+                color: #0f172a;
+                font-size: 0.82rem;
+                margin-bottom: 0.25rem;
+            }
+            .pt-audit-card span {
+                color: #374151;
+                font-size: 0.86rem;
+                line-height: 1.38;
+            }
+            .pt-audit-note {
+                border: 1px solid #fde68a;
+                border-radius: 8px;
+                background: #fffbeb;
+                color: #713f12;
+                padding: 0.7rem 0.85rem;
+                margin: 0.75rem 0;
+                font-size: 0.84rem;
+                line-height: 1.35;
+            }
+            @media (max-width: 900px) {
+                .pt-audit-head { display: block; }
+                .pt-audit-range { display: block; margin-top: 0.25rem; white-space: normal; }
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"""
+            <div class="pt-audit-wrap">
+                <div class="pt-audit-head">
+                    <div>
+                        <h3>Deep Exit & Settings Audit</h3>
+                        <p>Tracks the underlying stock during each trade, after 30/60 minutes, and through the last available candle of the same trading day. Option P/L is inferred from stock direction, not recalculated with Greeks.</p>
+                    </div>
+                    <div class="pt-audit-range">{html.escape(str(start_date))} to {html.escape(str(end_date))}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        audit_key = f"deep_trade_audit_v2_{start_date}_{end_date}_{len(exits_df)}"
+        if st.button("Run Deep Trade Audit", key="run_deep_trade_audit", use_container_width=True):
+            with st.spinner("Checking stock movement after your exits..."):
+                st.session_state[audit_key] = _build_deep_trade_audit(exits_df, entries_df, start_date, end_date, cfg)
+        audit = st.session_state.get(audit_key)
+        if not audit:
+            return
+
+        summary_cards = []
+        for item in audit.get("summary", []):
+            text = str(item)
+            if ":" in text:
+                title, body = text.split(":", 1)
+            else:
+                title, body = "Recommendation", text
+            summary_cards.append(
+                "<div class='pt-audit-card'>"
+                f"<strong>{html.escape(title.strip())}</strong>"
+                f"<span>{html.escape(body.strip())}</span>"
+                "</div>"
+            )
+        if summary_cards:
+            st.markdown(
+                f"<div class='pt-audit-summary'>{''.join(summary_cards)}</div>",
+                unsafe_allow_html=True,
+            )
+        if audit.get("errors"):
+            with st.expander("Market data notes"):
+                for err in audit["errors"]:
+                    st.markdown(
+                        f"<div class='pt-audit-note'>{html.escape(str(err))}</div>",
+                        unsafe_allow_html=True,
+                    )
+        rows = audit.get("rows")
+        if isinstance(rows, pd.DataFrame) and not rows.empty:
+            display_rows = rows.copy()
+            if "P/L" in display_rows.columns:
+                display_rows["P/L"] = pd.to_numeric(display_rows["P/L"], errors="coerce").map(_format_signed_money)
+            st.dataframe(display_rows, use_container_width=True, hide_index=True)
+
+    def _build_trade_ai_summary(exits_df: pd.DataFrame, entries_df: pd.DataFrame, period_label: str, start_date, end_date) -> dict:
+        if exits_df.empty:
+            return {
+                "headline": f"No closed trades to analyze for {period_label.lower()}.",
+                "right": ["No completed exits matched the current filters, so there is not enough closed-trade evidence yet."],
+                "wrong": ["The review needs closed trades with realized P/L before it can judge execution quality."],
+                "suggestions": ["Review again after positions close, or widen the date/symbol/outcome filters."],
+                "stats": [],
+                "worst": pd.DataFrame(),
+            }
+
+        exits = exits_df.copy().sort_values("timestamp")
+        entries = entries_df.copy()
+        pnl = pd.to_numeric(exits.get("realized_pnl", 0), errors="coerce").fillna(0.0)
+        trade_count = int(len(exits))
+        wins_df = exits[pnl > 0].copy()
+        losses_df = exits[pnl < 0].copy()
+        wins = int(len(wins_df))
+        losses = int(len(losses_df))
+        net = float(pnl.sum())
+        gross_profit = float(pnl[pnl > 0].sum()) if wins else 0.0
+        gross_loss = abs(float(pnl[pnl < 0].sum())) if losses else 0.0
+        win_rate_local = (wins / trade_count * 100.0) if trade_count else 0.0
+        avg_win_local = float(pnl[pnl > 0].mean()) if wins else 0.0
+        avg_loss_local = float(pnl[pnl < 0].mean()) if losses else 0.0
+        profit_factor_local = gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
+        best_trade = exits.loc[pnl.idxmax()] if not pnl.empty else None
+        worst_trade = exits.loc[pnl.idxmin()] if not pnl.empty else None
+        symbol_pnl = pd.DataFrame()
+        if "symbol" in exits.columns:
+            symbol_pnl = (
+                exits.assign(_pnl=pnl)
+                .groupby("symbol", as_index=False)
+                .agg(pnl=("_pnl", "sum"), trades=("_pnl", "size"))
+            )
+            symbol_pnl = symbol_pnl.sort_values("pnl", ascending=False)
+
+        right = []
+        wrong = []
+        suggestions = []
+
+        if net > 0:
+            right.append(f"You finished positive with net realized P/L of {_format_signed_money(net)} across {trade_count} closed trade{'s' if trade_count != 1 else ''}.")
+        elif net < 0:
+            wrong.append(f"The selected period finished negative at {_format_signed_money(net)} across {trade_count} closed trade{'s' if trade_count != 1 else ''}.")
+        else:
+            right.append(f"You kept the selected period flat across {trade_count} closed trade{'s' if trade_count != 1 else ''}.")
+
+        if win_rate_local >= 55:
+            right.append(f"Your win rate was solid at {win_rate_local:.1f}%, which means entries were often moving in the intended direction.")
+        elif trade_count >= 3:
+            wrong.append(f"Win rate was only {win_rate_local:.1f}%, so too many setups failed before producing realized gains.")
+
+        if profit_factor_local >= 1.5:
+            right.append(f"Profit factor was {profit_factor_local:.2f}, so winners outweighed losers by a healthy margin.")
+        elif gross_loss > 0:
+            wrong.append(f"Profit factor was {profit_factor_local:.2f}; losses are absorbing too much of the winning trade P/L.")
+
+        if wins and losses and abs(avg_loss_local) > avg_win_local:
+            wrong.append(f"Average loss ({_format_signed_money(avg_loss_local)}) was larger than average win ({_format_signed_money(avg_win_local)}).")
+            suggestions.append("Tighten loss exits or let the strongest winning trades reach a larger target before taking profit.")
+        elif wins and avg_win_local > abs(avg_loss_local):
+            right.append(f"Average winner ({_format_signed_money(avg_win_local)}) was larger than average loser ({_format_signed_money(avg_loss_local)}).")
+
+        if not symbol_pnl.empty:
+            best_symbol = symbol_pnl.iloc[0]
+            worst_symbol = symbol_pnl.iloc[-1]
+            if float(best_symbol["pnl"]) > 0:
+                right.append(f"Best symbol was {best_symbol['symbol']} with {_format_signed_money(best_symbol['pnl'])} over {int(best_symbol['trades'])} closed trade{'s' if int(best_symbol['trades']) != 1 else ''}.")
+            if float(worst_symbol["pnl"]) < 0:
+                wrong.append(f"Weakest symbol was {worst_symbol['symbol']} with {_format_signed_money(worst_symbol['pnl'])}; be more selective there until the setup quality improves.")
+
+        exit_reasons = _top_value_counts(exits, "exit_reason")
+        if exit_reasons:
+            right.append("Most common exit reason(s): " + ", ".join(exit_reasons) + ".")
+        elif "broker_status" in exits.columns:
+            broker_statuses = _top_value_counts(exits, "broker_status")
+            if broker_statuses:
+                right.append("Most common broker status on exits: " + ", ".join(broker_statuses) + ".")
+
+        if trade_count >= 6:
+            losing_streak = 0
+            max_losing_streak = 0
+            for value in pnl.tolist():
+                if value < 0:
+                    losing_streak += 1
+                    max_losing_streak = max(max_losing_streak, losing_streak)
+                else:
+                    losing_streak = 0
+            if max_losing_streak >= 3:
+                wrong.append(f"There was a {max_losing_streak}-trade losing streak. That is a good place to pause or reduce size.")
+                suggestions.append("After two consecutive losses, consider forcing the next signal to meet a higher score/clean-contract threshold.")
+
+        if not entries.empty and trade_count and len(entries) > trade_count * 1.5:
+            suggestions.append("There were noticeably more entries than exits in this filtered view; check whether positions are being split, duplicated, or left open longer than intended.")
+
+        if not suggestions:
+            if net >= 0:
+                suggestions.append("Keep using the setups that produced positive P/L, but track whether the same symbols and exit rules keep working over the next few sessions.")
+            else:
+                suggestions.append("Reduce size until the selected setup/filter combination shows a positive profit factor over several closed trades.")
+        if trade_count < 3:
+            suggestions.append("Treat this as a light read: fewer than three closed trades is too small for a reliable pattern.")
+
+        if best_trade is not None and worst_trade is not None:
+            headline = (
+                f"{period_label}: {trade_count} closed, {wins} win{'s' if wins != 1 else ''}, "
+                f"{losses} loss{'es' if losses != 1 else ''}, net {_format_signed_money(net)}. "
+                f"Best: {_safe_trade_text(best_trade.get('symbol'), 'N/A')} {_format_signed_money(best_trade.get('realized_pnl', 0))}; "
+                f"worst: {_safe_trade_text(worst_trade.get('symbol'), 'N/A')} {_format_signed_money(worst_trade.get('realized_pnl', 0))}."
+            )
+        else:
+            headline = f"{period_label}: net {_format_signed_money(net)} from {trade_count} closed trades."
+
+        stats = [
+            ("Closed", trade_count),
+            ("Net P/L", _format_signed_money(net)),
+            ("Win Rate", f"{win_rate_local:.1f}%"),
+            ("Profit Factor", f"{profit_factor_local:.2f}"),
+            ("Avg Win", _format_signed_money(avg_win_local)),
+            ("Avg Loss", _format_signed_money(avg_loss_local)),
+        ]
+        worst_cols = [c for c in ["timestamp", "symbol", "signal", "option", "quantity", "exit_price", "realized_pnl", "exit_reason", "broker_status"] if c in exits.columns]
+        worst = exits.assign(_pnl=pnl).sort_values("_pnl").head(5)
+        worst = worst[worst_cols].copy() if worst_cols else pd.DataFrame()
+        return {
+            "headline": headline,
+            "right": right[:5],
+            "wrong": wrong[:5] or ["No obvious repeated mistake stood out in the selected closed trades."],
+            "suggestions": suggestions[:5],
+            "stats": stats,
+            "worst": worst,
+        }
+
+    def _render_trade_ai_summary(exits_df: pd.DataFrame, entries_df: pd.DataFrame, period_label: str, start_date, end_date) -> None:
+        review = _build_trade_ai_summary(exits_df, entries_df, period_label, start_date, end_date)
+        stat_html = "".join(
+            f"<div class='pt-ai-stat'><span>{html.escape(str(label))}</span><strong>{html.escape(str(value))}</strong></div>"
+            for label, value in review.get("stats", [])
+        )
+
+        def section(title: str, items: list[str], tone: str) -> str:
+            bullet_html = "".join(f"<li>{html.escape(str(item))}</li>" for item in items)
+            return f"<div class='pt-ai-section pt-ai-{tone}'><h4>{html.escape(title)}</h4><ul>{bullet_html}</ul></div>"
+
+        st.markdown(
+            f"""
+            <style>
+            .pt-ai-review {{
+                border: 1px solid #dbeafe;
+                border-radius: 8px;
+                background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+                padding: 1rem;
+                margin: 0.25rem 0 1.25rem;
+            }}
+            .pt-ai-title {{
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 0.75rem;
+                margin-bottom: 0.75rem;
+            }}
+            .pt-ai-title h3 {{
+                margin: 0;
+                color: #0f172a;
+                font-size: 1.1rem;
+                line-height: 1.25;
+            }}
+            .pt-ai-title span {{
+                color: #64748b;
+                font-size: 0.84rem;
+                font-weight: 700;
+                white-space: nowrap;
+            }}
+            .pt-ai-headline {{
+                color: #111827;
+                font-size: 0.98rem;
+                line-height: 1.45;
+                margin: 0.2rem 0 0.9rem;
+            }}
+            .pt-ai-stats {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+                gap: 0.55rem;
+                margin-bottom: 0.9rem;
+            }}
+            .pt-ai-stat {{
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                background: #ffffff;
+                padding: 0.58rem 0.7rem;
+            }}
+            .pt-ai-stat span {{
+                display: block;
+                color: #64748b;
+                font-size: 0.75rem;
+                font-weight: 800;
+            }}
+            .pt-ai-stat strong {{
+                display: block;
+                color: #111827;
+                font-size: 0.98rem;
+                margin-top: 0.18rem;
+            }}
+            .pt-ai-grid {{
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 0.75rem;
+            }}
+            .pt-ai-section {{
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                background: #ffffff;
+                padding: 0.82rem;
+                min-height: 160px;
+            }}
+            .pt-ai-section h4 {{
+                margin: 0 0 0.55rem;
+                color: #111827;
+                font-size: 0.92rem;
+            }}
+            .pt-ai-section ul {{
+                margin: 0;
+                padding-left: 1rem;
+                color: #374151;
+                font-size: 0.88rem;
+                line-height: 1.38;
+            }}
+            .pt-ai-section li {{ margin-bottom: 0.45rem; }}
+            .pt-ai-right {{ border-top: 4px solid #10b981; }}
+            .pt-ai-wrong {{ border-top: 4px solid #ef4444; }}
+            .pt-ai-improve {{ border-top: 4px solid #0b82ff; }}
+            @media (max-width: 900px) {{
+                .pt-ai-grid {{ grid-template-columns: 1fr; }}
+                .pt-ai-title {{ display: block; }}
+                .pt-ai-title span {{ display: block; margin-top: 0.25rem; white-space: normal; }}
+            }}
+            </style>
+            <div class="pt-ai-review">
+                <div class="pt-ai-title">
+                    <h3>AI Trade Review</h3>
+                    <span>{html.escape(str(start_date))} to {html.escape(str(end_date))}</span>
+                </div>
+                <div class="pt-ai-headline">{html.escape(review["headline"])}</div>
+                <div class="pt-ai-stats">{stat_html}</div>
+                <div class="pt-ai-grid">
+                    {section("What You Did Right", review["right"], "right")}
+                    {section("What Went Wrong", review["wrong"], "wrong")}
+                    {section("How To Improve", review["suggestions"], "improve")}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        _render_deep_trade_audit(exits_df, entries_df, start_date, end_date)
+
     flex_cfg = cfg.setdefault("ibkr_flex", {})
     token_ready = bool(os.getenv("IBKR_FLEX_TOKEN") or flex_cfg.get("token"))
     query_ready = bool(os.getenv("IBKR_FLEX_TRADE_QUERY_ID") or flex_cfg.get("trade_query_id"))
@@ -4636,8 +5417,89 @@ elif selected_page == "📊 Performance & Trade Journal":
     else:
         now_et = datetime.now(EASTERN)
         today = now_et.date()
-        period = st.radio("Performance Period", ["Today", "This Week", "This Month", "All Time", "Custom Range"], index=2, horizontal=True)
         base_dates = trade_log["timestamp"].dt.date if not trade_log.empty else replay_df["timestamp"].dt.date
+
+        if selected_page == "🤖 AI AUDIT":
+            st.markdown("### Audit Filters")
+            audit_cols = st.columns([1.45, 1, 1, 1])
+            with audit_cols[0]:
+                audit_date_range = st.date_input(
+                    "Date range",
+                    value=(base_dates.max(), base_dates.max()),
+                    key="ai_audit_date_range",
+                )
+            if isinstance(audit_date_range, tuple):
+                audit_start_date = audit_date_range[0] if audit_date_range else base_dates.max()
+                audit_end_date = audit_date_range[-1] if len(audit_date_range) > 1 else audit_start_date
+            else:
+                audit_start_date = audit_date_range
+                audit_end_date = audit_date_range
+
+            audit_source = trade_log.copy()
+            if not audit_source.empty:
+                audit_mask = (audit_source["timestamp"].dt.date >= audit_start_date) & (audit_source["timestamp"].dt.date <= audit_end_date)
+                audit_source = audit_source[audit_mask].copy()
+
+            audit_symbols = sorted(audit_source.get("symbol", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
+            with audit_cols[1]:
+                audit_selected_symbols = st.multiselect("Symbol", audit_symbols, default=[], key="ai_audit_symbols")
+            with audit_cols[2]:
+                audit_direction = st.selectbox("Direction", ["All", "CALL", "PUT"], key="ai_audit_direction")
+            with audit_cols[3]:
+                audit_outcome = st.selectbox("Outcome", ["All", "Winners", "Losers", "Breakeven"], key="ai_audit_outcome")
+
+            def _set_ai_audit_date_range(start_value, end_value) -> None:
+                st.session_state["ai_audit_date_range"] = (start_value, end_value)
+
+            last_month_end = today.replace(day=1) - timedelta(days=1)
+            last_month_start = last_month_end.replace(day=1)
+            preset_cols = st.columns(5)
+            preset_options = [
+                ("Today", today, today),
+                ("Yesterday", today - timedelta(days=1), today - timedelta(days=1)),
+                ("This Month", today.replace(day=1), today),
+                ("Last Month", last_month_start, last_month_end),
+                ("All Time", base_dates.min(), base_dates.max()),
+            ]
+            for preset_col, (label, preset_start, preset_end) in zip(preset_cols, preset_options):
+                with preset_col:
+                    st.button(
+                        label,
+                        key=f"ai_audit_preset_{label.lower().replace(' ', '_')}",
+                        use_container_width=True,
+                        on_click=_set_ai_audit_date_range,
+                        args=(preset_start, preset_end),
+                    )
+
+            if audit_selected_symbols and "symbol" in audit_source.columns:
+                audit_source = audit_source[audit_source["symbol"].astype(str).isin(audit_selected_symbols)].copy()
+            if audit_direction != "All" and "signal" in audit_source.columns:
+                audit_source = audit_source[audit_source["signal"].astype(str).str.upper() == audit_direction].copy()
+
+            audit_exits = audit_source[audit_source.get("event", pd.Series(dtype=str)).astype(str) == "EXIT"].copy() if not audit_source.empty else pd.DataFrame()
+            if not audit_exits.empty:
+                if audit_outcome == "Winners":
+                    audit_exits = audit_exits[audit_exits["realized_pnl"] > 0]
+                elif audit_outcome == "Losers":
+                    audit_exits = audit_exits[audit_exits["realized_pnl"] < 0]
+                elif audit_outcome == "Breakeven":
+                    audit_exits = audit_exits[audit_exits["realized_pnl"] == 0]
+            audit_exits = _collapse_logical_trade_rows(audit_exits) if not audit_exits.empty else audit_exits
+
+            audit_entries = audit_source[audit_source.get("event", pd.Series(dtype=str)).astype(str) == "ENTRY"].copy() if not audit_source.empty else pd.DataFrame()
+            if not audit_entries.empty and "status" in audit_entries.columns:
+                inactive_statuses = {"cancelled", "canceled", "apicancelled", "inactive", "rejected"}
+                audit_entries = audit_entries[~audit_entries["status"].fillna("").astype(str).str.lower().isin(inactive_statuses)].copy()
+            audit_entries = _collapse_logical_trade_rows(audit_entries) if not audit_entries.empty else audit_entries
+
+            if audit_start_date > audit_end_date:
+                st.warning("Start date must be before or equal to end date.")
+            else:
+                st.caption(f"Auditing {len(audit_exits)} closed trade(s) from {audit_start_date} to {audit_end_date}.")
+                _render_trade_ai_summary(audit_exits, audit_entries, "AI Audit", audit_start_date, audit_end_date)
+            st.stop()
+
+        period = st.radio("Performance Period", ["Today", "This Week", "This Month", "All Time", "Custom Range"], index=2, horizontal=True)
         if period == "Today":
             start_date, end_date = today, today
         elif period == "This Week":
@@ -4691,6 +5553,8 @@ elif selected_page == "📊 Performance & Trade Journal":
                 exits = exits[exits["realized_pnl"] < 0]
             elif outcome_filter == "Breakeven":
                 exits = exits[exits["realized_pnl"] == 0]
+        raw_exit_count = int(len(exits))
+        exits = _collapse_logical_trade_rows(exits) if not exits.empty else exits
 
         calendar_source = _apply_common_filters(trade_log.copy()) if not trade_log.empty else pd.DataFrame()
         calendar_exits = calendar_source[calendar_source.get("event", pd.Series(dtype=str)).astype(str) == "EXIT"].copy() if not calendar_source.empty else pd.DataFrame()
@@ -4701,11 +5565,14 @@ elif selected_page == "📊 Performance & Trade Journal":
                 calendar_exits = calendar_exits[calendar_exits["realized_pnl"] < 0]
             elif outcome_filter == "Breakeven":
                 calendar_exits = calendar_exits[calendar_exits["realized_pnl"] == 0]
+        calendar_exits = _collapse_logical_trade_rows(calendar_exits) if not calendar_exits.empty else calendar_exits
 
         entries = filtered[filtered.get("event", pd.Series(dtype=str)).astype(str) == "ENTRY"].copy() if not filtered.empty else pd.DataFrame()
         if not entries.empty and "status" in entries.columns:
             inactive_statuses = {"cancelled", "canceled", "apicancelled", "inactive", "rejected"}
             entries = entries[~entries["status"].fillna("").astype(str).str.lower().isin(inactive_statuses)].copy()
+        raw_entry_count = int(len(entries))
+        entries = _collapse_logical_trade_rows(entries) if not entries.empty else entries
         total_entries = int(len(entries))
         total_exits = int(len(exits))
         realized_pnl = float(exits["realized_pnl"].sum()) if not exits.empty else 0.0
@@ -4744,6 +5611,11 @@ elif selected_page == "📊 Performance & Trade Journal":
             {"label": "Deposited", "value": f"${original_deposited:,.2f}"},
             {"label": "Avail. Funds", "value": available_funds_label},
         ])
+        if raw_entry_count != total_entries or raw_exit_count != total_exits:
+            st.caption(
+                f"Performance counts logical trades. Raw broker fills in this view: "
+                f"{raw_entry_count} entry row(s), {raw_exit_count} exit row(s)."
+            )
 
         calendar_anchor = today
         if period == "All Time" and not calendar_exits.empty:
@@ -4751,6 +5623,7 @@ elif selected_page == "📊 Performance & Trade Journal":
         elif period == "Custom Range":
             calendar_anchor = start_date
         st.markdown("### Monthly P/L Calendar")
+        calendar_anchor = _render_calendar_controls(calendar_anchor, calendar_exits)
         _render_monthly_pnl_calendar(calendar_exits, calendar_anchor)
 
         if not exits.empty:

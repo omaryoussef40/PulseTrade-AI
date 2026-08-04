@@ -1106,5 +1106,42 @@
     "submitted_at": "2026-07-20T10:16:19.229745-04:00",
     "broker_status": "Inactive",
     "decision_at": "2026-07-20T10:16:19.231175-04:00"
+  },
+  {
+    "id": "META_CALL_20260803102611023231",
+    "status": "submitted",
+    "created_at": "2026-08-03T10:26:11.023262-04:00",
+    "symbol": "META",
+    "signal": "CALL",
+    "option": "META 20260810 590 CALL",
+    "expiry": "20260810",
+    "strike": 590.0,
+    "type": "CALL",
+    "quantity": 3,
+    "mid": 13.12,
+    "estimated_cost": 3936.0,
+    "order_type": "LIMIT",
+    "limit_price": 13.12,
+    "account_mode": "Live",
+    "score": "MANUAL",
+    "grade": "Manual",
+    "setup_quality": "Manual order",
+    "rank_score": 0,
+    "reasons": "Manual order entered from Positions tab.",
+    "raw_signal": {
+      "Symbol": "META",
+      "Signal": "CALL"
+    },
+    "option_data": {
+      "Option": "META 20260810 590 CALL",
+      "Expiry": "20260810",
+      "Strike": 590.0,
+      "Type": "CALL",
+      "Mid": 13.12
+    },
+    "telegram_message_id": 2348,
+    "telegram_sent_at": "2026-08-03T10:26:12.589382-04:00",
+    "submitted_at": "2026-08-03T10:26:40.489075-04:00",
+    "broker_status": "Filled"
   }
 ]

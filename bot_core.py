@@ -563,6 +563,96 @@ def get_option_expiry_and_strikes(ib: IB, symbol: str, dte_target=7):
     return best_exp, strikes
 
 
+def _option_chain_candidates(ib: IB, symbol: str, dte_target=7) -> list[dict]:
+    """Return valid IB option chain/expiry combinations, preferring SMART."""
+    stock = qualify_stock(ib, symbol)
+    params = ib.reqSecDefOptParams(symbol, "", stock.secType, stock.conId)
+    if not params:
+        return []
+
+    today = datetime.now(EASTERN).date()
+    target = today + timedelta(days=dte_target)
+    chains = sorted(
+        params,
+        key=lambda p: (
+            0 if str(getattr(p, "exchange", "")).upper() == "SMART" else 1,
+            str(getattr(p, "tradingClass", "")),
+        ),
+    )
+    max_expiries = 3
+    candidates = []
+    seen = set()
+    for chain in chains:
+        expiration_dates = []
+        for exp in sorted(getattr(chain, "expirations", []) or []):
+            try:
+                exp_date = datetime.strptime(exp, "%Y%m%d").date()
+            except Exception:
+                continue
+            if exp_date >= today:
+                expiration_dates.append((exp, exp_date))
+        if not expiration_dates:
+            continue
+
+        expiries = sorted(expiration_dates, key=lambda item: abs((item[1] - target).days))[:max_expiries]
+        strikes = sorted(float(s) for s in (getattr(chain, "strikes", []) or []) if s and s > 0)
+        if not strikes:
+            continue
+
+        for expiry, expiry_date in expiries:
+            key = (
+                str(getattr(chain, "exchange", "")),
+                str(getattr(chain, "tradingClass", "")),
+                str(getattr(chain, "multiplier", "") or "100"),
+                expiry,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append({
+                "exchange": str(getattr(chain, "exchange", "") or "SMART"),
+                "tradingClass": str(getattr(chain, "tradingClass", "") or ""),
+                "multiplier": str(getattr(chain, "multiplier", "") or "100"),
+                "expiry": expiry,
+                "expiry_date": expiry_date,
+                "strikes": strikes,
+                "dte_distance": abs((expiry_date - target).days),
+            })
+    return candidates
+
+
+def _rank_option_strikes(strikes: list[float], stock_price: float, option_type: str, filters: dict) -> list[tuple[float, float, float, float]]:
+    min_abs_delta = float(filters.get("min_abs_delta", 0.45))
+    target_abs_delta = float(filters.get("target_abs_delta", 0.55))
+    max_abs_delta = float(filters.get("max_abs_delta", 0.80))
+    max_contract_cost = _finite_number(filters.get("_max_contract_cost"))
+    max_checks = int(filters.get("max_contract_checks", 36) or 36)
+
+    nearby = [s for s in strikes if stock_price * 0.80 <= s <= stock_price * 1.20]
+    if not nearby:
+        nearby = [s for s in strikes if stock_price * 0.70 <= s <= stock_price * 1.30]
+    ranked = []
+    for strike in nearby:
+        est_delta = estimate_delta(option_type, strike, stock_price)
+        abs_delta = abs(est_delta)
+        if abs_delta < max(0.10, min_abs_delta - 0.12) or abs_delta > min(0.95, max_abs_delta + 0.08):
+            continue
+        delta_distance = abs(abs_delta - target_abs_delta)
+        strike_distance = abs(strike - stock_price)
+        affordability_bias = 0.0
+        if max_contract_cost:
+            if option_type == "CALL" and strike >= stock_price:
+                affordability_bias = -0.20
+            elif option_type == "PUT" and strike <= stock_price:
+                affordability_bias = -0.20
+        ranked.append((delta_distance + affordability_bias, strike_distance, strike, est_delta))
+
+    ranked = sorted(ranked)
+    if len(ranked) > max_checks:
+        return ranked[:max_checks]
+    return ranked
+
+
 def estimate_delta(option_type: str, strike: float, stock_price: float) -> float:
     distance_pct = (strike - stock_price) / stock_price
     if option_type == "CALL":
@@ -742,100 +832,135 @@ def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dt
         return None
 
     filters = option_filters_from_config({"option_filters": option_filters or {}})
-    expiry, strikes = get_option_expiry_and_strikes(ib, symbol, dte_target)
-    if not expiry or not strikes:
+    chain_candidates = _option_chain_candidates(ib, symbol, dte_target)
+    if not chain_candidates:
         return None
 
     right = "C" if signal == "CALL" else "P"
     option_type = "CALL" if signal == "CALL" else "PUT"
 
-    nearby = [s for s in strikes if stock_price * 0.90 <= s <= stock_price * 1.10]
-    if not nearby:
-        return None
-
     # Start with strikes close to target estimated delta to reduce API calls,
     # then require real IBKR Greeks before a contract can be selected.
-    candidates = []
-    for strike in nearby:
-        delta = estimate_delta(option_type, strike, stock_price)
-        target_distance = abs(delta - TARGET_DELTA) if option_type == "CALL" else abs(delta + TARGET_DELTA)
-        candidates.append((target_distance, abs(strike - stock_price), strike, delta))
-
-    candidates = sorted(candidates)[:12]
     option_rows = []
+    rejects: dict[str, int] = {}
+    qualification_checks = 0
+    market_checks = 0
+    max_qualification_checks = int(filters.get("max_contract_qualification_checks", 72) or 72)
+    max_market_checks = int(filters.get("max_market_data_checks", 48) or 48)
 
-    for _, strike_distance, strike, est_delta in candidates:
-        contract = Option(symbol, expiry, strike, right, "SMART", currency="USD", multiplier="100")
-        qualified = ib.qualifyContracts(contract)
-        if not qualified:
-            continue
-        contract = qualified[0]
-        market = get_snapshot_mid(ib, contract)
-        mid = _finite_number(market.get("Mid"))
-        bid = _finite_number(market.get("Bid"))
-        ask = _finite_number(market.get("Ask"))
+    def reject(reason: str) -> None:
+        rejects[reason] = rejects.get(reason, 0) + 1
 
-        if mid is None or mid <= 0 or bid is None or ask is None:
-            continue
-
-        spread_pct = _finite_number(market.get("Spread %"))
-        spread_dollars = (ask - bid) if ask is not None and bid is not None else None
-        max_spread_pct = float(filters.get("max_spread_pct", 10.0)) / 100.0
-        max_spread_dollars = float(filters.get("max_spread_dollars", 0.75) or 0)
-        min_bid = float(filters.get("min_bid", 0.05) or 0)
-        if spread_pct is None or spread_pct > max_spread_pct:
-            continue
-        if max_spread_dollars > 0 and spread_dollars is not None and spread_dollars > max_spread_dollars:
-            continue
-        if bid < min_bid:
+    for chain in chain_candidates:
+        if qualification_checks >= max_qualification_checks or market_checks >= max_market_checks:
+            break
+        expiry = chain["expiry"]
+        candidates = _rank_option_strikes(chain["strikes"], stock_price, option_type, filters)
+        if not candidates:
+            reject("no nearby strikes")
             continue
 
-        real_delta = _finite_number(market.get("Delta"))
-        require_live_greeks = bool(filters.get("require_live_greeks", True))
-        if real_delta is None:
-            if require_live_greeks:
+        for _, strike_distance, strike, est_delta in candidates:
+            if qualification_checks >= max_qualification_checks or market_checks >= max_market_checks:
+                break
+            contract = Option(
+                symbol,
+                expiry,
+                strike,
+                right,
+                "SMART",
+                currency="USD",
+                multiplier=str(chain.get("multiplier") or "100"),
+                tradingClass=str(chain.get("tradingClass") or ""),
+            )
+            try:
+                qualification_checks += 1
+                qualified = ib.qualifyContracts(contract)
+            except Exception:
+                reject("contract qualification error")
                 continue
-            real_delta = est_delta
-        min_abs_delta = float(filters.get("min_abs_delta", 0.45))
-        max_abs_delta = float(filters.get("max_abs_delta", 0.80))
-        if signal == "CALL" and real_delta <= 0:
-            continue
-        if signal == "PUT" and real_delta >= 0:
-            continue
-        if abs(real_delta) < min_abs_delta or abs(real_delta) > max_abs_delta:
-            continue
+            if not qualified:
+                reject("contract not qualified")
+                continue
+            contract = qualified[0]
+            market_checks += 1
+            market = get_snapshot_mid(ib, contract)
+            mid = _finite_number(market.get("Mid"))
+            bid = _finite_number(market.get("Bid"))
+            ask = _finite_number(market.get("Ask"))
 
-        last = _finite_number(market.get("Last"))
-        volume = _finite_number(market.get("Volume")) or 0
-        min_volume = int(filters.get("min_volume", 0) or 0)
-        if min_volume > 0 and volume < min_volume:
-            continue
+            if mid is None or mid <= 0 or bid is None or ask is None:
+                reject("no bid/ask quote")
+                continue
 
-        row = {
-            "Contract": contract,
-            "Option": f"{symbol} {expiry} {strike:g} {option_type}",
-            "Expiry": expiry,
-            "Strike": strike,
-            "Type": option_type,
-            "Delta": round(real_delta, 4),
-            "Estimated Delta": round(est_delta, 2),
-            "Gamma": round(float(market.get("Gamma")), 6) if _finite_number(market.get("Gamma")) is not None else None,
-            "Theta": round(float(market.get("Theta")), 6) if _finite_number(market.get("Theta")) is not None else None,
-            "Vega": round(float(market.get("Vega")), 6) if _finite_number(market.get("Vega")) is not None else None,
-            "Implied Vol": round(float(market.get("Implied Vol")), 4) if _finite_number(market.get("Implied Vol")) is not None else None,
-            "Greek Source": market.get("Greek Source"),
-            "Bid": round(bid, 2) if bid is not None else None,
-            "Ask": round(ask, 2) if ask is not None else None,
-            "Last": round(last, 2) if last is not None else None,
-            "Mid": round(mid, 2),
-            "Spread %": round(spread_pct * 100, 1) if spread_pct is not None else None,
-            "Spread $": round(spread_dollars, 2) if spread_dollars is not None else None,
-            "Volume": int(volume),
-            "Risk / Contract": round(mid * 100, 2),
-            "Strike Distance": strike_distance,
-        }
-        row["Option Score"], row["Option Score Notes"] = _option_quality_score(row, filters)
-        option_rows.append(row)
+            spread_pct = _finite_number(market.get("Spread %"))
+            spread_dollars = (ask - bid) if ask is not None and bid is not None else None
+            max_spread_pct = float(filters.get("max_spread_pct", 10.0)) / 100.0
+            max_spread_dollars = float(filters.get("max_spread_dollars", 0.75) or 0)
+            min_bid = float(filters.get("min_bid", 0.05) or 0)
+            if spread_pct is None or spread_pct > max_spread_pct:
+                reject("spread percent too wide")
+                continue
+            if max_spread_dollars > 0 and spread_dollars is not None and spread_dollars > max_spread_dollars:
+                reject("spread dollars too wide")
+                continue
+            if bid < min_bid:
+                reject("bid below minimum")
+                continue
+
+            real_delta = _finite_number(market.get("Delta"))
+            require_live_greeks = bool(filters.get("require_live_greeks", True))
+            if real_delta is None:
+                if require_live_greeks:
+                    reject("missing live greeks")
+                    continue
+                real_delta = est_delta
+            min_abs_delta = float(filters.get("min_abs_delta", 0.45))
+            max_abs_delta = float(filters.get("max_abs_delta", 0.80))
+            if signal == "CALL" and real_delta <= 0:
+                reject("wrong delta sign")
+                continue
+            if signal == "PUT" and real_delta >= 0:
+                reject("wrong delta sign")
+                continue
+            if abs(real_delta) < min_abs_delta or abs(real_delta) > max_abs_delta:
+                reject("delta outside range")
+                continue
+
+            last = _finite_number(market.get("Last"))
+            volume = _finite_number(market.get("Volume")) or 0
+            min_volume = int(filters.get("min_volume", 0) or 0)
+            if min_volume > 0 and volume < min_volume:
+                reject("volume below minimum")
+                continue
+
+            row = {
+                "Contract": contract,
+                "Option": f"{symbol} {expiry} {strike:g} {option_type}",
+                "Expiry": expiry,
+                "Strike": strike,
+                "Type": option_type,
+                "Delta": round(real_delta, 4),
+                "Estimated Delta": round(est_delta, 2),
+                "Gamma": round(float(market.get("Gamma")), 6) if _finite_number(market.get("Gamma")) is not None else None,
+                "Theta": round(float(market.get("Theta")), 6) if _finite_number(market.get("Theta")) is not None else None,
+                "Vega": round(float(market.get("Vega")), 6) if _finite_number(market.get("Vega")) is not None else None,
+                "Implied Vol": round(float(market.get("Implied Vol")), 4) if _finite_number(market.get("Implied Vol")) is not None else None,
+                "Greek Source": market.get("Greek Source"),
+                "Bid": round(bid, 2) if bid is not None else None,
+                "Ask": round(ask, 2) if ask is not None else None,
+                "Last": round(last, 2) if last is not None else None,
+                "Mid": round(mid, 2),
+                "Spread %": round(spread_pct * 100, 1) if spread_pct is not None else None,
+                "Spread $": round(spread_dollars, 2) if spread_dollars is not None else None,
+                "Volume": int(volume),
+                "Risk / Contract": round(mid * 100, 2),
+                "Strike Distance": strike_distance,
+                "Chain Exchange": chain.get("exchange"),
+                "Trading Class": chain.get("tradingClass"),
+            }
+            row["Option Score"], row["Option Score Notes"] = _option_quality_score(row, filters)
+            option_rows.append(row)
 
     if not option_rows:
         return None
@@ -843,8 +968,19 @@ def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dt
     df = pd.DataFrame(option_rows)
     target_abs_delta = float(filters.get("target_abs_delta", 0.55))
     df["Delta Distance"] = df["Delta"].apply(lambda d: abs(abs(float(d)) - target_abs_delta))
-    df = df.sort_values(["Option Score", "Delta Distance", "Spread %", "Strike Distance"], ascending=[False, True, True, True], na_position="last")
+    max_contract_cost = _finite_number(filters.get("_max_contract_cost"))
+    if max_contract_cost:
+        df["Affordable"] = df["Risk / Contract"].apply(lambda cost: float(cost) <= max_contract_cost)
+    else:
+        df["Affordable"] = True
+    df = df.sort_values(
+        ["Affordable", "Option Score", "Delta Distance", "Risk / Contract", "Spread %", "Strike Distance"],
+        ascending=[False, False, True, True, True, True],
+        na_position="last",
+    )
     best = df.iloc[0].to_dict()
+    if rejects:
+        best["Reject Summary"] = "; ".join(f"{reason}: {count}" for reason, count in sorted(rejects.items()))
     return best
 
 
@@ -1192,6 +1328,10 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             continue
 
         con_id = getattr(contract, "conId", None)
+        try:
+            multiplier = float(getattr(contract, "multiplier", None) or (100 if sec_type in {"OPT", "FOP"} else 1))
+        except Exception:
+            multiplier = 100.0 if sec_type in {"OPT", "FOP"} else 1.0
         expiry = str(getattr(contract, "lastTradeDateOrContractMonth", "") or "")
         strike = getattr(contract, "strike", "")
         right = str(getattr(contract, "right", "") or "").upper()
@@ -1224,6 +1364,8 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             "expiry": expiry,
             "strike": strike,
             "con_id": con_id,
+            "sec_type": sec_type,
+            "multiplier": multiplier,
             "quantity": 0.0,
             "value": 0.0,
             "exec_ids": [],
@@ -1242,7 +1384,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
     for key, item in grouped.items():
         avg_price = item["value"] / item["quantity"] if item["quantity"] else 0.0
         if item["event"] == "ENTRY":
-            entry_price_by_contract[key[0]] = avg_price
+            entry_price_by_contract[key[0]] = (avg_price, float(item.get("multiplier") or 1.0))
         rows.append(item | {
             "timestamp": item["timestamp"].isoformat() if hasattr(item["timestamp"], "isoformat") else str(item["timestamp"]),
             "quantity": int(item["quantity"]) if float(item["quantity"]).is_integer() else item["quantity"],
@@ -1261,8 +1403,12 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             continue
         entry_price = entry_price_by_contract.get((row.get("con_id") or row.get("option")))
         if entry_price:
+            if isinstance(entry_price, tuple):
+                entry_price, multiplier = entry_price
+            else:
+                multiplier = 100.0 if str(row.get("sec_type", "")).upper() in {"OPT", "FOP"} else 1.0
             row["entry_price"] = round(float(entry_price), 4)
-            row["realized_pnl"] = round((float(row["exit_price"]) - float(entry_price)) * float(row["quantity"]) * 100, 2)
+            row["realized_pnl"] = round((float(row["exit_price"]) - float(entry_price)) * float(row["quantity"]) * float(multiplier), 2)
 
     path = _Path(TRADE_LOG_FILE)
     existing = pd.read_csv(path) if path.exists() else pd.DataFrame()
@@ -1778,6 +1924,54 @@ def ensure_protective_orders(
     open_sell_trades = _open_sell_trades_for_position(ib, pos)
     chunks = _order_chunks(qty)
     want_take_profit = not bool(pos.get("trailing_active", False))
+    price_tolerance = 0.009
+
+    def _tracked_price(kind: str, order_id: int | None) -> float | None:
+        if order_id:
+            price_map = pos.get(f"ibkr_{kind}_order_prices_by_id")
+            if isinstance(price_map, dict):
+                value = _number_or_none(price_map.get(str(order_id)))
+                if value is not None:
+                    return float(value)
+        value = _number_or_none(pos.get(f"ibkr_{kind}_order_price"))
+        return float(value) if value is not None else None
+
+    def _remember_protective_price(kind: str, order_id: int | None, price: float) -> None:
+        rounded_price = round(float(price), 2)
+        pos[f"ibkr_{kind}_order_price"] = rounded_price
+        if order_id:
+            price_map = pos.get(f"ibkr_{kind}_order_prices_by_id")
+            if not isinstance(price_map, dict):
+                price_map = {}
+            price_map[str(order_id)] = rounded_price
+            pos[f"ibkr_{kind}_order_prices_by_id"] = price_map
+
+    def _broker_price_is_manual_override(kind: str, order_id: int | None, broker_price: float, desired_price: float, position_price_key: str) -> bool:
+        manual_key = f"ibkr_{kind}_manual_override"
+        broker_price = round(float(broker_price), 2)
+        desired_price = round(float(desired_price), 2)
+        tracked_price = _tracked_price(kind, order_id)
+        if bool(pos.get(manual_key, False)):
+            pos[position_price_key] = broker_price
+            _remember_protective_price(kind, order_id, broker_price)
+            pos["protective_orders_status"] = "Manual broker SL/TP preserved"
+            return True
+        if tracked_price is None:
+            _remember_protective_price(kind, order_id, broker_price)
+            if abs(broker_price - desired_price) > price_tolerance:
+                pos[manual_key] = True
+                pos[position_price_key] = broker_price
+                pos["protective_orders_status"] = "Manual broker SL/TP preserved"
+                return True
+            return False
+        if abs(broker_price - float(tracked_price)) > price_tolerance:
+            pos[manual_key] = True
+            pos[position_price_key] = broker_price
+            _remember_protective_price(kind, order_id, broker_price)
+            pos["protective_orders_status"] = "Manual broker SL/TP preserved"
+            return True
+        return False
+
     if len(chunks) > 1:
         existing_stop_ids = []
         existing_take_profit_ids = []
@@ -1794,32 +1988,46 @@ def ensure_protective_orders(
             pos["ibkr_stop_order_ids"] = existing_stop_ids
             pos["ibkr_take_profit_order_ids"] = existing_take_profit_ids
             events = []
+            for trade in open_sell_trades:
+                order = getattr(trade, "order", None)
+                order_type = str(getattr(order, "orderType", "") or "").upper()
+                if "STP" not in order_type:
+                    continue
+                order_id = _order_id(order)
+                old_stop = float(getattr(order, "auxPrice", 0) or 0)
+                _broker_price_is_manual_override("stop", order_id, old_stop, stop_price, "current_stop_price")
             if want_take_profit:
                 for trade in open_sell_trades:
                     order = getattr(trade, "order", None)
                     order_type = str(getattr(order, "orderType", "") or "").upper()
                     if order_type != "LMT":
                         continue
+                    order_id = _order_id(order)
                     old_target = float(getattr(order, "lmtPrice", 0) or 0)
-                    if abs(old_target - take_profit_price) <= 0.009:
+                    if _broker_price_is_manual_override("take_profit", order_id, old_target, take_profit_price, "take_profit_price"):
+                        continue
+                    if abs(old_target - take_profit_price) <= price_tolerance:
                         continue
                     order.lmtPrice = take_profit_price
                     if account:
                         order.account = account
                     ib.placeOrder(contract, order)
                     ib.sleep(0.2)
+                    _remember_protective_price("take_profit", order_id, take_profit_price)
+                    pos["ibkr_take_profit_manual_override"] = False
                     events.append({
                         "Symbol": pos.get("symbol"),
                         "Option": pos.get("option"),
                         "Action": "UPDATE_TP",
                         "Old TP": round(old_target, 2),
                         "TP": take_profit_price,
-                        "Order ID": _order_id(order),
+                        "Order ID": order_id,
                     })
             if events:
                 pos["protective_orders_status"] = "Updated"
                 return events
-            pos["protective_orders_status"] = "Already protected"
+            if not (pos.get("ibkr_stop_manual_override") or pos.get("ibkr_take_profit_manual_override")):
+                pos["protective_orders_status"] = "Already protected"
             return []
 
         events = []
@@ -1837,7 +2045,10 @@ def ensure_protective_orders(
                 stop_order.account = account
             stop_trade = ib.placeOrder(contract, stop_order)
             ib.sleep(0.2)
-            stop_ids.append(_order_id(getattr(stop_trade, "order", None)))
+            stop_id = _order_id(getattr(stop_trade, "order", None))
+            stop_ids.append(stop_id)
+            _remember_protective_price("stop", stop_id, stop_price)
+            pos["ibkr_stop_manual_override"] = False
             events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_STOP", "Stop": stop_price, "Qty": chunk_qty})
 
             if want_take_profit:
@@ -1849,7 +2060,10 @@ def ensure_protective_orders(
                     target_order.account = account
                 target_trade = ib.placeOrder(contract, target_order)
                 ib.sleep(0.2)
-                take_profit_ids.append(_order_id(getattr(target_trade, "order", None)))
+                take_profit_id = _order_id(getattr(target_trade, "order", None))
+                take_profit_ids.append(take_profit_id)
+                _remember_protective_price("take_profit", take_profit_id, take_profit_price)
+                pos["ibkr_take_profit_manual_override"] = False
                 events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_TP", "TP": take_profit_price, "Qty": chunk_qty})
 
         pos["ibkr_stop_order_ids"] = [order_id for order_id in stop_ids if order_id]
@@ -1888,6 +2102,7 @@ def ensure_protective_orders(
     pos["ibkr_oca_group"] = oca_group
 
     if not want_take_profit:
+        preserved_manual_take_profit = False
         for trade in open_sell_trades:
             order = getattr(trade, "order", None)
             order_type = str(getattr(order, "orderType", "") or "").upper()
@@ -1896,13 +2111,19 @@ def ensure_protective_orders(
                 continue
             if take_profit_order_id and order_id != take_profit_order_id:
                 continue
+            old_target = float(getattr(order, "lmtPrice", 0) or 0)
+            if _broker_price_is_manual_override("take_profit", order_id, old_target, take_profit_price, "take_profit_price"):
+                has_take_profit = True
+                preserved_manual_take_profit = True
+                continue
             try:
                 ib.cancelOrder(order)
                 ib.sleep(0.2)
                 events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "CANCEL_TP_FOR_TRAIL", "Order ID": order_id})
             except Exception as exc:
                 events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "CANCEL_TP_FAILED", "Status": str(exc)})
-        pos["ibkr_take_profit_order_id"] = None
+        if not preserved_manual_take_profit:
+            pos["ibkr_take_profit_order_id"] = None
         has_take_profit = True
 
     if not has_stop:
@@ -1915,16 +2136,23 @@ def ensure_protective_orders(
         trade = ib.placeOrder(contract, stop_order)
         ib.sleep(0.2)
         pos["ibkr_stop_order_id"] = _order_id(getattr(trade, "order", None))
+        _remember_protective_price("stop", pos.get("ibkr_stop_order_id"), stop_price)
+        pos["ibkr_stop_manual_override"] = False
         events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_STOP", "Stop": stop_price})
     elif stop_trade is not None:
         stop_order = getattr(stop_trade, "order", None)
+        stop_order_id = _order_id(stop_order)
         old_stop = float(getattr(stop_order, "auxPrice", 0) or 0)
-        if stop_price > old_stop + 0.009:
+        if _broker_price_is_manual_override("stop", stop_order_id, old_stop, stop_price, "current_stop_price"):
+            pass
+        elif stop_price > old_stop + price_tolerance:
             stop_order.auxPrice = stop_price
             if account:
                 stop_order.account = account
             ib.placeOrder(contract, stop_order)
             ib.sleep(0.2)
+            _remember_protective_price("stop", stop_order_id, stop_price)
+            pos["ibkr_stop_manual_override"] = False
             events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "UPDATE_STOP", "Stop": stop_price})
 
     if want_take_profit and not has_take_profit:
@@ -1937,16 +2165,23 @@ def ensure_protective_orders(
         trade = ib.placeOrder(contract, target_order)
         ib.sleep(0.2)
         pos["ibkr_take_profit_order_id"] = _order_id(getattr(trade, "order", None))
+        _remember_protective_price("take_profit", pos.get("ibkr_take_profit_order_id"), take_profit_price)
+        pos["ibkr_take_profit_manual_override"] = False
         events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_TP", "TP": take_profit_price})
     elif want_take_profit and take_profit_trade is not None:
         target_order = getattr(take_profit_trade, "order", None)
+        take_profit_order_id = _order_id(target_order)
         old_target = float(getattr(target_order, "lmtPrice", 0) or 0)
-        if abs(old_target - take_profit_price) > 0.009:
+        if _broker_price_is_manual_override("take_profit", take_profit_order_id, old_target, take_profit_price, "take_profit_price"):
+            pass
+        elif abs(old_target - take_profit_price) > price_tolerance:
             target_order.lmtPrice = take_profit_price
             if account:
                 target_order.account = account
             ib.placeOrder(contract, target_order)
             ib.sleep(0.2)
+            _remember_protective_price("take_profit", take_profit_order_id, take_profit_price)
+            pos["ibkr_take_profit_manual_override"] = False
             events.append({
                 "Symbol": pos.get("symbol"),
                 "Option": pos.get("option"),
@@ -1955,7 +2190,10 @@ def ensure_protective_orders(
                 "TP": take_profit_price,
             })
 
-    pos["protective_orders_status"] = "Submitted" if events else "Already protected"
+    if events:
+        pos["protective_orders_status"] = "Submitted"
+    elif not (pos.get("ibkr_stop_manual_override") or pos.get("ibkr_take_profit_manual_override")):
+        pos["protective_orders_status"] = "Already protected"
     return events
 
 

@@ -1,7 +1,7 @@
 {
   "version": "v0.9.6-pmb-v2",
-  "started_at": "2026-07-29T08:47:33",
-  "completed_at": "2026-07-29T08:48:27",
+  "started_at": "2026-07-29T09:16:34",
+  "completed_at": "2026-07-29T09:35:18",
   "status": "COMPLETE",
   "symbols": [
     "SPY",
@@ -16,15 +16,15 @@
     "TSLA",
     "AMD"
   ],
-  "period": "7d",
+  "period": "30d",
   "interval": "15m",
   "data_source": "IBKR",
   "provider": "IBKR",
-  "candles": 2002,
-  "replay_events": 2002,
-  "signals": 33,
-  "trades": 11,
-  "decisions": 33,
+  "candles": 8580,
+  "replay_events": 8580,
+  "signals": 125,
+  "trades": 15,
+  "decisions": 125,
   "strategies": [
     "PMB"
   ],
@@ -42,7 +42,7 @@
       "TSLA",
       "AMD"
     ],
-    "period": "7d",
+    "period": "30d",
     "interval": "15m",
     "force_refresh": false,
     "orb_minutes": 15,
@@ -69,7 +69,7 @@
     ],
     "stop_loss_pct": 10.0,
     "take_profit_pct": 35.0,
-    "breakeven_trigger_pct": 18.0,
+    "breakeven_trigger_pct": 10.0,
     "trailing_trigger_pct": 28.0,
     "trailing_stop_pct": 4.0,
     "entry_cutoff_hour": 12,
