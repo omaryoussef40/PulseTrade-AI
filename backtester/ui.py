@@ -129,6 +129,72 @@ def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbo
         save_config(config)
 
 
+def _apply_strategy_lab_to_engine(config: dict, settings: StrategyLabSettings, selected_symbols: list[str]) -> dict[str, object]:
+    strategy = config.setdefault("strategy", {})
+    risk = config.setdefault("risk", {})
+    lab_cfg = config.setdefault("strategy_lab", {})
+
+    selected_strategy = next((name for name in settings.selected_strategies if str(name).upper() == "PMB"), settings.selected_strategies[0] if settings.selected_strategies else "PMB")
+    option_dte = int(settings.option_dte_values[0]) if settings.option_dte_values else int(strategy.get("option_dte", 7))
+    account_size = max(float(settings.starting_capital or risk.get("account_size", 1000) or 1000), 1.0)
+    max_spend = float(settings.max_spend_per_trade)
+    max_daily_capital = float(settings.max_daily_capital)
+    if settings.sizing_method == "percent_equity":
+        max_spend = round(account_size * float(settings.position_allocation_pct) / 100.0, 2)
+        max_daily_capital = round(account_size * float(settings.max_daily_exposure_pct) / 100.0, 2)
+        risk["max_spend_per_trade_pct"] = float(settings.position_allocation_pct)
+        risk["max_daily_capital_pct"] = float(settings.max_daily_exposure_pct)
+    else:
+        risk["max_spend_per_trade_pct"] = round(max_spend / account_size * 100.0, 2)
+        risk["max_daily_capital_pct"] = round(max_daily_capital / account_size * 100.0, 2)
+
+    config["watchlist"] = list(selected_symbols)
+    lab_cfg["applied_to_engine_at"] = datetime.now().isoformat(timespec="seconds")
+    lab_cfg["last_applied_strategy"] = str(selected_strategy).upper()
+
+    strategy.update({
+        "active_strategy": str(selected_strategy).lower(),
+        "option_dte": option_dte,
+        "orb_minutes": int(settings.orb_minutes),
+        "first_signal_minutes": int(settings.first_signal_minutes),
+        "min_session_bars": int(settings.min_session_bars),
+    })
+    risk.update({
+        "account_size": round(account_size, 2),
+        "max_trades_per_day": int(settings.max_trades_per_day),
+        "max_spend_per_trade": round(max_spend, 2),
+        "max_daily_capital": round(max_daily_capital, 2),
+        "recycle_capital_after_exit": bool(settings.recycle_capital_after_exit),
+        "reserve_capital_for_remaining_trades": bool(settings.reserve_capital_for_remaining_trades),
+        "max_contracts": max(1, int(settings.max_contracts or risk.get("max_contracts", 1) or 1)),
+        "stop_loss_pct": float(settings.stop_loss_pct),
+        "take_profit_pct": float(settings.take_profit_pct),
+        "breakeven_trigger_pct": float(settings.breakeven_trigger_pct),
+        "trailing_trigger_pct": float(settings.trailing_trigger_pct),
+        "trailing_stop_pct": float(settings.trailing_stop_pct),
+        "entry_cutoff_hour": int(settings.entry_cutoff_hour),
+        "entry_cutoff_minute": int(settings.entry_cutoff_minute),
+        "force_exit_enabled": bool(settings.force_exit_enabled),
+        "force_exit_hour": int(settings.force_exit_hour),
+        "force_exit_minute": int(settings.force_exit_minute),
+        "max_consecutive_losses": int(settings.max_consecutive_losses),
+        "max_daily_drawdown_pct": float(settings.max_daily_drawdown_pct),
+    })
+    if save_config is not None:
+        save_config(config)
+    return {
+        "Strategy": str(selected_strategy).upper(),
+        "Watchlist": len(selected_symbols),
+        "Option DTE": option_dte,
+        "ORB": int(settings.orb_minutes),
+        "Max trades/day": int(settings.max_trades_per_day),
+        "Max spend/trade": round(max_spend, 2),
+        "Max daily capital": round(max_daily_capital, 2),
+        "Stop %": float(settings.stop_loss_pct),
+        "Target %": float(settings.take_profit_pct),
+    }
+
+
 def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
     st.subheader("Research Lab")
     st.caption("Run selected strategies on historical candles and compare the results before paper/live trading.")
@@ -277,6 +343,10 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         min_atr=float(strategy.get("min_atr", 0.3)),
         use_rvol_filter=bool(strategy.get("use_rvol_filter", False)),
         use_rvol_score=bool(strategy.get("use_rvol_score", False)),
+        use_rvol_ranking=bool(strategy.get("use_rvol_ranking", False)),
+        use_sr_filter=bool(strategy.get("use_sr_filter", True)),
+        min_sr_room_pct=float(strategy.get("min_sr_room_pct", 0.75)),
+        top_n_tickers=int(strategy.get("top_n_tickers", 2)),
         starting_capital=float(starting_capital),
         max_trades_per_day=int(max_trades_per_day),
         sizing_method="percent_equity" if sizing_model == "% of Equity" else "fixed_dollar",
@@ -343,7 +413,25 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         },
     )
 
-    if st.button("Run Backtest", use_container_width=True, key="sl_run"):
+    action_col, apply_col = st.columns([2, 1])
+    with action_col:
+        run_clicked = st.button("Run Backtest", use_container_width=True, key="sl_run")
+    with apply_col:
+        apply_confirmed = st.checkbox("Confirm apply", key="sl_apply_confirm")
+        apply_clicked = st.button("Apply to Trading Engine", use_container_width=True, key="sl_apply_to_engine", disabled=not apply_confirmed)
+
+    if apply_clicked:
+        if not symbols:
+            st.warning("Add at least one symbol before applying to the trading engine.")
+        elif save_config is None:
+            st.error("Could not save config.json from Strategy Lab.")
+        else:
+            applied = _apply_strategy_lab_to_engine(config, settings, selected_all_symbols or symbols)
+            st.success("Strategy Lab settings applied to the main trading engine config.")
+            st.caption("This updates scanner/risk settings only. It does not change account mode or enable order placement.")
+            st.dataframe(pd.DataFrame([applied]), use_container_width=True, hide_index=True)
+
+    if run_clicked:
         if not symbols:
             st.warning("Add at least one symbol.")
         else:
@@ -354,8 +442,9 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
 
             def progress_callback(idx, total, row, signal_count):
                 progress.progress(min(1.0, idx / max(total, 1)))
+                stage = str(row.get("stage") or "Replaying")
                 if visual_updates:
-                    status.info(f"Replaying {idx:,} / {total:,} candles | Signals: {signal_count:,} | {row.get('symbol')} | {row.get('timestamp')}")
+                    status.info(f"{stage} {idx:,} / {total:,} | Signals: {signal_count:,} | {row.get('symbol')} | {row.get('timestamp')}")
                     if idx % max(1, total // 50) == 0 or idx == total:
                         live_box.dataframe(pd.DataFrame([row]), use_container_width=True, hide_index=True)
 

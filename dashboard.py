@@ -736,6 +736,28 @@ def _number_or_none(value) -> float | None:
         return None
 
 
+def _realized_r_multiple(exits: pd.DataFrame, stop_loss_pct: float) -> float:
+    """Return net realized R using the configured initial option stop as 1R."""
+    if exits is None or exits.empty or stop_loss_pct <= 0:
+        return 0.0
+    required = {"realized_pnl", "entry_price", "quantity"}
+    if not required.issubset(set(exits.columns)):
+        return 0.0
+
+    pnl = pd.to_numeric(exits["realized_pnl"], errors="coerce").fillna(0.0)
+    entry = pd.to_numeric(exits["entry_price"], errors="coerce").fillna(0.0).abs()
+    qty = pd.to_numeric(exits["quantity"], errors="coerce").fillna(0.0).abs()
+    if "multiplier" in exits.columns:
+        multiplier = pd.to_numeric(exits["multiplier"], errors="coerce").fillna(100.0).abs()
+        multiplier = multiplier.where(multiplier > 0, 100.0)
+    else:
+        multiplier = pd.Series([100.0] * len(exits), index=exits.index)
+
+    initial_risk = entry * (float(stop_loss_pct) / 100.0) * qty * multiplier
+    total_risk = float(initial_risk[initial_risk > 0].sum())
+    return round(float(pnl.sum()) / total_risk, 2) if total_risk > 0 else 0.0
+
+
 def fetch_ibkr_account_summary(ib_cfg: IBConfig) -> dict:
     """Fetch key account fields directly from IBKR/TWS."""
     ib = connect_ib(ib_cfg)
@@ -943,7 +965,27 @@ def render_platform_settings():
             cfg["automation"]["live_confirm_text"] = st.text_input("Type TRADE LIVE to unlock live orders", value=str(cfg["automation"].get("live_confirm_text", "")))
         else:
             cfg["automation"]["live_confirm_text"] = ""
-        cfg["automation"]["scan_interval_seconds"] = st.number_input("Engine scan interval seconds", value=int(cfg["automation"].get("scan_interval_seconds", 60)), min_value=10, max_value=3600, step=10)
+        cfg["automation"]["scan_interval_seconds"] = st.number_input("Engine scan interval seconds", value=int(cfg["automation"].get("scan_interval_seconds", 900)), min_value=10, max_value=3600, step=10)
+        cfg["automation"]["align_scans_to_interval"] = st.checkbox(
+            "Align scans to candle boundaries",
+            value=bool(cfg["automation"].get("align_scans_to_interval", True)),
+            help="For 15-minute scanning, wait until the configured first scan time, then run on 10:00, 10:15, 10:30, etc. instead of drifting from engine startup.",
+        )
+        first_scan_col1, first_scan_col2 = st.columns(2)
+        cfg["automation"]["first_scan_hour"] = int(first_scan_col1.number_input(
+            "First scan hour ET",
+            value=int(cfg["automation"].get("first_scan_hour", 9)),
+            min_value=9,
+            max_value=15,
+            step=1,
+        ))
+        cfg["automation"]["first_scan_minute"] = int(first_scan_col2.number_input(
+            "First scan minute ET",
+            value=int(cfg["automation"].get("first_scan_minute", 45)),
+            min_value=0,
+            max_value=59,
+            step=1,
+        ))
         cfg["automation"]["live_sync_interval_seconds"] = st.number_input("IBKR live trade sync seconds", value=int(cfg["automation"].get("live_sync_interval_seconds", 15)), min_value=5, max_value=300, step=5)
         cfg["automation"]["scan_only_market_hours"] = st.checkbox("Scan only during market hours", value=bool(cfg["automation"].get("scan_only_market_hours", True)))
         cfg["order"]["type"] = st.selectbox("Order type", ["LIMIT", "MARKET"], index=0 if cfg["order"].get("type", "LIMIT") == "LIMIT" else 1)
@@ -1365,6 +1407,7 @@ with st.sidebar:
         "💼 Positions": "💼  Live Trading",
         "📈 Strategy Lab": "🎯  Backtesting",
         "🧠 Market Intelligence": "🧠  Market Intel",
+        "🗓️ Earnings": "🗓️  Earnings",
         "📈 Scanner & Breakdown": "📡  Scanner",
         "🏦 Account Status": "💳  Account",
         "📝 Logs": "📝  Logs",
@@ -1375,6 +1418,7 @@ with st.sidebar:
         "💼 Positions",
         "📈 Strategy Lab",
         "🧠 Market Intelligence",
+        "🗓️ Earnings",
         "📈 Scanner & Breakdown",
         "🏦 Account Status",
         "📝 Logs",
@@ -1385,6 +1429,7 @@ with st.sidebar:
         "💼 Positions": "live-trading",
         "📈 Strategy Lab": "backtesting",
         "🧠 Market Intelligence": "market-intel",
+        "🗓️ Earnings": "earnings",
         "📈 Scanner & Breakdown": "scanner",
         "🏦 Account Status": "account",
         "📝 Logs": "logs",
@@ -1450,6 +1495,173 @@ def dashboard_ib_cfg(offset: int = 300, readonly: bool | None = None) -> IBConfi
         account=ib_cfg.account,
         readonly=ib_cfg.readonly if readonly is None else bool(readonly),
     )
+
+
+def _normalize_earnings_date(value):
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)) and value:
+        value = value[0]
+    try:
+        ts = pd.to_datetime(value, errors="coerce")
+    except Exception:
+        return None
+    if pd.isna(ts):
+        return None
+    try:
+        if getattr(ts, "tzinfo", None) is not None:
+            ts = ts.tz_convert(None)
+    except Exception:
+        try:
+            ts = ts.tz_localize(None)
+        except Exception:
+            pass
+    return ts
+
+
+def _earnings_value(row, *names):
+    for name in names:
+        if isinstance(row, dict):
+            value = row.get(name)
+        else:
+            value = row[name] if name in row.index else None
+        if value is not None and str(value).strip() and str(value).lower() != "nan":
+            return value
+    return None
+
+
+@st.cache_data(ttl=21_600, show_spinner=False)
+def fetch_earnings_calendar(symbols_key: tuple[str, ...], horizon_days: int) -> tuple[list[dict], list[dict]]:
+    rows: list[dict] = []
+    errors: list[dict] = []
+    today = pd.Timestamp.now().normalize()
+    end = today + pd.Timedelta(days=int(horizon_days))
+    try:
+        import yfinance as yf
+    except Exception as exc:
+        return [], [{"symbol": "ALL", "error": f"yfinance unavailable: {exc}"}]
+
+    for symbol in symbols_key:
+        try:
+            ticker = yf.Ticker(symbol)
+            earnings_df = None
+            try:
+                earnings_df = ticker.get_earnings_dates(limit=16)
+            except Exception:
+                earnings_df = None
+
+            symbol_rows: list[dict] = []
+            if isinstance(earnings_df, pd.DataFrame) and not earnings_df.empty:
+                df = earnings_df.copy()
+                df = df.reset_index().rename(columns={df.index.name or "index": "Earnings Date"})
+                for _, item in df.iterrows():
+                    earnings_date = _normalize_earnings_date(_earnings_value(item, "Earnings Date", "index"))
+                    if earnings_date is None or earnings_date.normalize() < today or earnings_date.normalize() > end:
+                        continue
+                    symbol_rows.append(
+                        {
+                            "Symbol": symbol,
+                            "Date": earnings_date.date().isoformat(),
+                            "Time": str(_earnings_value(item, "Time", "time") or "TBD"),
+                            "EPS Estimate": _earnings_value(item, "EPS Estimate", "epsEstimate", "Eps Estimate"),
+                            "Reported EPS": _earnings_value(item, "Reported EPS", "reportedEPS"),
+                            "Surprise %": _earnings_value(item, "Surprise(%)", "Surprise %", "surprisePercent"),
+                            "Source": "Yahoo earnings dates",
+                        }
+                    )
+
+            if not symbol_rows:
+                calendar_data = None
+                try:
+                    calendar_data = ticker.calendar
+                except Exception:
+                    calendar_data = None
+                if isinstance(calendar_data, pd.DataFrame) and not calendar_data.empty:
+                    cal = calendar_data.to_dict()
+                    raw_date = cal.get("Earnings Date") or cal.get("Earnings Date ", {})
+                    if isinstance(raw_date, dict):
+                        raw_date = next(iter(raw_date.values()), None)
+                elif isinstance(calendar_data, dict):
+                    raw_date = calendar_data.get("Earnings Date") or calendar_data.get("EarningsDate")
+                else:
+                    raw_date = None
+                earnings_date = _normalize_earnings_date(raw_date)
+                if earnings_date is not None and today <= earnings_date.normalize() <= end:
+                    symbol_rows.append(
+                        {
+                            "Symbol": symbol,
+                            "Date": earnings_date.date().isoformat(),
+                            "Time": "TBD",
+                            "EPS Estimate": None,
+                            "Reported EPS": None,
+                            "Surprise %": None,
+                            "Source": "Yahoo calendar",
+                        }
+                    )
+
+            if symbol_rows:
+                rows.extend(symbol_rows)
+            else:
+                errors.append({"symbol": symbol, "error": f"No upcoming earnings found in the next {horizon_days} days."})
+        except Exception as exc:
+            errors.append({"symbol": symbol, "error": str(exc)})
+
+    rows.sort(key=lambda row: (row.get("Date") or "9999-12-31", row.get("Symbol") or ""))
+    return rows, errors
+
+
+def render_earnings_tab(config: dict, default_symbols: list[str]) -> None:
+    st.subheader("Earnings Calendar")
+    st.caption("Upcoming earnings for your watchlist and any extra tickers you want to check.")
+
+    base_symbols = [str(symbol).strip().upper() for symbol in default_symbols if str(symbol).strip()]
+    extras_default = st.session_state.get("earnings_extra_symbols", "")
+    col_a, col_b, col_c = st.columns([2, 1, 1])
+    with col_a:
+        extras = st.text_input("Extra tickers", value=extras_default, placeholder="AAPL, NVDA, MSFT", key="earnings_extra_symbols")
+    with col_b:
+        horizon_days = st.number_input("Lookahead days", value=21, min_value=1, max_value=120, step=1)
+    with col_c:
+        watchlist_only = st.checkbox("Watchlist only", value=False)
+
+    extra_symbols = [] if watchlist_only else [x.strip().upper() for x in extras.replace("\n", ",").split(",") if x.strip()]
+    symbols_to_check = list(dict.fromkeys(base_symbols + extra_symbols))
+    if not symbols_to_check:
+        st.info("Add tickers in Settings or type symbols above.")
+        return
+
+    top_bar = st.columns([1, 1, 2])
+    with top_bar[0]:
+        if st.button("Refresh Earnings", use_container_width=True):
+            fetch_earnings_calendar.clear()
+    with top_bar[1]:
+        st.metric("Tickers Checked", len(symbols_to_check))
+    with top_bar[2]:
+        st.caption(f"Universe: {', '.join(symbols_to_check[:18])}{'...' if len(symbols_to_check) > 18 else ''}")
+
+    with st.spinner("Loading earnings calendar..."):
+        rows, errors = fetch_earnings_calendar(tuple(symbols_to_check), int(horizon_days))
+
+    if rows:
+        df = pd.DataFrame(rows)
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df["Days Away"] = (df["Date"].dt.normalize() - pd.Timestamp.now().normalize()).dt.days
+        df["Date"] = df["Date"].dt.date.astype(str)
+        display_cols = ["Symbol", "Date", "Days Away", "Time", "EPS Estimate", "Reported EPS", "Surprise %", "Source"]
+        st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
+        st.download_button(
+            "Download earnings calendar",
+            df[display_cols].to_csv(index=False),
+            "pulsetrade_earnings_calendar.csv",
+            "text/csv",
+            use_container_width=True,
+        )
+    else:
+        st.info("No upcoming earnings found for the selected symbols and date range.")
+
+    if errors:
+        with st.expander("Missing or unavailable symbols", expanded=False):
+            st.dataframe(pd.DataFrame(errors), use_container_width=True, hide_index=True)
 
 @st.cache_data(ttl=180, show_spinner=False)
 def cached_catalyst_map(symbols_key: tuple[str, ...], min_impact: int = 70, lookback_hours: int = 24) -> dict:
@@ -1651,6 +1863,52 @@ def cached_ibkr_portfolio_pnl(host: str, port: int, client_id: int, account: str
                 by_key[key] = data
         return by_key
     finally:
+        try:
+            if ib and ib.isConnected():
+                ib.disconnect()
+        except Exception:
+            pass
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def cached_ibkr_pnl_snapshot(host: str, port: int, client_id: int, account: str | None) -> dict:
+    """Fetch IBKR's native account PnL stream for dashboard reconciliation."""
+    pnl_cfg = IBConfig(host=host, port=port, client_id=client_id, account=account, readonly=True)
+    ib = connect_ib(pnl_cfg)
+    account_id = account or ""
+    try:
+        if not account_id:
+            accounts = ib.managedAccounts()
+            account_id = accounts[0] if accounts else ""
+        if not account_id:
+            return {}
+
+        pnl = ib.reqPnL(account_id)
+        latest = {"account": account_id}
+        for _ in range(12):
+            ib.sleep(0.5)
+            daily_pnl = _number_or_none(getattr(pnl, "dailyPnL", None))
+            realized_pnl = _number_or_none(getattr(pnl, "realizedPnL", None))
+            unrealized_pnl = _number_or_none(getattr(pnl, "unrealizedPnL", None))
+            values = {
+                "daily_pnl": daily_pnl,
+                "realized_pnl": realized_pnl,
+                "unrealized_pnl": unrealized_pnl,
+            }
+            valid_values = {
+                key: value
+                for key, value in values.items()
+                if value is not None and not pd.isna(value)
+            }
+            if valid_values:
+                latest.update(valid_values)
+        return latest
+    finally:
+        try:
+            if account_id:
+                ib.cancelPnL(account_id)
+        except Exception:
+            pass
         try:
             if ib and ib.isConnected():
                 ib.disconnect()
@@ -3418,7 +3676,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
         final_message = "Scanner complete"
         if stock_df.empty:
             final_status = "no_data"
-            final_message = "Scanner completed, but IBKR did not return today's completed ORB session bars yet. Try again after 09:50 ET."
+            final_message = "Scanner completed, but IBKR did not return today's completed ORB session bars yet. Try again after 09:45 ET."
 
         write_scanner_job_status({
             "status": final_status,
@@ -3946,6 +4204,9 @@ elif selected_page == "📈 Scanner & Breakdown":
 
 elif selected_page == "🧪 Price Action Lab":
     render_price_action_lab_tab(cfg, symbols)
+
+elif selected_page == "🗓️ Earnings":
+    render_earnings_tab(cfg, symbols)
 
 elif selected_page == "💼 Positions":
     start_telegram_decision_worker()
@@ -5582,6 +5843,8 @@ elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
         gross_profit = float(exits.loc[exits["realized_pnl"] > 0, "realized_pnl"].sum()) if wins else 0.0
         gross_loss = abs(float(exits.loc[exits["realized_pnl"] < 0, "realized_pnl"].sum())) if losses else 0.0
         profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (round(gross_profit, 2) if gross_profit > 0 else 0.0)
+        stop_loss_pct = float(cfg.get("risk", {}).get("stop_loss_pct", 20.0) or 20.0)
+        realized_r = _realized_r_multiple(exits, stop_loss_pct)
         original_deposited = float(cfg.get("performance", {}).get("original_deposited_capital", 2300.0) or 0.0)
         pct_up = (realized_pnl / original_deposited * 100.0) if original_deposited > 0 else 0.0
         account_summary = st.session_state.get("ibkr_account_summary") or {}
@@ -5591,8 +5854,28 @@ elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
         available_funds_label = f"${available_funds:,.2f}" if available_funds is not None else "N/A"
         avg_loss_label = f"-${abs(avg_loss):,.0f}" if avg_loss < 0 else f"${avg_loss:,.0f}"
 
-        _render_perf_kpis([
-            {"label": "Net P/L", "value": f"${realized_pnl:,.2f}", "tone": "positive" if realized_pnl >= 0 else "negative"},
+        ibkr_pnl_snapshot = {}
+        if period == "Today" and live_ibkr_ping(ib_cfg):
+            try:
+                ibkr_pnl_snapshot = cached_ibkr_pnl_snapshot(
+                    ib_cfg.host,
+                    ib_cfg.port,
+                    ib_cfg.client_id + 337,
+                    ib_cfg.account,
+                )
+            except Exception:
+                ibkr_pnl_snapshot = {}
+        ibkr_daily_pnl = _number_or_none(ibkr_pnl_snapshot.get("daily_pnl"))
+
+        kpi_items = []
+        if ibkr_daily_pnl is not None:
+            kpi_items.append({
+                "label": "IBKR Today P/L",
+                "value": f"${ibkr_daily_pnl:,.2f}",
+                "tone": "positive" if ibkr_daily_pnl >= 0 else "negative",
+            })
+        kpi_items.extend([
+            {"label": "Journal P/L", "value": f"${realized_pnl:,.2f}", "tone": "positive" if realized_pnl >= 0 else "negative"},
             {"label": "Win Rate", "value": f"{win_rate}%"},
             {"label": "Entries", "value": total_entries},
             {"label": "Closed", "value": total_exits},
@@ -5605,10 +5888,18 @@ elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
                 ),
             },
             {"label": "Profit Factor", "value": profit_factor},
+            {"label": "Total R", "value": f"{realized_r:+.2f}R", "tone": "positive" if realized_r >= 0 else "negative"},
             {"label": "% Return", "value": f"{pct_up:.2f}%", "tone": "positive" if pct_up >= 0 else "negative"},
             {"label": "Deposited", "value": f"${original_deposited:,.2f}"},
             {"label": "Avail. Funds", "value": available_funds_label},
         ])
+        _render_perf_kpis(kpi_items)
+        if ibkr_daily_pnl is not None and abs(float(ibkr_daily_pnl) - float(realized_pnl)) >= 0.01:
+            st.caption(
+                "IBKR Today P/L is the broker's native day-PnL stream. "
+                "Journal P/L is Pulse's closed-trade sum from logged EXIT rows, so carried positions "
+                "and broker cost-basis adjustments can differ."
+            )
         if raw_entry_count != total_entries or raw_exit_count != total_exits:
             st.caption(
                 f"Performance counts logical trades. Raw broker fills in this view: "

@@ -10,7 +10,7 @@ import os
 import subprocess
 import time
 import traceback
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from html import escape
 from pathlib import Path
 
@@ -136,6 +136,39 @@ def claim_single_engine_instance() -> bool:
 
     atexit.register(_cleanup_pid_file)
     return True
+
+
+def next_aligned_scan_time(
+    now_dt: datetime,
+    scan_interval_seconds: int,
+    first_scan_time: dtime | None = None,
+) -> datetime:
+    """Return the next wall-clock scan boundary for completed-bar style scans."""
+    if scan_interval_seconds < 60 or scan_interval_seconds % 60 != 0:
+        return now_dt
+
+    if first_scan_time is not None:
+        first_scan_dt = now_dt.replace(
+            hour=first_scan_time.hour,
+            minute=first_scan_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        if now_dt <= first_scan_dt or 0 <= (now_dt - first_scan_dt).total_seconds() <= 90:
+            return first_scan_dt
+
+    interval_minutes = max(1, scan_interval_seconds // 60)
+    current_block_minute = (now_dt.minute // interval_minutes) * interval_minutes
+    current_boundary = now_dt.replace(minute=current_block_minute, second=0, microsecond=0)
+
+    # If the engine starts right after a boundary, still allow that scan.
+    if 0 <= (now_dt - current_boundary).total_seconds() <= 90:
+        return current_boundary
+
+    next_boundary = current_boundary + timedelta(minutes=interval_minutes)
+    while next_boundary <= now_dt:
+        next_boundary += timedelta(minutes=interval_minutes)
+    return next_boundary
 
 
 def scan_result_session_date(result: dict):
@@ -1576,25 +1609,51 @@ def main() -> None:
     write_health(engine_running=True, started_at=datetime.now(EASTERN).isoformat(), last_status="Engine started")
     last_scan = 0.0
     last_sync = 0.0
+    next_scan_at: datetime | None = None
+    previous_scan_interval = 0
     while True:
         try:
             cfg = load_config()
             automation = cfg.get("automation", {})
             scan_interval = max(10, int(automation.get("scan_interval_seconds", 60)))
             sync_interval = max(5, int(automation.get("live_sync_interval_seconds", 15)))
+            align_scans = bool(automation.get("align_scans_to_interval", scan_interval >= 300))
+            first_scan_time = dtime(
+                int(automation.get("first_scan_hour", 9)),
+                int(automation.get("first_scan_minute", 45)),
+            )
             now = time.monotonic()
 
             if now - last_sync >= sync_interval:
                 run_broker_sync_cycle()
                 last_sync = time.monotonic()
 
-            if now - last_scan >= scan_interval:
-                run_cycle()
-                last_scan = time.monotonic()
-                last_sync = last_scan
+            if align_scans and scan_interval >= 60 and scan_interval % 60 == 0:
+                now_wall = datetime.now(EASTERN)
+                if next_scan_at is None or previous_scan_interval != scan_interval:
+                    next_scan_at = next_aligned_scan_time(now_wall, scan_interval, first_scan_time)
+                    previous_scan_interval = scan_interval
+                    app_log(f"Next aligned scanner cycle scheduled at {next_scan_at.strftime('%H:%M:%S %Z')}.")
+                if now_wall >= next_scan_at:
+                    run_cycle()
+                    last_scan = time.monotonic()
+                    last_sync = last_scan
+                    next_scan_at = next_aligned_scan_time(
+                        datetime.now(EASTERN) + timedelta(seconds=91),
+                        scan_interval,
+                    )
+                    app_log(f"Next aligned scanner cycle scheduled at {next_scan_at.strftime('%H:%M:%S %Z')}.")
+                next_scan = max(1.0, (next_scan_at - datetime.now(EASTERN)).total_seconds())
+            else:
+                next_scan_at = None
+                previous_scan_interval = scan_interval
+                if now - last_scan >= scan_interval:
+                    run_cycle()
+                    last_scan = time.monotonic()
+                    last_sync = last_scan
+                next_scan = max(1.0, scan_interval - (time.monotonic() - last_scan))
 
             next_sync = max(1.0, sync_interval - (time.monotonic() - last_sync))
-            next_scan = max(1.0, scan_interval - (time.monotonic() - last_scan))
             time.sleep(min(next_sync, next_scan, 5.0))
         except KeyboardInterrupt:
             app_log("Engine stopped by user.")

@@ -1381,12 +1381,75 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
     if not grouped:
         return 0, f"No stock/option executions found for {target_date}."
 
+    path = _Path(TRADE_LOG_FILE)
+    existing = pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+    def _contract_lookup_key(value) -> str:
+        numeric = _number_or_none(value)
+        if numeric is not None and numeric != 0:
+            return str(int(numeric))
+        return str(value or "").strip().upper()
+
+    def _existing_entry_prices_by_contract(existing_df: pd.DataFrame) -> dict[str, tuple[float, float]]:
+        if existing_df.empty or "event" not in existing_df.columns:
+            return {}
+        entries = existing_df[existing_df["event"].fillna("").astype(str).str.upper().eq("ENTRY")].copy()
+        if entries.empty or "entry_price" not in entries.columns:
+            return {}
+        entries["_entry_price_num"] = pd.to_numeric(entries["entry_price"], errors="coerce")
+        entries = entries[entries["_entry_price_num"].notna() & (entries["_entry_price_num"] > 0)].copy()
+        if entries.empty:
+            return {}
+        if "source" in entries.columns:
+            source_rank = entries["source"].fillna("").astype(str).str.upper().map({"IBKR_EXECUTION": 0, "IBKR_FLEX": 1}).fillna(2)
+            entries["_source_rank"] = source_rank
+        else:
+            entries["_source_rank"] = 2
+        if "timestamp" in entries.columns:
+            entries["_entry_ts"] = _parse_timestamps_utc(entries["timestamp"])
+        else:
+            entries["_entry_ts"] = pd.NaT
+        entries["_contract_key"] = entries.apply(lambda row: _contract_lookup_key(row.get("con_id") or row.get("option")), axis=1)
+        if "filled_quantity" in entries.columns:
+            qty_source = entries["filled_quantity"]
+        elif "quantity" in entries.columns:
+            qty_source = entries["quantity"]
+        else:
+            qty_source = pd.Series([0] * len(entries), index=entries.index)
+        entries["_qty_num"] = pd.to_numeric(qty_source, errors="coerce").fillna(0).abs()
+        entries["_multiplier_num"] = pd.to_numeric(entries.get("multiplier", pd.Series([None] * len(entries), index=entries.index)), errors="coerce")
+
+        out: dict[str, tuple[float, float]] = {}
+        for contract_key, contract_entries in entries.groupby("_contract_key", sort=False):
+            if not contract_key:
+                continue
+            best_rank = contract_entries["_source_rank"].min()
+            ranked_entries = contract_entries[contract_entries["_source_rank"].eq(best_rank)].copy()
+            if "_entry_ts" in ranked_entries.columns:
+                ranked_entries = ranked_entries.sort_values("_entry_ts")
+            qty = ranked_entries["_qty_num"]
+            prices = ranked_entries["_entry_price_num"]
+            valid = prices.notna()
+            if valid.any() and qty[valid].sum() > 0:
+                entry_price = float((prices[valid] * qty[valid]).sum() / qty[valid].sum())
+            elif valid.any():
+                entry_price = float(prices[valid].iloc[-1])
+            else:
+                continue
+            multiplier = _number_or_none(ranked_entries["_multiplier_num"].dropna().iloc[-1] if ranked_entries["_multiplier_num"].notna().any() else None)
+            if multiplier is None:
+                sec_type = str(ranked_entries.get("sec_type", pd.Series(dtype=str)).dropna().astype(str).iloc[-1] if "sec_type" in ranked_entries.columns and ranked_entries["sec_type"].notna().any() else "").upper()
+                multiplier = 100.0 if sec_type in {"OPT", "FOP"} else 1.0
+            out[contract_key] = (entry_price, float(multiplier))
+        return out
+
+    existing_entry_price_by_contract = _existing_entry_prices_by_contract(existing)
     rows = []
     entry_price_by_contract = {}
     for key, item in grouped.items():
         avg_price = item["value"] / item["quantity"] if item["quantity"] else 0.0
         if item["event"] == "ENTRY":
-            entry_price_by_contract[key[0]] = (avg_price, float(item.get("multiplier") or 1.0))
+            entry_price_by_contract[_contract_lookup_key(key[0])] = (avg_price, float(item.get("multiplier") or 1.0))
         rows.append(item | {
             "timestamp": item["timestamp"].isoformat() if hasattr(item["timestamp"], "isoformat") else str(item["timestamp"]),
             "quantity": int(item["quantity"]) if float(item["quantity"]).is_integer() else item["quantity"],
@@ -1403,7 +1466,9 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
     for row in rows:
         if row["event"] != "EXIT":
             continue
-        entry_price = entry_price_by_contract.get((row.get("con_id") or row.get("option")))
+        entry_price = entry_price_by_contract.get(_contract_lookup_key(row.get("con_id") or row.get("option")))
+        if not entry_price:
+            entry_price = existing_entry_price_by_contract.get(_contract_lookup_key(row.get("con_id") or row.get("option")))
         if entry_price:
             if isinstance(entry_price, tuple):
                 entry_price, multiplier = entry_price
@@ -1412,8 +1477,6 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             row["entry_price"] = round(float(entry_price), 4)
             row["realized_pnl"] = round((float(row["exit_price"]) - float(entry_price)) * float(row["quantity"]) * float(multiplier), 2)
 
-    path = _Path(TRADE_LOG_FILE)
-    existing = pd.read_csv(path) if path.exists() else pd.DataFrame()
     existing_ids = set(existing.get("external_id", pd.Series(dtype=str)).dropna().astype(str).tolist()) if not existing.empty else set()
     existing_trade_keys = set()
     if not existing.empty:
@@ -2873,7 +2936,7 @@ def default_config() -> dict:
         "account_mode": "Simulation",
         "ib": {"host": "127.0.0.1", "paper_port": 7497, "live_port": 7496, "client_id": 11, "account": "", "readonly": False},
         "telegram": {"bot_token": "", "chat_id": "", "send_alerts": False},
-        "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "approval_mode": "Dashboard", "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 60, "live_sync_interval_seconds": 15, "market_timezone": "America/New_York", "scan_only_market_hours": True},
+        "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "approval_mode": "Dashboard", "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 900, "align_scans_to_interval": True, "first_scan_hour": 9, "first_scan_minute": 45, "live_sync_interval_seconds": 15, "market_timezone": "America/New_York", "scan_only_market_hours": True},
         "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "use_sr_filter": True, "min_sr_room_pct": 0.75, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7},
         "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "recycle_capital_after_exit": False, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_enabled": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},

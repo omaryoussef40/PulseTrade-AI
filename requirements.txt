@@ -9,3 +9,5 @@ pytz
 python-dotenv
 yfinance
 pyarrow
+fastapi
+uvicorn

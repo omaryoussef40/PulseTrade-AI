@@ -29,6 +29,12 @@ from .replay import MarketReplayEngine, ReplayConfig
 from .strategy import scan_replay_history, clean_signal_row
 from .simulator import OptionSimulationConfig, simulate_option_trades_with_decisions, summarize_trades
 
+try:
+    from bot_core import opportunity_rank_score, setup_room_check
+except Exception:  # pragma: no cover
+    opportunity_rank_score = None
+    setup_room_check = None
+
 
 EXPORT_DIR = Path(__file__).resolve().parent / "exports"
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -49,6 +55,10 @@ class StrategyLabSettings:
     min_atr: float = 0.3
     use_rvol_filter: bool = False
     use_rvol_score: bool = False
+    use_rvol_ranking: bool = False
+    use_sr_filter: bool = True
+    min_sr_room_pct: float = 0.75
+    top_n_tickers: int = 2
     starting_capital: float = 1000.0
     max_trades_per_day: int = 2
     sizing_method: str = "percent_equity"
@@ -88,6 +98,8 @@ def is_top_candidate_replay(
     min_rvol: float,
     min_atr: float,
     use_rvol_filter: bool,
+    use_sr_filter: bool = False,
+    min_sr_room_pct: float = 0.75,
 ) -> bool:
     """Return whether a replay signal is tradable.
 
@@ -103,9 +115,50 @@ def is_top_candidate_replay(
             return False
         if float(result.get("ATR %", 0)) < float(min_atr):
             return False
+        if bool(use_sr_filter) and setup_room_check is not None:
+            room_ok, room_pct, room_note = setup_room_check(result, float(min_sr_room_pct))
+            result["Room To Move %"] = round(room_pct, 2) if room_pct is not None else None
+            result["Room Check"] = room_note
+            if not room_ok:
+                return False
     except Exception:
         return False
     return True
+
+
+def _rank_score_replay(result: dict, use_rvol_ranking: bool) -> float:
+    if opportunity_rank_score is not None:
+        return float(opportunity_rank_score(result, None, bool(use_rvol_ranking)))
+    rvol_component = min(float(result.get("RVOL", 0) or 0) * 10, 30) if use_rvol_ranking else 0
+    atr_component = min(float(result.get("ATR %", 0) or 0) * 10, 15)
+    return round(float(result.get("Score", 0) or 0) * 0.60 + atr_component + rvol_component, 2)
+
+
+def _select_live_style_signals(raw_signals: list[dict[str, Any]], settings: StrategyLabSettings) -> pd.DataFrame:
+    if not raw_signals:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(raw_signals)
+    if df.empty:
+        return df
+
+    max_selected = max(1, int(settings.top_n_tickers or 1))
+    selected_frames: list[pd.DataFrame] = []
+    group_cols = ["strategy", "timestamp"] if "strategy" in df.columns else ["timestamp"]
+
+    for _, group in df.groupby(group_cols, dropna=False, sort=True):
+        ranked = group.copy().sort_values(
+            ["rank_score", "score", "rvol", "option_score"],
+            ascending=[False, False, False, False],
+        )
+        ranked["selection_rank"] = range(1, len(ranked) + 1)
+        ranked["selection_status"] = ranked["selection_rank"].apply(lambda value: "SELECTED" if int(value) <= max_selected else "NOT_SELECTED")
+        selected_frames.append(ranked[ranked["selection_rank"] <= max_selected])
+
+    selected = pd.concat(selected_frames, ignore_index=True) if selected_frames else pd.DataFrame()
+    if not selected.empty:
+        selected = selected.sort_values(["timestamp", "selection_rank", "symbol"]).reset_index(drop=True)
+    return selected
 
 
 def _normalize_strategy_names(values) -> list[str]:
@@ -202,13 +255,37 @@ class StrategyLabController:
             except Exception:
                 pass
 
-    def load_data(self, settings: StrategyLabSettings) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    def save_no_data_result(self, result: dict[str, Any]) -> None:
+        """Record a failed data load without erasing the last useful CSV exports."""
+        paths = self.paths
+        meta = dict(result.get("meta", {}) or {})
+        errors = result.get("errors", pd.DataFrame())
+        if isinstance(errors, pd.DataFrame) and not errors.empty:
+            meta["errors"] = errors.to_dict(orient="records")
+        with paths["meta"].open("w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, default=str)
+        with paths["metrics"].open("w", encoding="utf-8") as f:
+            json.dump({}, f, indent=2, default=str)
+
+    def load_data(self, settings: StrategyLabSettings, progress_callback=None) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
         data: dict[str, pd.DataFrame] = {}
         errors = []
-        for raw_symbol in settings.symbols:
+        total_symbols = max(len(settings.symbols), 1)
+        for idx, raw_symbol in enumerate(settings.symbols, start=1):
             symbol = str(raw_symbol).strip().upper()
             if not symbol:
                 continue
+            if progress_callback:
+                progress_callback(
+                    idx,
+                    total_symbols,
+                    {
+                        "stage": "Loading IBKR candles" if str(settings.data_source).upper() == "IBKR" else "Loading candles",
+                        "symbol": symbol,
+                        "timestamp": "",
+                    },
+                    0,
+                )
             try:
                 df = self.client.load(
                     symbol=symbol,
@@ -238,8 +315,8 @@ class StrategyLabController:
         selected_strategies = _normalize_strategy_names(settings.selected_strategies)
 
         replay_rows: list[dict[str, Any]] = []
-        signal_rows: list[dict[str, Any]] = []
-        seen_signal_keys: set[tuple[str, str, str, str]] = set()
+        raw_signal_rows: list[dict[str, Any]] = []
+        entry_cutoff_time = dtime(int(settings.entry_cutoff_hour), int(settings.entry_cutoff_minute))
 
         for idx, event in enumerate(events, start=1):
             row = {
@@ -255,7 +332,7 @@ class StrategyLabController:
                 "strategies": ", ".join(selected_strategies),
             }
 
-            if event.scanner_allowed:
+            if event.scanner_allowed and event.timestamp.time() < entry_cutoff_time:
                 for strategy_name in selected_strategies:
                     scan_result = _scan_strategy_replay(strategy_name, event.symbol, event.history, settings)
                     clean_scan = clean_signal_row(scan_result)
@@ -279,38 +356,42 @@ class StrategyLabController:
                         settings.min_rvol,
                         settings.min_atr,
                         settings.use_rvol_filter,
+                        settings.use_sr_filter,
+                        settings.min_sr_room_pct,
                     )
                     if qualifies:
-                        signal_key = (strategy_name, event.symbol, str(event.session_date), str(clean_scan.get("Signal")))
-                        if signal_key not in seen_signal_keys:
-                            seen_signal_keys.add(signal_key)
-                            signal_rows.append({
-                                "strategy": strategy_name,
-                                "strategy_name": _strategy_display_name(strategy_name),
-                                "timestamp": event.timestamp,
-                                "session_date": event.session_date,
-                                "symbol": event.symbol,
-                                "signal": clean_scan.get("Signal"),
-                                "score": clean_scan.get("Score"),
-                                "grade": clean_scan.get("Grade"),
-                                "confidence": clean_scan.get("Confidence"),
-                                "price": clean_scan.get("Price"),
-                                "rvol": clean_scan.get("RVOL"),
-                                "atr_pct": clean_scan.get("ATR %"),
-                                "vwap": clean_scan.get("VWAP"),
-                                "orb_high": clean_scan.get("ORB High"),
-                                "orb_low": clean_scan.get("ORB Low"),
-                                "pdh": clean_scan.get("PDH"),
-                                "pdl": clean_scan.get("PDL"),
-                                "pdh_method": clean_scan.get("PDH Method"),
-                                "score_components": clean_scan.get("Score Components"),
-                                "reasons": clean_scan.get("Reasons"),
-                            })
+                        raw_signal_rows.append({
+                            "strategy": strategy_name,
+                            "strategy_name": _strategy_display_name(strategy_name),
+                            "timestamp": event.timestamp,
+                            "session_date": event.session_date,
+                            "symbol": event.symbol,
+                            "signal": clean_scan.get("Signal"),
+                            "score": clean_scan.get("Score"),
+                            "grade": clean_scan.get("Grade"),
+                            "confidence": clean_scan.get("Confidence"),
+                            "price": clean_scan.get("Price"),
+                            "rvol": clean_scan.get("RVOL"),
+                            "atr_pct": clean_scan.get("ATR %"),
+                            "rank_score": _rank_score_replay(clean_scan, settings.use_rvol_ranking),
+                            "option_score": 0.0,
+                            "vwap": clean_scan.get("VWAP"),
+                            "orb_high": clean_scan.get("ORB High"),
+                            "orb_low": clean_scan.get("ORB Low"),
+                            "pdh": clean_scan.get("PDH"),
+                            "pdl": clean_scan.get("PDL"),
+                            "pdh_method": clean_scan.get("PDH Method"),
+                            "room_to_move_pct": clean_scan.get("Room To Move %"),
+                            "room_check": clean_scan.get("Room Check"),
+                            "score_components": clean_scan.get("Score Components"),
+                            "reasons": clean_scan.get("Reasons"),
+                        })
             replay_rows.append(row)
             if progress_callback and (idx == 1 or idx == total_events or idx % max(1, total_events // 100) == 0):
-                progress_callback(idx, total_events, row, len(signal_rows))
+                progress_callback(idx, total_events, row, len(raw_signal_rows))
 
-        return pd.DataFrame(replay_rows), pd.DataFrame(signal_rows), sessions_df
+        selected_signals = _select_live_style_signals(raw_signal_rows, settings)
+        return pd.DataFrame(replay_rows), selected_signals, sessions_df
 
     def simulate(self, signals: pd.DataFrame, data: dict[str, pd.DataFrame], settings: StrategyLabSettings) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame]:
         all_trades: list[pd.DataFrame] = []
@@ -405,7 +486,7 @@ class StrategyLabController:
 
     def run(self, settings: StrategyLabSettings, progress_callback=None) -> dict[str, Any]:
         started_at = datetime.now().isoformat(timespec="seconds")
-        data, errors = self.load_data(settings)
+        data, errors = self.load_data(settings, progress_callback=progress_callback)
         if not data:
             result = {
                 "data": data,
@@ -419,7 +500,7 @@ class StrategyLabController:
                 "metrics": {},
                 "meta": {"started_at": started_at, "completed_at": datetime.now().isoformat(timespec="seconds"), "status": "NO_DATA"},
             }
-            self.save_result(result)
+            self.save_no_data_result(result)
             return result
 
         replay, signals, sessions = self.replay_and_scan(data, settings, progress_callback=progress_callback)
