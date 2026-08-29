@@ -162,8 +162,14 @@ def map_trade(row: dict[str, Any], index: int) -> dict[str, Any]:
 def map_position(position: dict[str, Any]) -> dict[str, Any]:
     qty = int(number(first_present(position, "quantity", "qty", default=0)))
     avg = number(first_present(position, "entry_price", "avg_price", "avg_cost", default=0))
-    last = number(first_present(position, "last", "mark", "current_price", default=avg))
-    unrealized = number(first_present(position, "unrealized", "unrealized_pnl", "pnl", default=0))
+    last = number(first_present(position, "current_price", "last", "mark", default=0))
+    explicit_unrealized = first_present(position, "unrealized_pnl", "unrealized", "pnl", default=None)
+    unrealized = number(explicit_unrealized, (last - avg) * qty * 100 if last and avg else 0)
+    explicit_unrealized_pct = first_present(position, "unrealized_pct", "pnl_pct", default=None)
+    unrealized_pct = number(
+        explicit_unrealized_pct,
+        ((last - avg) / avg * 100) if last and avg else 0,
+    )
     side = str(first_present(position, "signal", "side", default="LONG")).upper()
     if side in {"CALL", "BUY"}:
         side = "LONG"
@@ -176,8 +182,39 @@ def map_position(position: dict[str, Any]) -> dict[str, Any]:
         "avg_price": avg,
         "last": last,
         "unrealized": unrealized,
-        "unrealized_pct": number(first_present(position, "unrealized_pct", "pnl_pct", default=0)),
+        "unrealized_pct": unrealized_pct,
         "strategy": first_present(position, "strategy", "setup_quality", default="PulseTrade"),
+        "option": first_present(position, "option", default=""),
+        "expiry": first_present(position, "expiry", default=""),
+        "strike": number(first_present(position, "strike", default=0)),
+        "option_type": str(first_present(position, "signal", default="")).upper(),
+        "entry_time": first_present(position, "entry_time", default=""),
+        "entry_status": first_present(position, "entry_status", default=""),
+        "cost_basis": number(first_present(position, "cost_basis", default=avg * qty * 100)),
+        "market_value": number(first_present(position, "market_value", default=last * qty * 100)),
+        "stop_price": number(first_present(position, "current_stop_price", default=0)),
+        "take_profit_price": number(first_present(position, "take_profit_price", default=0)),
+        "premium_change_pct": number(first_present(position, "premium_change_pct", default=unrealized_pct)),
+        "premium_health": first_present(position, "premium_health", default="Not checked"),
+        "premium_health_detail": first_present(position, "premium_health_detail", default=""),
+        "premium_health_checked_at": first_present(position, "premium_health_checked_at", default=""),
+        "market_data_status": first_present(position, "market_data_status", default="Not checked"),
+        "market_data_source": first_present(position, "market_data_source", default=""),
+        "market_data_checked_at": first_present(position, "market_data_checked_at", default=""),
+        "bid": number(first_present(position, "current_bid", default=0)),
+        "ask": number(first_present(position, "current_ask", default=0)),
+        "spread_pct": number(first_present(position, "current_spread_pct", default=0)),
+        "delta": number(first_present(position, "current_delta", default=0)),
+        "theta": number(first_present(position, "current_theta", default=0)),
+        "implied_vol": number(first_present(position, "current_implied_vol", default=0)),
+        "underlying_entry_price": number(first_present(position, "underlying_entry_price", default=0)),
+        "underlying_current_price": number(first_present(position, "underlying_current_price", default=0)),
+        "underlying_move_with_position_pct": number(
+            first_present(position, "underlying_move_with_position_pct", default=0)
+        ),
+        "breakeven_active": bool(position.get("breakeven_active", False)),
+        "trailing_active": bool(position.get("trailing_active", False)),
+        "protective_orders_status": first_present(position, "protective_orders_status", default=""),
     }
 
 

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 """Interactive Brokers market-data provider."""
 
+import hashlib
+import json
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -40,16 +43,25 @@ class IBKRProviderConfig:
     account: str | None = None
     readonly: bool = False
     timezone: ZoneInfo = EASTERN
+    request_timeout_seconds: int = 45
 
 
 class IBKRMarketDataProvider:
     name = "IBKR"
+    max_cache_days = 60
 
     def __init__(self, config: IBKRProviderConfig | None = None, ib: IB | None = None):
         self.config = config or IBKRProviderConfig()
         self.ib = ib
         self._owns_connection = ib is None
         self._stock_contract_cache: dict[str, Any] = {}
+        base = Path(__file__).resolve().parent.parent / "backtester" / "cache" / "ibkr"
+        self.cache_dir = base
+        self.stock_cache_dir = base / "stocks"
+        self.option_cache_dir = base / "options"
+        self.stock_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.option_cache_dir.mkdir(parents=True, exist_ok=True)
+        self._prune_old_cache_files()
 
     def connect(self) -> IB:
         if not IB_AVAILABLE:
@@ -109,16 +121,20 @@ class IBKRMarketDataProvider:
     ) -> pd.DataFrame:
         ib = self.connect()
         contract = self.qualify_stock(symbol)
-        bars = ib.reqHistoricalData(
-            contract,
-            endDateTime="",
-            durationStr=duration,
-            barSizeSetting=bar_size,
-            whatToShow=what_to_show,
-            useRTH=use_rth,
-            formatDate=1,
-            keepUpToDate=False,
-        )
+        previous_timeout = self._apply_request_timeout(ib)
+        try:
+            bars = ib.reqHistoricalData(
+                contract,
+                endDateTime="",
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow=what_to_show,
+                useRTH=use_rth,
+                formatDate=1,
+                keepUpToDate=False,
+            )
+        finally:
+            self._restore_request_timeout(ib, previous_timeout)
         return self._bars_to_ohlcv(bars)
 
     def intraday_bars(self, symbol: str, duration: str = "5 D", bar_size: str = "5 mins", use_rth: bool = True) -> pd.DataFrame:
@@ -137,9 +153,34 @@ class IBKRMarketDataProvider:
         regular_hours_only: bool = True,
         force_refresh: bool = False,
     ) -> pd.DataFrame:
+        period_days = self._period_to_days(period or "30d")
+        cache_path = self._stock_cache_path(symbol, interval, regular_hours_only)
+        if not force_refresh:
+            cached = self._read_cache(cache_path)
+            if self._cache_covers_period(cached, period_days):
+                sliced = self._slice_cached_period(cached, period_days)
+                return sliced
+
         duration = self._period_to_ib_duration(period or "30d")
         bar_size = self._interval_to_ib_bar_size(interval)
-        return self.historical_bars(symbol=symbol, duration=duration, bar_size=bar_size, use_rth=regular_hours_only)
+        cached = self._read_cache(cache_path)
+        try:
+            downloaded = self.historical_bars(symbol=symbol, duration=duration, bar_size=bar_size, use_rth=regular_hours_only)
+        except Exception:
+            partial = self._slice_cached_period(cached, period_days)
+            if not partial.empty:
+                return partial
+            raise
+        if downloaded.empty:
+            partial = self._slice_cached_period(cached, period_days)
+            if not partial.empty:
+                return partial
+            return downloaded
+
+        merged = self._merge_and_prune_cache(cached, downloaded)
+        self._write_cache(merged, cache_path)
+        self._prune_old_cache_files()
+        return self._slice_cached_period(merged, period_days)
 
     def load_many(
         self,
@@ -262,112 +303,138 @@ class IBKRMarketDataProvider:
         what_to_show: str = "TRADES",
         use_rth: bool = True,
     ) -> tuple[dict[str, Any], pd.DataFrame]:
-        ib = self.connect()
-        symbol = str(symbol).strip().upper()
-        signal = str(signal).strip().upper()
-        if signal not in {"CALL", "PUT"}:
-            raise RuntimeError(f"Unsupported option signal for {symbol}: {signal}")
-        right = "C" if signal == "CALL" else "P"
-        stock = self.qualify_stock(symbol)
-        params = ib.reqSecDefOptParams(symbol, "", stock.secType, stock.conId)
-        if not params:
-            raise RuntimeError(f"No IBKR option chain returned for {symbol}")
-        chain = next((p for p in params if p.exchange == "SMART"), params[0])
-
-        ref_ts = pd.Timestamp(reference_time)
-        if ref_ts.tzinfo is None:
-            ref_ts = ref_ts.tz_localize(self.config.timezone)
-        else:
-            ref_ts = ref_ts.tz_convert(self.config.timezone)
-        ref_date = ref_ts.date()
-        target_date = ref_date + timedelta(days=int(option_dte))
-
-        chain_expirations = []
-        for raw in sorted(chain.expirations):
-            try:
-                exp_date = datetime.strptime(str(raw), "%Y%m%d").date()
-            except Exception:
-                continue
-            if exp_date >= ref_date:
-                chain_expirations.append((str(raw), exp_date))
-
-        today = datetime.now(self.config.timezone).date()
-        if target_date >= today and chain_expirations:
-            expiry_candidates = sorted(chain_expirations, key=lambda item: abs((item[1] - target_date).days))
-        else:
-            # IBKR's option-chain endpoint generally returns currently listed
-            # expirations, not the historical expirations that existed on an old
-            # replay date. For historical signals, synthesize plausible weekday
-            # expiries around the target DTE and qualify them with includeExpired.
-            generated = []
-            for offset in range(-7, 8):
-                candidate = target_date + timedelta(days=offset)
-                if candidate.weekday() < 5:
-                    generated.append((candidate.strftime("%Y%m%d"), candidate))
-            expiry_candidates = sorted(generated, key=lambda item: abs((item[1] - target_date).days))
-
-        if not expiry_candidates:
-            raise RuntimeError(f"No valid expirations for {symbol} on {ref_date}")
-
-        strikes = []
-        for raw_strike in chain.strikes:
-            try:
-                strike_value = float(raw_strike)
-            except Exception:
-                continue
-            if np.isfinite(strike_value) and strike_value > 0:
-                strikes.append(strike_value)
-        strikes = sorted(strikes)
-        nearby = [s for s in strikes if float(underlying_price) * 0.90 <= s <= float(underlying_price) * 1.10]
-        strike_pool = nearby or strikes
-        if not strike_pool:
-            raise RuntimeError(f"No valid strikes for {symbol} near {underlying_price:g}")
-        strike_candidates = sorted(strike_pool, key=lambda value: abs(float(value) - float(underlying_price)))[:7]
-
-        contract = None
-        expiry = None
-        strike = None
-        attempted = []
-        for expiry_value, expiry_date in expiry_candidates[:10]:
-            for strike_value in strike_candidates:
-                attempted.append(f"{expiry_value} {strike_value:g}")
-                candidate_contract = Option(symbol, expiry_value, strike_value, right, "SMART", currency="USD", multiplier="100")
-                if expiry_date < today:
-                    candidate_contract.includeExpired = True
-                qualified = ib.qualifyContracts(candidate_contract)
-                if qualified:
-                    contract = qualified[0]
-                    expiry = expiry_value
-                    strike = float(strike_value)
-                    break
-            if contract is not None:
-                break
-        if contract is None or expiry is None or strike is None:
-            sample = ", ".join(attempted[:12])
-            raise RuntimeError(f"Could not qualify historical option {symbol} {right}; tried {sample}")
-
-        end_dt = ref_ts.replace(hour=16, minute=0, second=0, microsecond=0)
-        bars = ib.reqHistoricalData(
-            contract,
-            endDateTime=end_dt.to_pydatetime(),
-            durationStr="1 D",
-            barSizeSetting=bar_size,
-            whatToShow=what_to_show,
-            useRTH=use_rth,
-            formatDate=1,
-            keepUpToDate=False,
+        cached_info, cached_bars = self._find_cached_option_session(
+            symbol,
+            signal,
+            underlying_price,
+            option_dte,
+            reference_time,
+            bar_size,
+            what_to_show,
+            use_rth,
         )
-        df = self._bars_to_ohlcv(bars)
-        info = {
-            "symbol": symbol,
-            "option_dte": int(option_dte),
-            "expiry": expiry,
-            "strike": float(strike),
-            "right": right,
-            "localSymbol": getattr(contract, "localSymbol", ""),
-            "conId": getattr(contract, "conId", None),
-        }
-        return info, df
+        if cached_info and not cached_bars.empty:
+            return cached_info, cached_bars
+
+        ib = self.connect()
+        previous_timeout = self._apply_request_timeout(ib)
+        symbol = str(symbol).strip().upper()
+        try:
+            signal = str(signal).strip().upper()
+            if signal not in {"CALL", "PUT"}:
+                raise RuntimeError(f"Unsupported option signal for {symbol}: {signal}")
+            right = "C" if signal == "CALL" else "P"
+            stock = self.qualify_stock(symbol)
+            params = ib.reqSecDefOptParams(symbol, "", stock.secType, stock.conId)
+            if not params:
+                raise RuntimeError(f"No IBKR option chain returned for {symbol}")
+            chain = next((p for p in params if p.exchange == "SMART"), params[0])
+
+            ref_ts = pd.Timestamp(reference_time)
+            if ref_ts.tzinfo is None:
+                ref_ts = ref_ts.tz_localize(self.config.timezone)
+            else:
+                ref_ts = ref_ts.tz_convert(self.config.timezone)
+            ref_date = ref_ts.date()
+            target_date = ref_date + timedelta(days=int(option_dte))
+
+            chain_expirations = []
+            for raw in sorted(chain.expirations):
+                try:
+                    exp_date = datetime.strptime(str(raw), "%Y%m%d").date()
+                except Exception:
+                    continue
+                if exp_date >= ref_date:
+                    chain_expirations.append((str(raw), exp_date))
+
+            today = datetime.now(self.config.timezone).date()
+            if target_date >= today and chain_expirations:
+                expiry_candidates = sorted(chain_expirations, key=lambda item: abs((item[1] - target_date).days))
+            else:
+                generated_by_date = {}
+                for offset in range(-10, 11):
+                    candidate = target_date + timedelta(days=offset)
+                    # For expired equity options, blindly probing every weekday
+                    # causes many IBKR error-200 "unknown contract" responses.
+                    # Start with Fridays, which cover regular/weekly expiries for
+                    # the symbols this lab trades, and only try nearby candidates.
+                    if candidate.weekday() == 4:
+                        generated_by_date[candidate] = (candidate.strftime("%Y%m%d"), candidate)
+                if not generated_by_date and target_date.weekday() < 5:
+                    generated_by_date[target_date] = (target_date.strftime("%Y%m%d"), target_date)
+                expiry_candidates = sorted(generated_by_date.values(), key=lambda item: abs((item[1] - target_date).days))
+
+            if not expiry_candidates:
+                raise RuntimeError(f"No valid expirations for {symbol} on {ref_date}")
+
+            strikes = []
+            for raw_strike in chain.strikes:
+                try:
+                    strike_value = float(raw_strike)
+                except Exception:
+                    continue
+                if np.isfinite(strike_value) and strike_value > 0:
+                    strikes.append(strike_value)
+            strikes = sorted(strikes)
+            nearby = [s for s in strikes if float(underlying_price) * 0.90 <= s <= float(underlying_price) * 1.10]
+            strike_pool = nearby or strikes
+            if not strike_pool:
+                raise RuntimeError(f"No valid strikes for {symbol} near {underlying_price:g}")
+            strike_candidates = sorted(strike_pool, key=lambda value: abs(float(value) - float(underlying_price)))[:5]
+
+            contract = None
+            expiry = None
+            strike = None
+            attempted = []
+            for expiry_value, expiry_date in expiry_candidates[:4]:
+                for strike_value in strike_candidates:
+                    attempted.append(f"{expiry_value} {strike_value:g}")
+                    candidate_contract = Option(symbol, expiry_value, strike_value, right, "SMART", currency="USD", multiplier="100")
+                    if expiry_date < today:
+                        candidate_contract.includeExpired = True
+                    qualified = ib.qualifyContracts(candidate_contract)
+                    if qualified:
+                        contract = qualified[0]
+                        expiry = expiry_value
+                        strike = float(strike_value)
+                        break
+                if contract is not None:
+                    break
+            if contract is None or expiry is None or strike is None:
+                sample = ", ".join(attempted[:12])
+                raise RuntimeError(f"Could not qualify historical option {symbol} {right}; tried {sample}")
+
+            info = {
+                "symbol": symbol,
+                "option_dte": int(option_dte),
+                "expiry": expiry,
+                "strike": float(strike),
+                "right": right,
+                "localSymbol": getattr(contract, "localSymbol", ""),
+                "conId": getattr(contract, "conId", None),
+            }
+            option_cache_path = self._contract_option_cache_path(info, ref_ts, bar_size, what_to_show, use_rth)
+            cached_info, cached_bars = self._read_option_cache(option_cache_path)
+            if cached_info and not cached_bars.empty:
+                return cached_info, cached_bars
+
+            end_dt = ref_ts.replace(hour=16, minute=0, second=0, microsecond=0)
+            bars = ib.reqHistoricalData(
+                contract,
+                endDateTime=end_dt.to_pydatetime(),
+                durationStr="1 D",
+                barSizeSetting=bar_size,
+                whatToShow=what_to_show,
+                useRTH=use_rth,
+                formatDate=1,
+                keepUpToDate=False,
+            )
+            df = self._bars_to_ohlcv(bars)
+            self._write_option_cache(option_cache_path, info, df)
+            self._prune_old_cache_files()
+            return info, df
+        finally:
+            self._restore_request_timeout(ib, previous_timeout)
 
     def _bars_to_ohlcv(self, bars: Any) -> pd.DataFrame:
         if not bars:
@@ -382,17 +449,260 @@ class IBKRMarketDataProvider:
         df = df.dropna(subset=["Datetime"]).set_index("Datetime")
         return normalize_ohlcv(df, timezone=self.config.timezone)
 
+    def cache_info(self) -> pd.DataFrame:
+        rows = []
+        for path in sorted(self.cache_dir.glob("*/*.parquet")) + sorted(self.cache_dir.glob("*/*.csv")):
+            rows.append({
+                "file": str(path.relative_to(self.cache_dir)),
+                "size_kb": round(path.stat().st_size / 1024, 1),
+                "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+            })
+        return pd.DataFrame(rows)
+
+    def clear_cache(self, symbol: str | None = None) -> int:
+        clean = str(symbol or "").strip().upper()
+        removed = 0
+        patterns = [f"{clean}_*" if clean else "*", f"{clean}-*" if clean else "*"]
+        for cache_dir, pattern in [(self.stock_cache_dir, patterns[0]), (self.option_cache_dir, patterns[1])]:
+            for path in cache_dir.glob(pattern):
+                if path.is_file() and path.suffix.lower() in {".parquet", ".csv", ".json"}:
+                    path.unlink()
+                    removed += 1
+        return removed
+
+    def _apply_request_timeout(self, ib) -> float | int:
+        previous_timeout = getattr(ib, "RequestTimeout", 0)
+        if not previous_timeout or float(previous_timeout) <= 0:
+            ib.RequestTimeout = int(self.config.request_timeout_seconds)
+        return previous_timeout
+
+    @staticmethod
+    def _restore_request_timeout(ib, previous_timeout: float | int) -> None:
+        if previous_timeout != getattr(ib, "RequestTimeout", 0):
+            ib.RequestTimeout = previous_timeout
+
+    def _prune_old_cache_files(self) -> None:
+        cutoff = (datetime.now(self.config.timezone) - timedelta(days=int(self.max_cache_days))).timestamp()
+        for cache_dir in [self.stock_cache_dir, self.option_cache_dir]:
+            for path in cache_dir.glob("*"):
+                if path.is_file() and path.suffix.lower() in {".parquet", ".csv", ".json"}:
+                    try:
+                        if path.stat().st_mtime < cutoff:
+                            path.unlink()
+                    except Exception:
+                        pass
+
+    def _read_cache(self, path: Path) -> pd.DataFrame:
+        try:
+            if path.suffix.lower() == ".parquet":
+                df = pd.read_parquet(path)
+            else:
+                df = pd.read_csv(path, index_col=0, parse_dates=True)
+            return normalize_ohlcv(df, timezone=self.config.timezone)
+        except Exception:
+            fallback = path.with_suffix(".csv")
+            if fallback == path or not fallback.exists():
+                return pd.DataFrame(columns=REQUIRED_OHLCV)
+            try:
+                df = pd.read_csv(fallback, index_col=0, parse_dates=True)
+                return normalize_ohlcv(df, timezone=self.config.timezone)
+            except Exception:
+                return pd.DataFrame(columns=REQUIRED_OHLCV)
+
+    def _write_cache(self, df: pd.DataFrame, path: Path) -> None:
+        if df is None or df.empty:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            df.to_parquet(path)
+        except Exception:
+            df.to_csv(path.with_suffix(".csv"))
+
+    def _read_option_cache(self, path: Path) -> tuple[dict[str, Any], pd.DataFrame]:
+        meta_path = path.with_suffix(".json")
+        if not meta_path.exists():
+            return {}, pd.DataFrame(columns=REQUIRED_OHLCV)
+        bars = self._read_cache(path)
+        if bars.empty:
+            return {}, bars
+        try:
+            with meta_path.open("r", encoding="utf-8") as f:
+                info = json.load(f)
+            return dict(info or {}), bars
+        except Exception:
+            return {}, pd.DataFrame(columns=REQUIRED_OHLCV)
+
+    def _write_option_cache(self, path: Path, info: dict[str, Any], df: pd.DataFrame) -> None:
+        if df is None or df.empty:
+            return
+        self._write_cache(df, path)
+        try:
+            with path.with_suffix(".json").open("w", encoding="utf-8") as f:
+                json.dump(info, f, indent=2, default=str)
+        except Exception:
+            pass
+
+    def _merge_and_prune_cache(self, cached: pd.DataFrame, downloaded: pd.DataFrame) -> pd.DataFrame:
+        frames = [df for df in [cached, downloaded] if df is not None and not df.empty]
+        if not frames:
+            return pd.DataFrame(columns=REQUIRED_OHLCV)
+        merged = normalize_ohlcv(pd.concat(frames), timezone=self.config.timezone)
+        if merged.empty:
+            return merged
+        latest = merged.index.max()
+        cutoff = latest - pd.Timedelta(days=int(self.max_cache_days))
+        return merged[merged.index >= cutoff].sort_index()
+
+    def _slice_cached_period(self, df: pd.DataFrame, period_days: int | None) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame(columns=REQUIRED_OHLCV)
+        clean = normalize_ohlcv(df, timezone=self.config.timezone)
+        if clean.empty or not period_days:
+            return clean
+        latest = clean.index.max()
+        cutoff = latest - pd.Timedelta(days=min(int(period_days), int(self.max_cache_days)))
+        return clean[clean.index >= cutoff].sort_index()
+
+    def _cache_covers_period(self, df: pd.DataFrame, period_days: int | None) -> bool:
+        if df is None or df.empty:
+            return False
+        clean = normalize_ohlcv(df, timezone=self.config.timezone)
+        if clean.empty:
+            return False
+        latest_expected = self._expected_latest_session_date()
+        latest_date = clean.index.max().date()
+        if latest_date < latest_expected:
+            return False
+        if not period_days:
+            return True
+        latest = clean.index.max()
+        earliest = clean.index.min()
+        requested_cutoff = latest - pd.Timedelta(days=min(int(period_days), int(self.max_cache_days)))
+        return earliest <= requested_cutoff + pd.Timedelta(days=1)
+
+    def _expected_latest_session_date(self):
+        now = datetime.now(self.config.timezone)
+        expected = now.date()
+        if now.weekday() >= 5:
+            days_back = now.weekday() - 4
+            expected = (now - timedelta(days=days_back)).date()
+        elif now.hour < 9 or (now.hour == 9 and now.minute < 30):
+            previous = now - timedelta(days=1)
+            while previous.weekday() >= 5:
+                previous -= timedelta(days=1)
+            expected = previous.date()
+        return expected
+
+    def _stock_cache_path(self, symbol: str, interval: str, regular_hours_only: bool) -> Path:
+        clean_symbol = self._safe_key(str(symbol).strip().upper())
+        clean_interval = self._safe_key(str(interval or "5m").strip().lower())
+        hours = "rth" if regular_hours_only else "all"
+        return self.stock_cache_dir / f"{clean_symbol}_{clean_interval}_{hours}_raw.parquet"
+
+    def _find_cached_option_session(
+        self,
+        symbol: str,
+        signal: str,
+        underlying_price: float,
+        option_dte: int,
+        reference_time,
+        bar_size: str,
+        what_to_show: str,
+        use_rth: bool,
+    ) -> tuple[dict[str, Any], pd.DataFrame]:
+        ref_ts = pd.Timestamp(reference_time)
+        if ref_ts.tzinfo is None:
+            ref_ts = ref_ts.tz_localize(self.config.timezone)
+        else:
+            ref_ts = ref_ts.tz_convert(self.config.timezone)
+        symbol_key = self._safe_key(str(symbol).strip().upper())
+        signal_key = self._safe_key(str(signal).strip().upper())
+        prefix = f"{symbol_key}-{signal_key}-{ref_ts.date().isoformat()}-{int(option_dte)}d-"
+        matches = []
+        for meta_path in self.option_cache_dir.glob(f"{prefix}*.json"):
+            try:
+                with meta_path.open("r", encoding="utf-8") as f:
+                    info = json.load(f)
+                strike = float(info.get("strike"))
+            except Exception:
+                continue
+            distance = abs(strike - float(underlying_price))
+            matches.append((distance, meta_path.with_suffix(".parquet"), dict(info or {})))
+        if not matches:
+            return {}, pd.DataFrame(columns=REQUIRED_OHLCV)
+
+        max_distance = max(2.5, abs(float(underlying_price)) * 0.03)
+        for distance, path, info in sorted(matches, key=lambda item: item[0]):
+            if distance > max_distance:
+                continue
+            bars = self._read_cache(path)
+            if not bars.empty:
+                return info, bars
+        return {}, pd.DataFrame(columns=REQUIRED_OHLCV)
+
+    def _contract_option_cache_path(
+        self,
+        info: dict[str, Any],
+        reference_time,
+        bar_size: str,
+        what_to_show: str,
+        use_rth: bool,
+    ) -> Path:
+        ref_ts = pd.Timestamp(reference_time)
+        if ref_ts.tzinfo is None:
+            ref_ts = ref_ts.tz_localize(self.config.timezone)
+        else:
+            ref_ts = ref_ts.tz_convert(self.config.timezone)
+        key = {
+            "symbol": str(info.get("symbol") or "").strip().upper(),
+            "right": str(info.get("right") or "").strip().upper(),
+            "option_dte": int(info.get("option_dte") or 0),
+            "reference_date": ref_ts.date().isoformat(),
+            "expiry": str(info.get("expiry") or ""),
+            "strike": float(info.get("strike") or 0),
+            "conId": str(info.get("conId") or ""),
+            "bar_size": str(bar_size),
+            "what_to_show": str(what_to_show),
+            "use_rth": bool(use_rth),
+        }
+        digest = hashlib.sha1(json.dumps(key, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        symbol_key = self._safe_key(key["symbol"])
+        signal_key = "CALL" if key["right"] == "C" else "PUT" if key["right"] == "P" else self._safe_key(key["right"])
+        return self.option_cache_dir / f"{symbol_key}-{signal_key}-{key['reference_date']}-{int(key['option_dte'])}d-{digest}.parquet"
+
+    @staticmethod
+    def _safe_key(value: str) -> str:
+        return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in str(value)).strip("-") or "unknown"
+
+    @staticmethod
+    def _period_to_days(period: str | None) -> int | None:
+        value = str(period or "").strip().lower()
+        try:
+            if value.endswith("d"):
+                return min(int(value[:-1]), IBKRMarketDataProvider.max_cache_days)
+            if value.endswith("wk"):
+                return min(int(value[:-2]) * 7, IBKRMarketDataProvider.max_cache_days)
+            if value.endswith("mo"):
+                return min(int(value[:-2]) * 30, IBKRMarketDataProvider.max_cache_days)
+            if value.endswith("y"):
+                return IBKRMarketDataProvider.max_cache_days
+        except Exception:
+            return None
+        return None
+
     @staticmethod
     def _period_to_ib_duration(period: str) -> str:
         period = str(period or "30d").strip().lower()
         if period.endswith("d"):
-            return f"{int(period[:-1])} D"
+            return f"{min(int(period[:-1]), IBKRMarketDataProvider.max_cache_days)} D"
         if period.endswith("wk"):
-            return f"{int(period[:-2])} W"
+            days = min(int(period[:-2]) * 7, IBKRMarketDataProvider.max_cache_days)
+            return f"{days} D"
         if period.endswith("mo"):
-            return f"{int(period[:-2])} M"
+            days = min(int(period[:-2]) * 30, IBKRMarketDataProvider.max_cache_days)
+            return f"{days} D"
         if period.endswith("y"):
-            return f"{int(period[:-1])} Y"
+            return f"{IBKRMarketDataProvider.max_cache_days} D"
         return "30 D"
 
     @staticmethod

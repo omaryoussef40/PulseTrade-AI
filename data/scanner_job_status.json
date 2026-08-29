@@ -1,10 +1,10 @@
 {
   "status": "complete",
-  "started_at": "2026-08-14T16:50:44",
-  "updated_at": "2026-08-14T16:53:56",
-  "finished_at": "2026-08-14T16:53:56",
+  "started_at": "2026-08-28T16:39:34",
+  "updated_at": "2026-08-28T16:40:01",
+  "finished_at": "2026-08-28T16:40:01",
   "source": "manual",
-  "run_date": "2026-08-14",
+  "run_date": "2026-08-28",
   "symbols": [
     "SPY",
     "QQQ",
@@ -18,18 +18,20 @@
     "TSLA",
     "AMD",
     "PLTR",
+    "COIN",
     "MSTR",
     "AVGO",
     "SMCI",
     "MU",
     "ARM",
-    "MRVL",
+    "TSM",
     "JPM",
-    "GS"
+    "GS",
+    "SOFI"
   ],
-  "completed": 20,
-  "total": 20,
-  "stock_rows": 20,
-  "option_rows": 2,
+  "completed": 22,
+  "total": 22,
+  "stock_rows": 22,
+  "option_rows": 0,
   "message": "Scanner complete"
 }

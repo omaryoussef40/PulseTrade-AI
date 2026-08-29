@@ -189,7 +189,7 @@ def calculate_support_resistance(daily: pd.DataFrame, current_price: float, look
     }
 
 
-def _score_direction(direction: str, price: float, vwap: float, ema9: float, ema21: float, orb_high: float, orb_low: float, pdh: float, pdl: float, atr_percent: float, rvol: float, candle: pd.Series, use_rvol_score: bool) -> tuple[float, list[str], list[str]]:
+def _score_direction(direction: str, price: float, vwap: float, ema9: float, ema21: float, orb_high: float, orb_low: float, pdh: float, pdl: float, atr_percent: float, rvol: float, candle: pd.Series, use_rvol_score: bool, orb_minutes: int = DEFAULT_ORB_MINUTES) -> tuple[float, list[str], list[str]]:
     direction = direction.upper()
     is_call = direction == "CALL"
     score = 0.0
@@ -224,8 +224,8 @@ def _score_direction(direction: str, price: float, vwap: float, ema9: float, ema
         if directional_orb_dist >= 0.20: points = 20
         if directional_orb_dist >= 0.50: points = 25
         score += points
-        reasons.append("15m ORB breakout up" if is_call else "15m ORB breakdown")
-        components.append(f"15m ORB {points}/25 ({directional_orb_dist:.2f}%)")
+        reasons.append(f"{int(orb_minutes)}m ORB breakout up" if is_call else f"{int(orb_minutes)}m ORB breakdown")
+        components.append(f"{int(orb_minutes)}m ORB {points}/25 ({directional_orb_dist:.2f}%)")
 
     key_level = pdh if is_call else pdl
     level_dist = _distance_pct(price, key_level)
@@ -281,7 +281,16 @@ def _score_direction(direction: str, price: float, vwap: float, ema9: float, ema
     return _clamp(score), reasons, components
 
 
-def scan_dataframe(symbol: str, intraday: pd.DataFrame, daily: pd.DataFrame | None = None, use_rvol_score: bool = False, min_score: float = MIN_SCORE, timezone: ZoneInfo = EASTERN, orb_minutes: int = DEFAULT_ORB_MINUTES, min_session_bars: int = 7) -> dict | None:
+def scan_dataframe(
+    symbol: str,
+    intraday: pd.DataFrame,
+    daily: pd.DataFrame | None = None,
+    use_rvol_score: bool = False,
+    min_score: float = MIN_SCORE,
+    timezone: ZoneInfo = EASTERN,
+    orb_minutes: int = DEFAULT_ORB_MINUTES,
+    min_session_bars: int = 7,
+) -> dict | None:
     symbol = str(symbol).strip().upper()
     intraday = _normalize_ohlcv(intraday, timezone=timezone)
     daily = _normalize_ohlcv(daily, timezone=timezone) if daily is not None else pd.DataFrame(columns=REQUIRED_COLUMNS)
@@ -360,8 +369,8 @@ def scan_dataframe(symbol: str, intraday: pd.DataFrame, daily: pd.DataFrame | No
     price = float(last["Close"])
     atr_percent = float((last["ATR"] / price) * 100) if price else 0.0
 
-    call_score, call_reasons, call_components = _score_direction("CALL", price, float(last["VWAP"]), float(last["EMA9"]), float(last["EMA21"]), orb_high, orb_low, pdh, pdl, atr_percent, rvol, last, use_rvol_score)
-    put_score, put_reasons, put_components = _score_direction("PUT", price, float(last["VWAP"]), float(last["EMA9"]), float(last["EMA21"]), orb_high, orb_low, pdh, pdl, atr_percent, rvol, last, use_rvol_score)
+    call_score, call_reasons, call_components = _score_direction("CALL", price, float(last["VWAP"]), float(last["EMA9"]), float(last["EMA21"]), orb_high, orb_low, pdh, pdl, atr_percent, rvol, last, use_rvol_score, orb_minutes)
+    put_score, put_reasons, put_components = _score_direction("PUT", price, float(last["VWAP"]), float(last["EMA9"]), float(last["EMA21"]), orb_high, orb_low, pdh, pdl, atr_percent, rvol, last, use_rvol_score, orb_minutes)
 
     if call_score >= float(min_score) and call_score > put_score:
         signal, score, reasons, components = "CALL", call_score, call_reasons, call_components

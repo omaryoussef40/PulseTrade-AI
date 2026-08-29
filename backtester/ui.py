@@ -103,9 +103,10 @@ def _render_dte_result(dte: int, comparison: pd.DataFrame, trades: pd.DataFrame)
     st.plotly_chart(fig, use_container_width=True)
 
 
-def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbols: list[str], selected_strategies: list[str], period: str, interval: str, max_symbols: int, force_refresh: bool, data_source: str, orb_minutes: int, first_signal_minutes: int, min_session_bars: int, visual_updates: bool, option_dte_values: list[int], premium_pct_ui: float, slippage_pct: float, allow_same_symbol: bool, risk_overrides: dict | None = None) -> None:
+def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbols: list[str], selected_strategies: list[str], period: str, interval: str, max_symbols: int, force_refresh: bool, data_source: str, orb_minutes: int, first_signal_minutes: int, min_session_bars: int, visual_updates: bool, option_dte_values: list[int], premium_pct_ui: float, slippage_pct: float, allow_same_symbol: bool, risk_overrides: dict | None = None, gap_settings: dict | None = None) -> None:
     config.setdefault("strategy_lab", {})
-    config["watchlist"] = list(selected_symbols)
+    if "PMB" in {str(name).upper() for name in selected_strategies}:
+        config["watchlist"] = list(selected_symbols)
     config["strategy_lab"] = {
         "symbols": list(selected_symbols),
         "selected_strategies": list(selected_strategies),
@@ -122,6 +123,7 @@ def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbo
         "premium_pct_ui": float(premium_pct_ui),
         "slippage_pct": float(slippage_pct),
         "allow_same_symbol": bool(allow_same_symbol),
+        "gap": dict(gap_settings or {}),
     }
     if risk_overrides:
         config["strategy_lab"].update(risk_overrides)
@@ -130,11 +132,15 @@ def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbo
 
 
 def _apply_strategy_lab_to_engine(config: dict, settings: StrategyLabSettings, selected_symbols: list[str]) -> dict[str, object]:
+    selected_names = {str(name).strip().upper() for name in settings.selected_strategies}
+    if selected_names != {"PMB"}:
+        raise ValueError("Only the implemented PMB strategy can be applied to the live trading engine.")
+
     strategy = config.setdefault("strategy", {})
     risk = config.setdefault("risk", {})
     lab_cfg = config.setdefault("strategy_lab", {})
 
-    selected_strategy = next((name for name in settings.selected_strategies if str(name).upper() == "PMB"), settings.selected_strategies[0] if settings.selected_strategies else "PMB")
+    selected_strategy = "PMB"
     option_dte = int(settings.option_dte_values[0]) if settings.option_dte_values else int(strategy.get("option_dte", 7))
     account_size = max(float(settings.starting_capital or risk.get("account_size", 1000) or 1000), 1.0)
     max_spend = float(settings.max_spend_per_trade)
@@ -202,6 +208,7 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
     strategy = config.get("strategy", {})
     risk = config.get("risk", {})
     lab_cfg = config.get("strategy_lab", {})
+    gap_cfg = lab_cfg.get("gap", {}) if isinstance(lab_cfg.get("gap", {}), dict) else {}
 
     default_max_symbols = min(5, max(1, len(default_symbols))) if default_symbols else 5
 
@@ -232,8 +239,10 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
             if not selected_strategies:
                 st.warning("Select at least one strategy.")
                 selected_strategies = ["PMB"]
-            if any(x in selected_strategies for x in ["BRT", "PULLBACK", "GAP"]):
-                st.caption("PMB is implemented now. BRT, Pullback, and Gap are placeholders until their exact rules are coded.")
+            if "GAP" in selected_strategies:
+                st.caption("GAP scanner/backtester is implemented for stock research only. It cannot place live orders.")
+            if any(x in selected_strategies for x in ["BRT", "PULLBACK"]):
+                st.caption("BRT and Pullback are placeholders and intentionally produce no trades.")
             st.caption("PMB v2 uses Score + Grade. Confidence is kept only as a compatibility column and no longer blocks trades.")
 
     with setting_cols[1]:
@@ -254,7 +263,7 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
 
     with setting_cols[2]:
         with st.expander("⚙️ Backtest", expanded=False):
-            period_options = ["1d", "7d", "30d", "60d", "90d"]
+            period_options = ["1d", "7d", "14d", "30d", "60d", "90d"]
             interval_options = ["5m", "15m", "30m", "60m"]
             period = st.selectbox("Backtest Period", period_options, index=period_options.index(str(lab_cfg.get("period", "30d"))) if str(lab_cfg.get("period", "30d")) in period_options else 0, key="sl_period")
             interval = st.selectbox("Candle interval", interval_options, index=interval_options.index(str(lab_cfg.get("interval", "5m"))) if str(lab_cfg.get("interval", "5m")) in interval_options else 0, key="sl_interval")
@@ -268,21 +277,32 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
     selected_presets_state = list(st.session_state.get("sl_symbol_presets", []))
     selected_all_symbols = selected_presets_state + [s for s in _parse_extra_symbols(st.session_state.get("sl_extra_symbols", "")) if s not in selected_presets_state]
     symbols = selected_all_symbols[:max_symbols]
-    if str(data_source).upper() == "IBKR":
+    non_gap_selected = any(name != "GAP" for name in selected_strategies)
+    if "GAP" in selected_strategies:
+        st.caption("GAP builds its universe with Yahoo's market screener, then loads extended-hours candles from IBKR. The data-source selector applies only to PMB/BRT/Pullback.")
+        if not YFINANCE_AVAILABLE:
+            st.error("GAP requires yfinance for fresh market-wide universe discovery.")
+            return
+    if non_gap_selected and str(data_source).upper() == "IBKR":
         st.caption("Strategy Lab uses IBKR historical candles. Keep TWS/IB Gateway open.")
-    elif not YFINANCE_AVAILABLE:
+    elif non_gap_selected and not YFINANCE_AVAILABLE:
         st.error("Yahoo selected but yfinance is not installed.")
         st.code("pip install yfinance pyarrow", language="bash")
         return
-    if str(data_source).upper() == "YAHOO" and period == "90d" and interval == "5m":
+    if non_gap_selected and str(data_source).upper() == "YAHOO" and period == "90d" and interval == "5m":
         st.caption("Note: Yahoo may limit 5-minute history. If 90d returns no data, switch to 15m or use 60d.")
 
     try:
         provider = create_market_data_provider(data_source, config) if create_market_data_provider else YahooDataClient()
+        gap_provider = (
+            create_market_data_provider("IBKR", config, client_id_offset=201, readonly_override=True)
+            if "GAP" in selected_strategies and create_market_data_provider
+            else provider
+        )
     except Exception as exc:
         st.error(f"Could not initialize {data_source} market-data provider: {exc}")
         return
-    controller = StrategyLabController(data_provider=provider)
+    controller = StrategyLabController(data_provider=provider, gap_data_provider=gap_provider)
 
     with setting_cols[3]:
         with st.expander("🔁 Scanner", expanded=False):
@@ -293,26 +313,29 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
 
     with setting_cols[4]:
         with st.expander("💰 Options", expanded=False):
-            starting_capital = st.number_input("Capital USD", min_value=100.0, value=float(risk.get("account_size", 1000)), step=100.0, key="sl_capital")
-            max_trades_per_day = st.number_input("Max trades/day", min_value=1, max_value=10, value=int(risk.get("max_trades_per_day", 2)), step=1, key="sl_max_trades")
-            sizing_model = st.selectbox("Position sizing", ["% of Equity", "Fixed Dollar"], index=0, key="sl_sizing_model")
+            starting_capital = st.number_input("Capital USD", min_value=100.0, value=float(lab_cfg.get("account_size", risk.get("account_size", 1000))), step=100.0, key="sl_capital")
+            max_trades_per_day = st.number_input("Max trades/day", min_value=1, max_value=10, value=int(lab_cfg.get("max_trades_per_day", risk.get("max_trades_per_day", 2))), step=1, key="sl_max_trades")
+            saved_sizing_method = str(lab_cfg.get("sizing_method", "percent_equity"))
+            sizing_model_options = ["% of Equity", "Fixed Dollar"]
+            sizing_model_index = 1 if saved_sizing_method == "fixed_dollar" else 0
+            sizing_model = st.selectbox("Position sizing", sizing_model_options, index=sizing_model_index, key="sl_sizing_model")
             if sizing_model == "% of Equity":
-                allocation_pct = st.number_input("Position allocation %", min_value=1.0, max_value=100.0, value=20.0, step=1.0, key="sl_alloc_pct")
-                daily_exposure_pct = st.number_input("Max daily exposure %", min_value=1.0, max_value=100.0, value=40.0, step=1.0, key="sl_daily_exp_pct")
+                allocation_pct = st.number_input("Position allocation %", min_value=1.0, max_value=100.0, value=float(lab_cfg.get("position_allocation_pct", risk.get("max_spend_per_trade_pct", 20.0) or 20.0)), step=1.0, key="sl_alloc_pct")
+                daily_exposure_pct = st.number_input("Max daily exposure %", min_value=1.0, max_value=100.0, value=float(lab_cfg.get("max_daily_exposure_pct", risk.get("max_daily_capital_pct", 40.0) or 40.0)), step=1.0, key="sl_daily_exp_pct")
                 max_spend = float(starting_capital) * float(allocation_pct) / 100.0
                 max_daily_capital = float(starting_capital) * float(daily_exposure_pct) / 100.0
                 st.caption("Compounds automatically: each trade uses a % of current equity, not a fixed dollar amount.")
             else:
-                allocation_pct = 0.0
-                daily_exposure_pct = 0.0
-                max_spend = st.number_input("Max spend/trade USD", min_value=50.0, value=float(risk.get("max_spend_per_trade", 250)), step=50.0, key="sl_spend")
-                default_daily_capital = max(float(risk.get("max_daily_capital", 0) or 0), float(risk.get("account_size", 1000)), float(max_spend))
+                allocation_pct = float(lab_cfg.get("position_allocation_pct", risk.get("max_spend_per_trade_pct", 20.0) or 20.0))
+                daily_exposure_pct = float(lab_cfg.get("max_daily_exposure_pct", risk.get("max_daily_capital_pct", 40.0) or 40.0))
+                max_spend = st.number_input("Max spend/trade USD", min_value=50.0, value=float(lab_cfg.get("max_spend_per_trade", risk.get("max_spend_per_trade", 250))), step=50.0, key="sl_spend")
+                default_daily_capital = max(float(lab_cfg.get("max_daily_capital", risk.get("max_daily_capital", 0)) or 0), float(lab_cfg.get("account_size", risk.get("account_size", 1000))), float(max_spend))
                 max_daily_capital = st.number_input("Max daily capital USD", min_value=50.0, value=default_daily_capital, step=50.0, key="sl_daily_cap")
             reserve_capital = st.checkbox("Reserve capital for remaining trades", value=bool(lab_cfg.get("reserve_capital_for_remaining_trades", risk.get("reserve_capital_for_remaining_trades", True))), key="sl_reserve_capital")
             recycle_capital = st.checkbox("Recycle capital after exits", value=bool(lab_cfg.get("recycle_capital_after_exit", risk.get("recycle_capital_after_exit", False))), key="sl_recycle_capital")
             max_contracts = st.number_input("Max contracts/trade", min_value=0, max_value=100, value=int(lab_cfg.get("max_contracts", risk.get("max_contracts", 0) or 0)), step=1, key="sl_max_contracts", help="0 means no fixed contract cap.")
-            stop_loss = st.number_input("Stop loss %", min_value=1.0, max_value=90.0, value=float(risk.get("stop_loss_pct", 20.0)), step=1.0, key="sl_stop")
-            take_profit = st.number_input("Take profit %", min_value=1.0, max_value=300.0, value=float(risk.get("take_profit_pct", 30.0)), step=1.0, key="sl_tp")
+            stop_loss = st.number_input("Stop loss %", min_value=1.0, max_value=90.0, value=float(lab_cfg.get("stop_loss_pct", risk.get("stop_loss_pct", 20.0))), step=1.0, key="sl_stop")
+            take_profit = st.number_input("Take profit %", min_value=1.0, max_value=300.0, value=float(lab_cfg.get("take_profit_pct", risk.get("take_profit_pct", 30.0))), step=1.0, key="sl_tp")
             breakeven_trigger = st.number_input("Move stop to breakeven at +%", min_value=1.0, max_value=200.0, value=float(lab_cfg.get("breakeven_trigger_pct", risk.get("breakeven_trigger_pct", 15.0))), step=1.0, key="sl_breakeven")
             trailing_trigger = st.number_input("Activate trailing stop at +%", min_value=1.0, max_value=300.0, value=float(lab_cfg.get("trailing_trigger_pct", risk.get("trailing_trigger_pct", 25.0))), step=1.0, key="sl_trailing_trigger")
             trailing_stop = st.number_input("Trailing stop distance %", min_value=1.0, max_value=90.0, value=float(lab_cfg.get("trailing_stop_pct", risk.get("trailing_stop_pct", 10.0))), step=1.0, key="sl_trailing_stop")
@@ -328,6 +351,65 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
             premium_pct_ui = st.number_input("Entry premium % of stock", min_value=0.1, max_value=10.0, value=float(lab_cfg.get("premium_pct_ui", 0.25)), step=0.05, key="sl_premium_v092")
             slippage_pct = st.number_input("Slippage %", min_value=0.0, max_value=20.0, value=float(lab_cfg.get("slippage_pct", 2.0)), step=0.5, key="sl_slippage")
             allow_same_symbol = st.checkbox("Allow same symbol more than once per day", value=bool(lab_cfg.get("allow_same_symbol", False)), key="sl_same_symbol")
+
+    gap_price_min = float(gap_cfg.get("price_min", 3.0))
+    gap_price_max = float(gap_cfg.get("price_max", 15.0))
+    gap_min_abs_gap_pct = float(gap_cfg.get("min_abs_gap_pct", 8.0))
+    gap_min_premarket_volume = int(gap_cfg.get("min_premarket_volume", 500_000))
+    gap_min_premarket_rvol = float(gap_cfg.get("min_premarket_rvol", 3.0))
+    gap_min_avg_daily_volume = int(gap_cfg.get("min_avg_daily_volume", 1_000_000))
+    gap_allow_shorts = bool(gap_cfg.get("allow_shorts", True))
+    gap_risk_per_trade = float(gap_cfg.get("risk_per_trade", max(10.0, float(starting_capital) * 0.005)))
+    gap_max_capital_per_trade = float(gap_cfg.get("max_capital_per_trade", max(100.0, float(starting_capital) * 0.20)))
+    gap_max_daily_capital = float(gap_cfg.get("max_daily_capital", max(100.0, float(starting_capital) * 0.40)))
+    gap_max_trades_per_day = int(gap_cfg.get("max_trades_per_day", 2))
+    gap_stop_buffer_pct = float(gap_cfg.get("stop_buffer_pct", 0.25))
+    gap_min_stop_distance_pct = float(gap_cfg.get("min_stop_distance_pct", 0.5))
+    gap_max_stop_distance_pct = float(gap_cfg.get("max_stop_distance_pct", 6.0))
+    gap_target_r = float(gap_cfg.get("target_r", 2.0))
+    gap_force_exit_hour = int(gap_cfg.get("force_exit_hour", 11))
+    gap_force_exit_minute = int(gap_cfg.get("force_exit_minute", 30))
+    gap_slippage_pct = float(gap_cfg.get("slippage_pct", 0.10))
+    gap_commission_per_share = float(gap_cfg.get("commission_per_share", 0.005))
+    gap_minimum_order_commission = float(gap_cfg.get("minimum_order_commission", 1.0))
+    gap_universe_max_symbols = int(gap_cfg.get("universe_max_symbols", 2_000))
+    gap_ibkr_request_delay_seconds = float(gap_cfg.get("ibkr_request_delay_seconds", 0.25))
+    gap_ibkr_max_retries = int(gap_cfg.get("ibkr_max_retries", 2))
+
+    if "GAP" in selected_strategies:
+        with st.expander("Gap Scanner & Stock Backtest", expanded=True):
+            st.caption("Research-only. Every run builds a fresh US-stock universe with Yahoo's market screener, then loads IBKR extended-hours trade candles. The ticker selector above is ignored by GAP.")
+            st.caption("Keep TWS or IB Gateway open with historical market-data permissions. A full-universe IBKR run can take several minutes because symbols are paced and retried individually.")
+            st.caption("Historical runs use the universe generated today because Yahoo does not provide historical screener membership; symbols that moved outside $3-$15 before today can be absent from older sessions.")
+            gap_cols = st.columns(5)
+            with gap_cols[0]:
+                gap_price_min = st.number_input("Minimum stock price", min_value=1.0, max_value=50.0, value=gap_price_min, step=0.5, key="sl_gap_price_min")
+                gap_price_max = st.number_input("Maximum stock price", min_value=2.0, max_value=100.0, value=max(gap_price_max, gap_price_min), step=0.5, key="sl_gap_price_max")
+                gap_min_abs_gap_pct = st.number_input("Minimum absolute gap %", min_value=1.0, max_value=50.0, value=gap_min_abs_gap_pct, step=0.5, key="sl_gap_min_gap")
+            with gap_cols[1]:
+                gap_min_premarket_volume = st.number_input("Minimum premarket volume", min_value=0, max_value=100_000_000, value=gap_min_premarket_volume, step=50_000, key="sl_gap_pm_volume")
+                gap_min_premarket_rvol = st.number_input("Minimum premarket RVOL", min_value=0.1, max_value=50.0, value=gap_min_premarket_rvol, step=0.25, key="sl_gap_pm_rvol")
+                gap_min_avg_daily_volume = st.number_input("Minimum average daily volume", min_value=0, max_value=500_000_000, value=gap_min_avg_daily_volume, step=100_000, key="sl_gap_adv")
+            with gap_cols[2]:
+                gap_risk_per_trade = st.number_input("Risk per trade USD", min_value=1.0, max_value=float(starting_capital), value=min(gap_risk_per_trade, float(starting_capital)), step=10.0, key="sl_gap_risk")
+                gap_max_capital_per_trade = st.number_input("Max stock notional per trade", min_value=10.0, max_value=max(float(starting_capital), 10.0), value=min(gap_max_capital_per_trade, float(starting_capital)), step=100.0, key="sl_gap_capital_trade")
+                gap_max_daily_capital = st.number_input("Max daily stock notional", min_value=10.0, max_value=max(float(starting_capital), 10.0), value=min(gap_max_daily_capital, float(starting_capital)), step=100.0, key="sl_gap_daily_capital")
+            with gap_cols[3]:
+                gap_max_trades_per_day = st.number_input("Max GAP trades/day", min_value=1, max_value=10, value=gap_max_trades_per_day, step=1, key="sl_gap_max_trades")
+                gap_stop_buffer_pct = st.number_input("Opening-range stop buffer %", min_value=0.0, max_value=5.0, value=gap_stop_buffer_pct, step=0.05, key="sl_gap_stop_buffer")
+                gap_min_stop_distance_pct = st.number_input("Minimum stop distance %", min_value=0.1, max_value=10.0, value=gap_min_stop_distance_pct, step=0.1, key="sl_gap_min_stop")
+                gap_max_stop_distance_pct = st.number_input("Maximum stop distance %", min_value=0.5, max_value=30.0, value=max(gap_max_stop_distance_pct, gap_min_stop_distance_pct), step=0.5, key="sl_gap_max_stop")
+            with gap_cols[4]:
+                gap_target_r = st.number_input("Profit target R", min_value=0.5, max_value=10.0, value=gap_target_r, step=0.25, key="sl_gap_target_r")
+                gap_allow_shorts = st.checkbox("Backtest gap-up shorts", value=gap_allow_shorts, key="sl_gap_shorts")
+                gap_slippage_pct = st.number_input("Stock slippage % per fill", min_value=0.0, max_value=5.0, value=gap_slippage_pct, step=0.05, key="sl_gap_slippage")
+                gap_force_exit_hour = st.number_input("Timed exit hour ET", min_value=9, max_value=15, value=gap_force_exit_hour, step=1, key="sl_gap_exit_hour")
+                gap_force_exit_minute = st.number_input("Timed exit minute ET", min_value=0, max_value=59, value=gap_force_exit_minute, step=5, key="sl_gap_exit_minute")
+            st.caption("Entry is fixed at 09:45 ET after the first 15-minute candle. News is checked from the previous session close through entry; dates without adequate local news coverage are marked UNVERIFIED and rejected.")
+            if gap_allow_shorts:
+                st.caption("Gap-up short results are theoretical: historical shortability, borrow fees, SSR restrictions, and trading halts are not modeled yet.")
+            if interval not in {"5m", "15m"}:
+                st.warning("GAP needs 5-minute or 15-minute candles for a precise 09:45 entry. Wider intervals will be rejected by the scanner audit.")
 
     settings = StrategyLabSettings(
         symbols=symbols,
@@ -375,6 +457,29 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         allow_same_symbol_same_day=bool(allow_same_symbol),
         selected_strategies=tuple(selected_strategies),
         data_source=str(data_source),
+        gap_price_min=float(gap_price_min),
+        gap_price_max=float(gap_price_max),
+        gap_min_abs_gap_pct=float(gap_min_abs_gap_pct),
+        gap_min_premarket_volume=int(gap_min_premarket_volume),
+        gap_min_premarket_rvol=float(gap_min_premarket_rvol),
+        gap_min_avg_daily_volume=int(gap_min_avg_daily_volume),
+        gap_allow_shorts=bool(gap_allow_shorts),
+        gap_risk_per_trade=float(gap_risk_per_trade),
+        gap_max_capital_per_trade=float(gap_max_capital_per_trade),
+        gap_max_daily_capital=float(gap_max_daily_capital),
+        gap_max_trades_per_day=int(gap_max_trades_per_day),
+        gap_stop_buffer_pct=float(gap_stop_buffer_pct),
+        gap_min_stop_distance_pct=float(gap_min_stop_distance_pct),
+        gap_max_stop_distance_pct=float(gap_max_stop_distance_pct),
+        gap_target_r=float(gap_target_r),
+        gap_force_exit_hour=int(gap_force_exit_hour),
+        gap_force_exit_minute=int(gap_force_exit_minute),
+        gap_slippage_pct=float(gap_slippage_pct),
+        gap_commission_per_share=float(gap_commission_per_share),
+        gap_minimum_order_commission=float(gap_minimum_order_commission),
+        gap_universe_max_symbols=int(gap_universe_max_symbols),
+        gap_ibkr_request_delay_seconds=float(gap_ibkr_request_delay_seconds),
+        gap_ibkr_max_retries=int(gap_ibkr_max_retries),
     )
     _save_strategy_lab_settings(
         config,
@@ -395,6 +500,13 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         slippage_pct,
         allow_same_symbol,
         {
+            "account_size": float(starting_capital),
+            "max_trades_per_day": int(max_trades_per_day),
+            "sizing_method": "percent_equity" if sizing_model == "% of Equity" else "fixed_dollar",
+            "position_allocation_pct": float(allocation_pct),
+            "max_daily_exposure_pct": float(daily_exposure_pct),
+            "max_spend_per_trade": float(max_spend),
+            "max_daily_capital": float(max_daily_capital),
             "max_contracts": int(max_contracts),
             "recycle_capital_after_exit": bool(recycle_capital),
             "reserve_capital_for_remaining_trades": bool(reserve_capital),
@@ -411,14 +523,58 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
             "max_consecutive_losses": int(max_consecutive_losses),
             "max_daily_drawdown_pct": float(max_daily_drawdown_pct),
         },
+        {
+            "price_min": float(gap_price_min),
+            "price_max": float(gap_price_max),
+            "min_abs_gap_pct": float(gap_min_abs_gap_pct),
+            "min_premarket_volume": int(gap_min_premarket_volume),
+            "min_premarket_rvol": float(gap_min_premarket_rvol),
+            "min_avg_daily_volume": int(gap_min_avg_daily_volume),
+            "allow_shorts": bool(gap_allow_shorts),
+            "risk_per_trade": float(gap_risk_per_trade),
+            "max_capital_per_trade": float(gap_max_capital_per_trade),
+            "max_daily_capital": float(gap_max_daily_capital),
+            "max_trades_per_day": int(gap_max_trades_per_day),
+            "stop_buffer_pct": float(gap_stop_buffer_pct),
+            "min_stop_distance_pct": float(gap_min_stop_distance_pct),
+            "max_stop_distance_pct": float(gap_max_stop_distance_pct),
+            "target_r": float(gap_target_r),
+            "force_exit_hour": int(gap_force_exit_hour),
+            "force_exit_minute": int(gap_force_exit_minute),
+            "slippage_pct": float(gap_slippage_pct),
+            "commission_per_share": float(gap_commission_per_share),
+            "minimum_order_commission": float(gap_minimum_order_commission),
+            "universe_max_symbols": int(gap_universe_max_symbols),
+            "ibkr_request_delay_seconds": float(gap_ibkr_request_delay_seconds),
+            "ibkr_max_retries": int(gap_ibkr_max_retries),
+        },
     )
 
     action_col, apply_col = st.columns([2, 1])
+    research_only_selection = any(name != "PMB" for name in selected_strategies)
     with action_col:
         run_clicked = st.button("Run Backtest", use_container_width=True, key="sl_run")
     with apply_col:
         apply_confirmed = st.checkbox("Confirm apply", key="sl_apply_confirm")
-        apply_clicked = st.button("Apply to Trading Engine", use_container_width=True, key="sl_apply_to_engine", disabled=not apply_confirmed)
+        apply_clicked = st.button("Apply to Trading Engine", use_container_width=True, key="sl_apply_to_engine", disabled=(not apply_confirmed or research_only_selection))
+        if research_only_selection:
+            st.caption("Live apply is disabled while a research-only strategy is selected.")
+
+    with st.expander(f"{controller.provider_name} data cache", expanded=False):
+        cache_info = controller.cache_info()
+        cache_cols = st.columns([1, 3])
+        with cache_cols[0]:
+            clear_data_cache = st.button("Clear Selected Cache", use_container_width=True, key="sl_clear_data_cache")
+        if clear_data_cache:
+            removed = 0
+            for cache_symbol in symbols:
+                removed += controller.clear_cache(cache_symbol)
+            st.success(f"Removed {removed} cached file(s).")
+            cache_info = controller.cache_info()
+        if cache_info.empty:
+            st.info("No cached files found yet.")
+        else:
+            st.dataframe(cache_info, use_container_width=True, hide_index=True)
 
     if apply_clicked:
         if not symbols:
@@ -432,8 +588,9 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
             st.dataframe(pd.DataFrame([applied]), use_container_width=True, hide_index=True)
 
     if run_clicked:
-        if not symbols:
-            st.warning("Add at least one symbol.")
+        requires_selected_symbols = any(name != "GAP" for name in selected_strategies)
+        if requires_selected_symbols and not symbols:
+            st.warning("Add at least one symbol for the selected non-GAP strategy.")
         else:
             st.session_state["bt_job_running"] = True
             progress = st.progress(0)
@@ -451,19 +608,27 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
             try:
                 result = controller.run(settings, progress_callback=progress_callback)
                 st.session_state["sl_last_result"] = result
-                status.success("Research Lab backtest complete. Results saved to backtester/exports.")
+                result_status = str(result.get("meta", {}).get("status", "")).upper()
+                if result_status == "COMPLETE":
+                    status.success("Research Lab backtest complete. Results saved to backtester/exports.")
+                elif result_status == "COMPLETE_WITH_DATA_ERRORS":
+                    status.warning("Backtest completed with incomplete market-data coverage. Review Data errors before using the results.")
+                else:
+                    status.error("Research Lab could not load market data. Open Data errors below for details.")
             except Exception as exc:
                 status.error(f"Strategy Lab failed: {exc}")
             finally:
+                controller.disconnect_providers()
                 st.session_state["bt_job_running"] = False
 
     session_result = st.session_state.get("sl_last_result")
-    session_replay = session_result.get("replay", pd.DataFrame()) if isinstance(session_result, dict) else pd.DataFrame()
-    if isinstance(session_replay, pd.DataFrame) and not session_replay.empty:
+    if isinstance(session_result, dict):
         result = session_result
     else:
         result = controller.load_last_result()
     replay = result.get("replay", pd.DataFrame())
+    gap_universe = result.get("gap_universe", pd.DataFrame())
+    gap_scanner = result.get("gap_scanner", pd.DataFrame())
     signals = result.get("signals", pd.DataFrame())
     trades = result.get("trades", pd.DataFrame())
     decisions = result.get("decisions", pd.DataFrame())
@@ -471,10 +636,24 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
     sessions = result.get("sessions", pd.DataFrame())
     metrics = result.get("metrics", {}) or {}
     meta = result.get("meta", {}) or {}
+    errors = result.get("errors", pd.DataFrame())
 
-    if isinstance(replay, pd.DataFrame) and not replay.empty:
+    has_result = (
+        (isinstance(replay, pd.DataFrame) and not replay.empty)
+        or (isinstance(gap_universe, pd.DataFrame) and not gap_universe.empty)
+        or (isinstance(errors, pd.DataFrame) and not errors.empty)
+    )
+    if has_result:
         st.markdown("### Last Backtest Result")
-        st.caption(f"Completed: {meta.get('completed_at', 'N/A')} | Source: {meta.get('data_source', meta.get('provider', 'N/A'))} | Symbols: {', '.join(meta.get('symbols', []))} | Period: {meta.get('period', 'N/A')} | Interval: {meta.get('interval', 'N/A')}")
+        base_symbols = list(meta.get("symbols", []))
+        source_label = str(meta.get("data_source", meta.get("provider", "N/A")))
+        if int(meta.get("gap_universe_count", 0) or 0):
+            gap_source = f"Yahoo universe + IBKR candles ({int(meta.get('gap_universe_count', 0)):,} stocks)"
+            source_label = f"{source_label} + {gap_source}" if base_symbols else gap_source
+        symbol_label = ", ".join(base_symbols[:20]) if base_symbols else "Yahoo-generated GAP universe"
+        if len(base_symbols) > 20:
+            symbol_label += f" + {len(base_symbols) - 20} more"
+        st.caption(f"Completed: {meta.get('completed_at', 'N/A')} | Source: {source_label} | Symbols: {symbol_label} | Period: {meta.get('period', 'N/A')} | Interval: {meta.get('interval', 'N/A')}")
         m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
         m1.metric("Replay Events", f"{len(replay):,}")
         m2.metric("Signals", f"{len(signals):,}" if isinstance(signals, pd.DataFrame) else "0")
@@ -483,6 +662,43 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         m5.metric("Net P/L", f"${float(metrics.get('net_pnl', 0)):,.2f}")
         m6.metric("Win Rate", f"{float(metrics.get('win_rate', 0)):,.1f}%")
         m7.metric("Profit Factor", metrics.get("profit_factor", 0))
+
+        if isinstance(errors, pd.DataFrame) and not errors.empty:
+            with st.expander(f"Data errors ({len(errors):,})", expanded=False):
+                st.dataframe(errors.tail(2000), use_container_width=True, hide_index=True)
+
+        if isinstance(gap_universe, pd.DataFrame) and not gap_universe.empty:
+            st.markdown("### GAP Discovery Universe")
+            reported_total = int(pd.to_numeric(gap_universe.get("reported_total"), errors="coerce").max()) if "reported_total" in gap_universe.columns and pd.to_numeric(gap_universe["reported_total"], errors="coerce").notna().any() else len(gap_universe)
+            raw_quotes_received = int(pd.to_numeric(gap_universe.get("raw_quotes_received"), errors="coerce").max()) if "raw_quotes_received" in gap_universe.columns else len(gap_universe)
+            u1, u2, u3 = st.columns(3)
+            u1.metric("Eligible Stocks", len(gap_universe))
+            u2.metric("Yahoo Matches", reported_total)
+            candle_symbols = int(meta.get("gap_candle_symbols", 0) or 0)
+            u3.metric("IBKR Candles Loaded", candle_symbols)
+            if reported_total > raw_quotes_received:
+                st.warning(f"Yahoo reported {reported_total:,} screen matches, but the configured safety cap retrieved {raw_quotes_received:,}.")
+            if raw_quotes_received > len(gap_universe):
+                st.caption(f"Removed {raw_quotes_received - len(gap_universe):,} Yahoo rows after exact equity, price, and liquidity validation.")
+            if candle_symbols < len(gap_universe):
+                st.warning(f"IBKR candle coverage is incomplete: {candle_symbols:,} of {len(gap_universe):,} universe symbols loaded. Open Data errors before trusting these results.")
+            universe_cols = [c for c in ["symbol", "name", "exchange", "price", "change_pct", "day_volume", "avg_daily_volume_3m", "market_cap", "screened_at"] if c in gap_universe.columns]
+            st.dataframe(gap_universe[universe_cols], use_container_width=True, hide_index=True)
+            st.download_button("Download Yahoo GAP universe", gap_universe.to_csv(index=False), "strategy_lab_gap_universe.csv", "text/csv")
+
+        if isinstance(gap_scanner, pd.DataFrame) and not gap_scanner.empty:
+            gap_qualified = int((gap_scanner["status"].astype(str) == "QUALIFIED").sum()) if "status" in gap_scanner.columns else 0
+            unverified = int((gap_scanner["catalyst_status"].astype(str) == "UNVERIFIED").sum()) if "catalyst_status" in gap_scanner.columns else 0
+            st.markdown("### GAP Scanner Audit")
+            g1, g2, g3 = st.columns(3)
+            g1.metric("Sessions Checked", len(gap_scanner))
+            g2.metric("Qualified at 09:45", gap_qualified)
+            g3.metric("News Unverified", unverified)
+            if unverified:
+                st.warning(f"{unverified:,} symbol-sessions lacked adequate local news coverage. They were rejected, so the backtest does not treat unknown news as no news.")
+            gap_cols = [c for c in ["session_date", "symbol", "status", "signal", "gap_pct", "premarket_last", "premarket_volume", "premarket_rvol", "avg_daily_volume", "entry_time", "entry_price", "opening_vwap", "opening_range_high", "opening_range_low", "score", "catalyst_status", "catalyst_headline", "rejection_codes"] if c in gap_scanner.columns]
+            st.dataframe(gap_scanner[gap_cols].tail(1000), use_container_width=True, hide_index=True)
+            st.download_button("Download GAP scanner audit", gap_scanner.to_csv(index=False), "strategy_lab_gap_scanner.csv", "text/csv")
 
         if (
             str(meta.get("data_source", meta.get("provider", ""))).upper() == "IBKR"
@@ -530,14 +746,14 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         with tab_decisions:
             if isinstance(decisions, pd.DataFrame) and not decisions.empty:
                 st.caption("Every scanner signal ends here as TRADED, SKIPPED, or REJECTED. This is the execution audit trail.")
-                dcols = [c for c in ["decision_no", "timestamp", "strategy", "option_dte", "symbol", "signal", "score", "grade", "status", "stage", "reason", "option_expiry", "option_strike", "option_local_symbol", "entry_premium", "contract_cost_with_commission", "quantity", "sizing_method", "position_allocation_pct", "max_daily_exposure_pct", "buying_power_before", "buying_power_after_entry", "buying_power_after_exit", "max_spend_per_trade", "max_daily_capital", "estimated_cost", "exit_credit", "account_equity", "underlying_move_pct", "option_return_pct", "pricing_model", "raw_delta_return_pct", "model_option_return_pct", "theta_decay_pct", "realized_pnl"] if c in decisions.columns]
+                dcols = [c for c in ["decision_no", "timestamp", "strategy", "instrument", "option_dte", "symbol", "signal", "score", "grade", "status", "stage", "reason", "option_expiry", "option_strike", "option_local_symbol", "entry_premium", "entry_price", "stop_price", "target_price", "contract_cost_with_commission", "quantity", "initial_risk", "r_multiple", "sizing_method", "position_allocation_pct", "max_daily_exposure_pct", "buying_power_before", "buying_power_after_entry", "buying_power_after_exit", "max_spend_per_trade", "max_daily_capital", "estimated_cost", "exit_credit", "account_equity", "underlying_move_pct", "option_return_pct", "pricing_model", "raw_delta_return_pct", "model_option_return_pct", "theta_decay_pct", "realized_pnl"] if c in decisions.columns]
                 st.dataframe(decisions[dcols].tail(500), use_container_width=True, hide_index=True)
                 st.download_button("Download execution decisions", decisions.to_csv(index=False), "strategy_lab_signal_decisions.csv", "text/csv")
             else:
                 st.info("No execution decision log yet.")
         with tab_trades:
             if isinstance(trades, pd.DataFrame) and not trades.empty:
-                key_cols = [c for c in ["trade_no", "entry_time", "exit_time", "date", "strategy", "option_dte", "symbol", "signal", "option_expiry", "option_strike", "option_local_symbol", "score", "grade", "entry_underlying", "exit_underlying", "underlying_move_pct", "entry_premium", "exit_premium", "option_return_pct", "pricing_model", "quantity", "estimated_cost", "exit_credit", "buying_power_before", "buying_power_after_entry", "buying_power_after_exit", "account_equity", "realized_pnl", "return_pct", "hold_minutes", "exit_reason", "reasons"] if c in trades.columns]
+                key_cols = [c for c in ["trade_no", "entry_time", "exit_time", "date", "strategy", "instrument", "option_dte", "symbol", "signal", "option_expiry", "option_strike", "option_local_symbol", "score", "grade", "gap_pct", "entry_underlying", "exit_underlying", "entry_price", "exit_price", "stop_price", "target_price", "risk_per_share", "initial_risk", "r_multiple", "underlying_move_pct", "entry_premium", "exit_premium", "option_return_pct", "pricing_model", "quantity", "estimated_cost", "exit_credit", "buying_power_before", "buying_power_after_entry", "buying_power_after_exit", "account_equity", "realized_pnl", "return_pct", "hold_minutes", "exit_reason", "catalyst_status", "reasons"] if c in trades.columns]
                 st.dataframe(trades[key_cols].tail(500), use_container_width=True, hide_index=True)
                 st.download_button("Download trades", trades.to_csv(index=False), "strategy_lab_trades.csv", "text/csv")
             else:

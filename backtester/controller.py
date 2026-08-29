@@ -4,7 +4,7 @@ from __future__ import annotations
 
 This module keeps Streamlit UI out of the actual backtest workflow. It is the
 single orchestration layer for:
-- Yahoo historical data loading/caching
+- provider-backed historical data loading
 - candle-by-candle market replay
 - shared scanner signal generation
 - option-style trade simulation
@@ -28,6 +28,12 @@ except Exception:  # pragma: no cover
 from .replay import MarketReplayEngine, ReplayConfig
 from .strategy import scan_replay_history, clean_signal_row
 from .simulator import OptionSimulationConfig, simulate_option_trades_with_decisions, summarize_trades
+from .gap_data import load_ibkr_gap_candles
+from .gap_simulator import GapStockSimulationConfig, simulate_gap_stock_trades_with_decisions
+from .gap_universe import YahooGapUniverseConfig, YahooGapUniverseScanner
+
+from strategies.gap.news import HistoricalCatalystLookup
+from strategies.gap.strategy import GapScanConfig, scan_gap_sessions
 
 try:
     from bot_core import opportunity_rank_score, setup_room_check
@@ -89,6 +95,29 @@ class StrategyLabSettings:
     allow_same_symbol_same_day: bool = False
     selected_strategies: tuple[str, ...] = ("PMB",)
     data_source: str = "IBKR"
+    gap_price_min: float = 3.0
+    gap_price_max: float = 15.0
+    gap_min_abs_gap_pct: float = 8.0
+    gap_min_premarket_volume: int = 500_000
+    gap_min_premarket_rvol: float = 3.0
+    gap_min_avg_daily_volume: int = 1_000_000
+    gap_allow_shorts: bool = True
+    gap_risk_per_trade: float = 50.0
+    gap_max_capital_per_trade: float = 1_500.0
+    gap_max_daily_capital: float = 3_000.0
+    gap_max_trades_per_day: int = 2
+    gap_stop_buffer_pct: float = 0.25
+    gap_min_stop_distance_pct: float = 0.5
+    gap_max_stop_distance_pct: float = 6.0
+    gap_target_r: float = 2.0
+    gap_force_exit_hour: int = 11
+    gap_force_exit_minute: int = 30
+    gap_slippage_pct: float = 0.10
+    gap_commission_per_share: float = 0.005
+    gap_minimum_order_commission: float = 1.0
+    gap_universe_max_symbols: int = 2_000
+    gap_ibkr_request_delay_seconds: float = 0.25
+    gap_ibkr_max_retries: int = 2
 
 
 def is_top_candidate_replay(
@@ -142,11 +171,12 @@ def _select_live_style_signals(raw_signals: list[dict[str, Any]], settings: Stra
     if df.empty:
         return df
 
-    max_selected = max(1, int(settings.top_n_tickers or 1))
     selected_frames: list[pd.DataFrame] = []
     group_cols = ["strategy", "timestamp"] if "strategy" in df.columns else ["timestamp"]
 
     for _, group in df.groupby(group_cols, dropna=False, sort=True):
+        strategy_name = str(group["strategy"].iloc[0]).upper() if "strategy" in group.columns and not group.empty else "PMB"
+        max_selected = max(1, int(settings.gap_max_trades_per_day if strategy_name == "GAP" else settings.top_n_tickers or 1))
         ranked = group.copy().sort_values(
             ["rank_score", "score", "rvol", "option_score"],
             ascending=[False, False, False, False],
@@ -184,12 +214,65 @@ def _strategy_display_name(strategy: str) -> str:
     }.get(str(strategy).upper(), str(strategy).upper())
 
 
+def _gap_scan_config(settings: StrategyLabSettings) -> GapScanConfig:
+    return GapScanConfig(
+        price_min=float(settings.gap_price_min),
+        price_max=float(settings.gap_price_max),
+        min_abs_gap_pct=float(settings.gap_min_abs_gap_pct),
+        min_premarket_volume=int(settings.gap_min_premarket_volume),
+        min_premarket_rvol=float(settings.gap_min_premarket_rvol),
+        min_avg_daily_volume=int(settings.gap_min_avg_daily_volume),
+        allow_gap_up_shorts=bool(settings.gap_allow_shorts),
+        allow_gap_down_longs=True,
+        require_no_catalyst=True,
+        # Unknown news coverage is audited and rejected, never treated as clear.
+        allow_unverified_catalyst=False,
+    )
+
+
+def _gap_signal_rows(scanner: pd.DataFrame) -> list[dict[str, Any]]:
+    if scanner is None or scanner.empty:
+        return []
+    qualified = scanner[scanner["status"].astype(str).str.upper() == "QUALIFIED"]
+    rows: list[dict[str, Any]] = []
+    for _, item in qualified.iterrows():
+        rows.append({
+            "strategy": "GAP",
+            "strategy_name": "Gap",
+            "timestamp": item.get("timestamp"),
+            "session_date": item.get("session_date"),
+            "symbol": item.get("symbol"),
+            "signal": item.get("signal"),
+            "score": item.get("score"),
+            "grade": item.get("grade"),
+            "confidence": None,
+            "price": item.get("entry_price"),
+            "entry_price": item.get("entry_price"),
+            "rvol": item.get("premarket_rvol"),
+            "premarket_rvol": item.get("premarket_rvol"),
+            "premarket_volume": item.get("premarket_volume"),
+            "avg_daily_volume": item.get("avg_daily_volume"),
+            "gap_pct": item.get("gap_pct"),
+            "atr_pct": None,
+            "rank_score": item.get("rank_score"),
+            "option_score": 0.0,
+            "vwap": item.get("opening_vwap"),
+            "opening_range_high": item.get("opening_range_high"),
+            "opening_range_low": item.get("opening_range_low"),
+            "catalyst_status": item.get("catalyst_status"),
+            "catalyst_verified": item.get("catalyst_verified"),
+            "catalyst_headline": item.get("catalyst_headline"),
+            "reasons": item.get("reasons"),
+        })
+    return rows
+
+
 def _scan_strategy_replay(strategy_name: str, symbol: str, history: pd.DataFrame, settings: StrategyLabSettings) -> dict | None:
     """Run one strategy against replay history.
 
-    PMB is fully implemented and uses the current Pulse Momentum Breakout rules.
-    BRT, Pullback, and Gap are structure-ready placeholders until we code their exact
-    entry rules. They intentionally return no trades rather than fake performance.
+    PMB is evaluated candle-by-candle here. GAP is evaluated separately from
+    extended-hours data before the regular-hours replay starts. BRT and Pullback
+    remain placeholders and intentionally return no trades.
     """
     strategy_name = str(strategy_name).strip().upper()
     if strategy_name == "PMB":
@@ -208,11 +291,22 @@ def _scan_strategy_replay(strategy_name: str, symbol: str, history: pd.DataFrame
 
 
 class StrategyLabController:
-    def __init__(self, export_dir: str | Path | None = None, data_client: YahooDataClient | None = None, data_provider=None):
+    def __init__(
+        self,
+        export_dir: str | Path | None = None,
+        data_client: YahooDataClient | None = None,
+        data_provider=None,
+        gap_universe_scanner=None,
+        gap_data_provider=None,
+        gap_data_loader=None,
+    ):
         self.export_dir = Path(export_dir) if export_dir else EXPORT_DIR
         self.export_dir.mkdir(parents=True, exist_ok=True)
         # data_client is kept for backward compatibility. New code should pass data_provider.
         self.client = data_provider or data_client or YahooDataClient()
+        self.gap_universe_scanner = gap_universe_scanner or YahooGapUniverseScanner()
+        self.gap_data_provider = gap_data_provider or self.client
+        self.gap_data_loader = gap_data_loader or load_ibkr_gap_candles
 
     @property
     def provider_name(self) -> str:
@@ -234,10 +328,27 @@ class StrategyLabController:
                 return 0
         return 0
 
+    def disconnect_providers(self) -> None:
+        """Release research-only provider connections without double-disconnecting."""
+        seen: set[int] = set()
+        for provider in [self.gap_data_provider, self.client]:
+            if provider is None or id(provider) in seen:
+                continue
+            seen.add(id(provider))
+            disconnect = getattr(provider, "disconnect", None)
+            if callable(disconnect):
+                try:
+                    disconnect()
+                except Exception:
+                    pass
+
     @property
     def paths(self) -> dict[str, Path]:
         return {
             "replay": self.export_dir / "strategy_lab_replay.csv",
+            "gap_universe": self.export_dir / "strategy_lab_gap_universe.csv",
+            "gap_scanner": self.export_dir / "strategy_lab_gap_scanner.csv",
+            "errors": self.export_dir / "strategy_lab_data_errors.csv",
             "signals": self.export_dir / "strategy_lab_signals.csv",
             "trades": self.export_dir / "strategy_lab_trades.csv",
             "decisions": self.export_dir / "strategy_lab_signal_decisions.csv",
@@ -262,6 +373,7 @@ class StrategyLabController:
         errors = result.get("errors", pd.DataFrame())
         if isinstance(errors, pd.DataFrame) and not errors.empty:
             meta["errors"] = errors.to_dict(orient="records")
+            errors.to_csv(paths["errors"], index=False)
         with paths["meta"].open("w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, default=str)
         with paths["metrics"].open("w", encoding="utf-8") as f:
@@ -291,17 +403,52 @@ class StrategyLabController:
                     symbol=symbol,
                     period=settings.period,
                     interval=settings.interval,
+                    regular_hours_only=True,
                     force_refresh=settings.force_refresh,
                 )
                 if df is None or df.empty:
-                    errors.append({"symbol": symbol, "error": f"{self.provider_name} returned no candles"})
+                    errors.append({"symbol": symbol, "error": f"{self.provider_name} returned no candles for {settings.period} {settings.interval}. Check IBKR/TWS connection, historical data permissions, and the selected port."})
                 else:
                     data[symbol] = df
             except Exception as exc:
-                errors.append({"symbol": symbol, "error": str(exc)})
+                message = str(exc).strip() or repr(exc)
+                errors.append({"symbol": symbol, "error": message})
         return data, pd.DataFrame(errors)
 
-    def replay_and_scan(self, data: dict[str, pd.DataFrame], settings: StrategyLabSettings, progress_callback=None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    def load_gap_market(self, settings: StrategyLabSettings, progress_callback=None) -> tuple[pd.DataFrame, dict[str, pd.DataFrame], pd.DataFrame]:
+        universe_config = YahooGapUniverseConfig(
+            price_min=float(settings.gap_price_min),
+            price_max=float(settings.gap_price_max),
+            min_avg_daily_volume=int(settings.gap_min_avg_daily_volume),
+            max_symbols=int(settings.gap_universe_max_symbols),
+        )
+        universe = self.gap_universe_scanner.scan(universe_config)
+        symbols = universe.get("symbol", pd.Series(dtype=str)).astype(str).tolist() if not universe.empty else []
+        if not symbols:
+            return universe, {}, pd.DataFrame([{
+                "symbol": "MARKET",
+                "error": "Yahoo screener returned no eligible stocks",
+                "source": "Yahoo universe",
+            }])
+        data, errors = self.gap_data_loader(
+            self.gap_data_provider,
+            symbols,
+            period=settings.period,
+            interval=settings.interval,
+            request_delay_seconds=float(settings.gap_ibkr_request_delay_seconds),
+            max_retries=int(settings.gap_ibkr_max_retries),
+            force_refresh=True,
+            progress_callback=progress_callback,
+        )
+        return universe, data, errors
+
+    def scan_gap_data(self, data: dict[str, pd.DataFrame], settings: StrategyLabSettings) -> pd.DataFrame:
+        if "GAP" not in _normalize_strategy_names(settings.selected_strategies):
+            return pd.DataFrame()
+        catalyst_lookup = HistoricalCatalystLookup(min_impact=0, min_window_articles=5)
+        return scan_gap_sessions(data, config=_gap_scan_config(settings), catalyst_lookup=catalyst_lookup)
+
+    def replay_and_scan(self, data: dict[str, pd.DataFrame], settings: StrategyLabSettings, progress_callback=None, gap_scanner: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         replay_config = ReplayConfig(
             interval=settings.interval,
             orb_minutes=int(settings.orb_minutes),
@@ -333,7 +480,7 @@ class StrategyLabController:
             }
 
             if event.scanner_allowed and event.timestamp.time() < entry_cutoff_time:
-                for strategy_name in selected_strategies:
+                for strategy_name in [name for name in selected_strategies if name != "GAP"]:
                     scan_result = _scan_strategy_replay(strategy_name, event.symbol, event.history, settings)
                     clean_scan = clean_signal_row(scan_result)
                     if not clean_scan:
@@ -390,10 +537,17 @@ class StrategyLabController:
             if progress_callback and (idx == 1 or idx == total_events or idx % max(1, total_events // 100) == 0):
                 progress_callback(idx, total_events, row, len(raw_signal_rows))
 
+        raw_signal_rows.extend(_gap_signal_rows(gap_scanner if gap_scanner is not None else pd.DataFrame()))
         selected_signals = _select_live_style_signals(raw_signal_rows, settings)
         return pd.DataFrame(replay_rows), selected_signals, sessions_df
 
-    def simulate(self, signals: pd.DataFrame, data: dict[str, pd.DataFrame], settings: StrategyLabSettings) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame]:
+    def simulate(
+        self,
+        signals: pd.DataFrame,
+        data: dict[str, pd.DataFrame],
+        settings: StrategyLabSettings,
+        gap_data: dict[str, pd.DataFrame] | None = None,
+    ) -> tuple[pd.DataFrame, dict, pd.DataFrame, pd.DataFrame]:
         all_trades: list[pd.DataFrame] = []
         all_decisions: list[pd.DataFrame] = []
         comparison_rows: list[dict[str, Any]] = []
@@ -405,8 +559,9 @@ class StrategyLabController:
             for strategy_name in selected_strategies:
                 comparison_rows.append({
                     "Strategy": _strategy_display_name(strategy_name),
-                    "DTE": ", ".join(str(v) for v in option_dte_values),
-                    "Status": "No signals" if strategy_name == "PMB" else "Placeholder only",
+                    "Instrument": "Stock" if strategy_name == "GAP" else "Option",
+                    "DTE": "Stock" if strategy_name == "GAP" else ", ".join(str(v) for v in option_dte_values),
+                    "Status": "No qualifying gaps" if strategy_name == "GAP" else "No signals" if strategy_name == "PMB" else "Placeholder only",
                     "Trades": 0,
                     "Win %": 0.0,
                     "Avg R": 0.0,
@@ -416,54 +571,57 @@ class StrategyLabController:
                     "Return %": 0.0,
                 })
             comparison = pd.DataFrame(comparison_rows)
-            return pd.DataFrame(), {}, pd.DataFrame(), comparison
+            return pd.DataFrame(), summarize_trades(pd.DataFrame(), float(settings.starting_capital)), pd.DataFrame(), comparison
 
-        for option_dte in option_dte_values:
-            sim_config = OptionSimulationConfig(
-                starting_capital=float(settings.starting_capital),
-                max_trades_per_day=int(settings.max_trades_per_day),
-                sizing_method=str(settings.sizing_method),
-                position_allocation_pct=float(settings.position_allocation_pct),
-                max_daily_exposure_pct=float(settings.max_daily_exposure_pct),
-                max_spend_per_trade=float(settings.max_spend_per_trade),
-                max_daily_capital=float(settings.max_daily_capital),
-                recycle_capital_after_exit=bool(settings.recycle_capital_after_exit),
-                reserve_capital_for_remaining_trades=bool(settings.reserve_capital_for_remaining_trades),
-                max_contracts=int(settings.max_contracts),
-                option_dte=int(option_dte),
-                option_bars_provider=option_bars_provider,
-                stop_loss_pct=float(settings.stop_loss_pct),
-                take_profit_pct=float(settings.take_profit_pct),
-                breakeven_trigger_pct=float(settings.breakeven_trigger_pct),
-                trailing_trigger_pct=float(settings.trailing_trigger_pct),
-                trailing_stop_pct=float(settings.trailing_stop_pct),
-                entry_cutoff_time=dtime(int(settings.entry_cutoff_hour), int(settings.entry_cutoff_minute)),
-                force_exit_enabled=bool(settings.force_exit_enabled),
-                force_exit_time=dtime(int(settings.force_exit_hour), int(settings.force_exit_minute)),
-                max_consecutive_losses=int(settings.max_consecutive_losses),
-                max_daily_drawdown_pct=float(settings.max_daily_drawdown_pct),
-                premium_pct=float(settings.premium_pct),
-                slippage_pct=float(settings.slippage_pct),
-                allow_same_symbol_same_day=bool(settings.allow_same_symbol_same_day),
-            )
-            for strategy_name in selected_strategies:
-                strategy_signals = signals[signals.get("strategy", "PMB").astype(str).str.upper() == strategy_name].copy() if "strategy" in signals.columns else signals.copy()
+        if "PMB" in selected_strategies:
+            for option_dte in option_dte_values:
+                sim_config = OptionSimulationConfig(
+                    starting_capital=float(settings.starting_capital),
+                    max_trades_per_day=int(settings.max_trades_per_day),
+                    sizing_method=str(settings.sizing_method),
+                    position_allocation_pct=float(settings.position_allocation_pct),
+                    max_daily_exposure_pct=float(settings.max_daily_exposure_pct),
+                    max_spend_per_trade=float(settings.max_spend_per_trade),
+                    max_daily_capital=float(settings.max_daily_capital),
+                    recycle_capital_after_exit=bool(settings.recycle_capital_after_exit),
+                    reserve_capital_for_remaining_trades=bool(settings.reserve_capital_for_remaining_trades),
+                    max_contracts=int(settings.max_contracts),
+                    option_dte=int(option_dte),
+                    option_bars_provider=option_bars_provider,
+                    stop_loss_pct=float(settings.stop_loss_pct),
+                    take_profit_pct=float(settings.take_profit_pct),
+                    breakeven_trigger_pct=float(settings.breakeven_trigger_pct),
+                    trailing_trigger_pct=float(settings.trailing_trigger_pct),
+                    trailing_stop_pct=float(settings.trailing_stop_pct),
+                    entry_cutoff_time=dtime(int(settings.entry_cutoff_hour), int(settings.entry_cutoff_minute)),
+                    force_exit_enabled=bool(settings.force_exit_enabled),
+                    force_exit_time=dtime(int(settings.force_exit_hour), int(settings.force_exit_minute)),
+                    max_consecutive_losses=int(settings.max_consecutive_losses),
+                    max_daily_drawdown_pct=float(settings.max_daily_drawdown_pct),
+                    premium_pct=float(settings.premium_pct),
+                    slippage_pct=float(settings.slippage_pct),
+                    allow_same_symbol_same_day=bool(settings.allow_same_symbol_same_day),
+                )
+                strategy_signals = signals[signals["strategy"].astype(str).str.upper() == "PMB"].copy() if "strategy" in signals.columns else signals.copy()
                 trades, decisions = simulate_option_trades_with_decisions(strategy_signals, data, sim_config)
                 if not trades.empty:
-                    trades["strategy"] = strategy_name
-                    trades["strategy_name"] = _strategy_display_name(strategy_name)
+                    trades["strategy"] = "PMB"
+                    trades["strategy_name"] = "PMB"
+                    trades["instrument"] = "OPTION"
                     trades["option_dte"] = int(option_dte)
                     all_trades.append(trades)
                 if not decisions.empty:
-                    decisions["strategy"] = strategy_name
-                    decisions["strategy_name"] = _strategy_display_name(strategy_name)
+                    decisions["strategy"] = "PMB"
+                    decisions["strategy_name"] = "PMB"
+                    decisions["instrument"] = "OPTION"
                     decisions["option_dte"] = int(option_dte)
                     all_decisions.append(decisions)
                 metrics = summarize_trades(trades, starting_capital=float(settings.starting_capital))
                 comparison_rows.append({
-                    "Strategy": _strategy_display_name(strategy_name),
+                    "Strategy": "PMB",
+                    "Instrument": "Option",
                     "DTE": int(option_dte),
-                    "Status": "Implemented" if strategy_name == "PMB" else "Placeholder only",
+                    "Status": "Implemented",
                     "Trades": int(metrics.get("total_trades", 0)),
                     "Win %": float(metrics.get("win_rate", 0)),
                     "Avg R": round(float(metrics.get("avg_trade", 0)) / max(abs(float(settings.max_spend_per_trade or 1)), 1.0), 2),
@@ -472,6 +630,60 @@ class StrategyLabController:
                     "Net P/L": float(metrics.get("net_pnl", 0)),
                     "Return %": float(metrics.get("return_pct", 0)),
                 })
+
+        if "GAP" in selected_strategies:
+            gap_signals = signals[signals["strategy"].astype(str).str.upper() == "GAP"].copy() if "strategy" in signals.columns else pd.DataFrame()
+            gap_config = GapStockSimulationConfig(
+                starting_capital=float(settings.starting_capital),
+                risk_per_trade=float(settings.gap_risk_per_trade),
+                max_capital_per_trade=float(settings.gap_max_capital_per_trade),
+                max_daily_capital=float(settings.gap_max_daily_capital),
+                max_trades_per_day=int(settings.gap_max_trades_per_day),
+                stop_buffer_pct=float(settings.gap_stop_buffer_pct),
+                min_stop_distance_pct=float(settings.gap_min_stop_distance_pct),
+                max_stop_distance_pct=float(settings.gap_max_stop_distance_pct),
+                target_r=float(settings.gap_target_r),
+                force_exit_time=dtime(int(settings.gap_force_exit_hour), int(settings.gap_force_exit_minute)),
+                slippage_pct=float(settings.gap_slippage_pct),
+                commission_per_share=float(settings.gap_commission_per_share),
+                minimum_order_commission=float(settings.gap_minimum_order_commission),
+                allow_same_symbol_same_day=bool(settings.allow_same_symbol_same_day),
+            )
+            gap_trades, gap_decisions = simulate_gap_stock_trades_with_decisions(gap_signals, gap_data or data, gap_config)
+            if not gap_trades.empty:
+                all_trades.append(gap_trades)
+            if not gap_decisions.empty:
+                all_decisions.append(gap_decisions)
+            gap_metrics = summarize_trades(gap_trades, starting_capital=float(settings.starting_capital))
+            avg_r = float(pd.to_numeric(gap_trades.get("r_multiple"), errors="coerce").mean()) if not gap_trades.empty else 0.0
+            comparison_rows.append({
+                "Strategy": "Gap",
+                "Instrument": "Stock",
+                "DTE": "Stock",
+                "Status": "Research only",
+                "Trades": int(gap_metrics.get("total_trades", 0)),
+                "Win %": float(gap_metrics.get("win_rate", 0)),
+                "Avg R": round(avg_r, 2),
+                "Max DD": float(gap_metrics.get("max_drawdown", 0)),
+                "Profit Factor": gap_metrics.get("profit_factor", 0),
+                "Net P/L": float(gap_metrics.get("net_pnl", 0)),
+                "Return %": float(gap_metrics.get("return_pct", 0)),
+            })
+
+        for strategy_name in [name for name in selected_strategies if name in {"BRT", "PULLBACK"}]:
+            comparison_rows.append({
+                "Strategy": _strategy_display_name(strategy_name),
+                "Instrument": "Option",
+                "DTE": ", ".join(str(v) for v in option_dte_values),
+                "Status": "Placeholder only",
+                "Trades": 0,
+                "Win %": 0.0,
+                "Avg R": 0.0,
+                "Max DD": 0.0,
+                "Profit Factor": 0.0,
+                "Net P/L": 0.0,
+                "Return %": 0.0,
+            })
 
         combined_trades = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
         combined_decisions = pd.concat(all_decisions, ignore_index=True) if all_decisions else pd.DataFrame()
@@ -484,14 +696,49 @@ class StrategyLabController:
         comparison = pd.DataFrame(comparison_rows)
         return combined_trades, combined_metrics, combined_decisions, comparison
 
-    def run(self, settings: StrategyLabSettings, progress_callback=None) -> dict[str, Any]:
+    def run(self, settings: StrategyLabSettings, progress_callback=None, save: bool = True) -> dict[str, Any]:
         started_at = datetime.now().isoformat(timespec="seconds")
-        data, errors = self.load_data(settings, progress_callback=progress_callback)
-        if not data:
+        selected_strategies = _normalize_strategy_names(settings.selected_strategies)
+        needs_base_data = any(name != "GAP" for name in selected_strategies)
+        base_data: dict[str, pd.DataFrame] = {}
+        base_errors = pd.DataFrame()
+        if needs_base_data:
+            base_data, base_errors = self.load_data(settings, progress_callback=progress_callback)
+
+        gap_universe = pd.DataFrame()
+        gap_data: dict[str, pd.DataFrame] = {}
+        gap_errors = pd.DataFrame()
+        if "GAP" in selected_strategies:
+            try:
+                gap_universe, gap_data, gap_errors = self.load_gap_market(settings, progress_callback=progress_callback)
+            except Exception as exc:
+                gap_errors = pd.DataFrame([{
+                    "symbol": "MARKET",
+                    "error": f"GAP market load failed: {exc}",
+                    "source": "GAP market",
+                }])
+
+        error_frames = []
+        if not base_errors.empty:
+            tagged = base_errors.copy()
+            tagged["source"] = str(settings.data_source)
+            error_frames.append(tagged)
+        if not gap_errors.empty:
+            tagged = gap_errors.copy()
+            if "source" not in tagged.columns:
+                tagged["source"] = "IBKR GAP candles"
+            else:
+                tagged["source"] = tagged["source"].fillna("IBKR GAP candles")
+            error_frames.append(tagged)
+        errors = pd.concat(error_frames, ignore_index=True) if error_frames else pd.DataFrame()
+
+        if not base_data and not gap_data:
             result = {
-                "data": data,
+                "data": {},
                 "errors": errors,
                 "replay": pd.DataFrame(),
+                "gap_universe": gap_universe,
+                "gap_scanner": pd.DataFrame(),
                 "signals": pd.DataFrame(),
                 "sessions": pd.DataFrame(),
                 "trades": pd.DataFrame(),
@@ -500,37 +747,70 @@ class StrategyLabController:
                 "metrics": {},
                 "meta": {"started_at": started_at, "completed_at": datetime.now().isoformat(timespec="seconds"), "status": "NO_DATA"},
             }
-            self.save_no_data_result(result)
+            if save:
+                self.save_no_data_result(result)
             return result
 
-        replay, signals, sessions = self.replay_and_scan(data, settings, progress_callback=progress_callback)
-        trades, metrics, decisions, comparison = self.simulate(signals, data, settings)
+        gap_scanner = self.scan_gap_data(gap_data, settings)
+        if base_data:
+            replay, signals, sessions = self.replay_and_scan(
+                base_data,
+                settings,
+                progress_callback=progress_callback,
+                gap_scanner=gap_scanner,
+            )
+        else:
+            signals = _select_live_style_signals(_gap_signal_rows(gap_scanner), settings)
+            replay = gap_scanner.copy()
+            if not replay.empty:
+                replay["close"] = replay.get("entry_price")
+                replay["scanner_allowed"] = replay.get("status", "").astype(str) == "QUALIFIED"
+                replay["strategies"] = "GAP"
+            session_cols = [col for col in ["symbol", "session_date", "status", "gap_pct", "premarket_volume", "premarket_rvol", "catalyst_status"] if col in gap_scanner.columns]
+            sessions = gap_scanner[session_cols].copy() if session_cols else pd.DataFrame()
+
+        simulation_data = base_data or gap_data
+        trades, metrics, decisions, comparison = self.simulate(signals, simulation_data, settings, gap_data=gap_data)
+        result_data = dict(base_data)
+        result_data.update(gap_data)
         meta = {
-            "version": "v0.9.6-pmb-v2",
+            "version": "v0.10.2-ibkr-gap-data",
             "started_at": started_at,
             "completed_at": datetime.now().isoformat(timespec="seconds"),
-            "status": "COMPLETE",
-            "symbols": list(data.keys()),
+            "status": "COMPLETE_WITH_DATA_ERRORS" if not errors.empty else "COMPLETE",
+            "symbols": list(base_data.keys()),
+            "gap_universe_count": int(len(gap_universe)),
+            "gap_candle_symbols": int(len(gap_data)),
+            "gap_candle_coverage_pct": round(100.0 * len(gap_data) / max(len(gap_universe), 1), 2),
             "period": settings.period,
             "interval": settings.interval,
             "data_source": settings.data_source,
+            "gap_universe_source": "Yahoo",
+            "gap_data_source": "IBKR",
+            "data_errors": int(len(errors)),
             "provider": self.provider_name,
-            "candles": int(sum(len(df) for df in data.values())),
+            "candles": int(sum(len(df) for df in result_data.values())),
             "replay_events": int(len(replay)),
+            "gap_scanner_rows": int(len(gap_scanner)),
+            "gap_qualified": int((gap_scanner.get("status", pd.Series(dtype=str)).astype(str) == "QUALIFIED").sum()) if not gap_scanner.empty else 0,
             "signals": int(len(signals)),
             "trades": int(len(trades)),
             "decisions": int(len(decisions)),
-            "strategies": _normalize_strategy_names(settings.selected_strategies),
+            "strategies": selected_strategies,
             "settings": asdict(settings),
         }
-        result = {"data": data, "errors": errors, "replay": replay, "signals": signals, "sessions": sessions, "trades": trades, "decisions": decisions, "comparison": comparison, "metrics": metrics, "meta": meta}
-        self.save_result(result)
+        result = {"data": result_data, "errors": errors, "replay": replay, "gap_universe": gap_universe, "gap_scanner": gap_scanner, "signals": signals, "sessions": sessions, "trades": trades, "decisions": decisions, "comparison": comparison, "metrics": metrics, "meta": meta}
+        if save:
+            self.save_result(result)
         return result
 
     def save_result(self, result: dict[str, Any]) -> None:
         paths = self.paths
         frames = {
             "replay": result.get("replay", pd.DataFrame()),
+            "gap_universe": result.get("gap_universe", pd.DataFrame()),
+            "gap_scanner": result.get("gap_scanner", pd.DataFrame()),
+            "errors": result.get("errors", pd.DataFrame()),
             "signals": result.get("signals", pd.DataFrame()),
             "trades": result.get("trades", pd.DataFrame()),
             "decisions": result.get("decisions", pd.DataFrame()),
@@ -553,7 +833,7 @@ class StrategyLabController:
     def load_last_result(self) -> dict[str, Any]:
         paths = self.paths
         out: dict[str, Any] = {}
-        for key in ["replay", "signals", "trades", "decisions", "comparison", "sessions"]:
+        for key in ["replay", "gap_universe", "gap_scanner", "errors", "signals", "trades", "decisions", "comparison", "sessions"]:
             try:
                 out[key] = pd.read_csv(paths[key]) if paths[key].exists() else pd.DataFrame()
             except Exception:

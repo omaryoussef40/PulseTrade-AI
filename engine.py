@@ -17,7 +17,9 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from modules.premarket_watchlist import build_premarket_watchlist, combined_watchlist, should_auto_build
+from modules.premarket_watchlist import build_premarket_watchlist, combined_watchlist, dynamic_config, normalize_symbols, should_auto_build
+from market_data import create_market_data_provider
+from backtester.controller import StrategyLabController, StrategyLabSettings
 from bot_core import (
     EASTERN,
     IBConfig,
@@ -43,7 +45,6 @@ from bot_core import (
     orders_unlocked_from_config,
     place_option_order,
     read_active_positions,
-    reconcile_active_positions_with_broker,
     recommend_option_ib,
     reconstruct_option_contract,
     scan_symbol_ib,
@@ -53,6 +54,7 @@ from bot_core import (
     sync_active_positions_from_broker,
     sync_today_executions_to_trade_log,
     trade_fill_details,
+    write_active_positions,
     write_health,
 )
 
@@ -65,6 +67,21 @@ PENDING_APPROVALS_FILE = EXPORT_DIR / "pending_order_approvals.json"
 TELEGRAM_APPROVAL_STATE_FILE = EXPORT_DIR / "telegram_approval_state.json"
 ENGINE_DECISIONS_FILE = EXPORT_DIR / "engine_decisions.csv"
 CURRENT_SCAN_CANDIDATES_FILE = EXPORT_DIR / "current_scan_candidates.json"
+BACKTESTER_CACHE_WARMUP_STATE_FILE = DATA_DIR / "backtester_cache_warmup_state.json"
+OPENING_ORB_TRADE_STATE_FILE = DATA_DIR / "opening_orb_trade_state.json"
+OPENING_ORB_SOURCE = "opening_orb"
+OPENING_ORB_ACTIVE_STATUSES = {"PENDING_APPROVAL", "ORDER_SUBMITTED", "OPEN"}
+OPENING_ORB_TERMINAL_STATUSES = {
+    "COMPLETE",
+    "DECLINED",
+    "FAILED",
+    "NOT_FILLED",
+    "SIGNAL_ONLY",
+    "SKIPPED_ACTIVE_POSITION",
+    "SKIPPED_DAILY_LIMIT",
+    "SKIPPED_EXISTING_TRADE",
+    "WINDOW_EXPIRED",
+}
 
 
 def notify_position_close_events(tg_cfg: TelegramConfig, events: list[dict] | None) -> int:
@@ -76,6 +93,223 @@ def notify_position_close_events(tg_cfg: TelegramConfig, events: list[dict] | No
         except Exception as exc:
             app_log(f"Telegram close alert failed for {event.get('Symbol')}: {exc}", "WARN")
     return sent
+
+
+def read_backtester_cache_warmup_state() -> dict:
+    try:
+        if BACKTESTER_CACHE_WARMUP_STATE_FILE.exists():
+            with BACKTESTER_CACHE_WARMUP_STATE_FILE.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def write_backtester_cache_warmup_state(state: dict) -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = BACKTESTER_CACHE_WARMUP_STATE_FILE.with_suffix(".json.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, default=str)
+        tmp.replace(BACKTESTER_CACHE_WARMUP_STATE_FILE)
+    except Exception as exc:
+        app_log(f"Backtester cache warmup state write failed: {exc}", "WARN")
+
+
+def backtester_cache_warmup_symbols(cfg: dict) -> list[str]:
+    automation = cfg.get("automation", {}) if isinstance(cfg.get("automation", {}), dict) else {}
+    lab_cfg = cfg.get("strategy_lab", {}) if isinstance(cfg.get("strategy_lab", {}), dict) else {}
+    dyn_cfg = dynamic_config(cfg)
+    max_symbols = max(1, int(automation.get("backtester_cache_warmup_max_symbols", 30) or 30))
+    symbols = normalize_symbols(
+        list(cfg.get("watchlist", []) or [])
+        + list(lab_cfg.get("symbols", []) or [])
+        + list(dyn_cfg.get("source_universe", []) or [])
+    )
+    return symbols[:max_symbols]
+
+
+def build_backtester_cache_warmup_settings(cfg: dict, symbols: list[str]) -> StrategyLabSettings:
+    strategy = cfg.get("strategy", {}) if isinstance(cfg.get("strategy", {}), dict) else {}
+    risk = cfg.get("risk", {}) if isinstance(cfg.get("risk", {}), dict) else {}
+    lab_cfg = cfg.get("strategy_lab", {}) if isinstance(cfg.get("strategy_lab", {}), dict) else {}
+    automation = cfg.get("automation", {}) if isinstance(cfg.get("automation", {}), dict) else {}
+    raw_dtes = automation.get("backtester_cache_warmup_option_dte_values")
+    if not raw_dtes:
+        raw_dtes = list(lab_cfg.get("option_dte_values") or []) + [strategy.get("option_dte", 7), 7, 14]
+    dte_set: set[int] = set()
+    for raw_dte in raw_dtes:
+        try:
+            dte = int(raw_dte)
+        except Exception:
+            continue
+        if dte > 0:
+            dte_set.add(dte)
+    dtes = sorted(dte_set) or [int(strategy.get("option_dte", 7) or 7)]
+    return StrategyLabSettings(
+        symbols=symbols,
+        period=str(automation.get("backtester_cache_warmup_period", "60d") or "60d"),
+        interval=str(lab_cfg.get("interval", automation.get("backtester_cache_warmup_interval", "5m")) or "5m"),
+        force_refresh=bool(automation.get("backtester_cache_warmup_force_refresh", False)),
+        orb_minutes=int(lab_cfg.get("orb_minutes", strategy.get("orb_minutes", 15))),
+        first_signal_minutes=int(lab_cfg.get("first_signal_minutes", strategy.get("first_signal_minutes", 20))),
+        min_session_bars=int(lab_cfg.get("min_session_bars", strategy.get("min_session_bars", 7))),
+        min_score=float(lab_cfg.get("min_score", strategy.get("min_score", 70))),
+        min_confidence=float(lab_cfg.get("min_confidence", strategy.get("min_confidence", 70))),
+        min_rvol=float(lab_cfg.get("min_rvol", strategy.get("min_rvol", 1.5))),
+        min_atr=float(lab_cfg.get("min_atr", strategy.get("min_atr", 0.3))),
+        use_rvol_filter=bool(lab_cfg.get("use_rvol_filter", strategy.get("use_rvol_filter", False))),
+        use_rvol_score=bool(lab_cfg.get("use_rvol_score", strategy.get("use_rvol_score", False))),
+        use_rvol_ranking=bool(lab_cfg.get("use_rvol_ranking", strategy.get("use_rvol_ranking", False))),
+        use_sr_filter=bool(lab_cfg.get("use_sr_filter", strategy.get("use_sr_filter", True))),
+        min_sr_room_pct=float(lab_cfg.get("min_sr_room_pct", strategy.get("min_sr_room_pct", 0.75))),
+        top_n_tickers=len(symbols),
+        starting_capital=max(float(lab_cfg.get("account_size", risk.get("account_size", 1000)) or 1000), 1_000_000.0),
+        max_trades_per_day=max(len(symbols) * max(len(dtes), 1), int(lab_cfg.get("max_trades_per_day", 2))),
+        sizing_method="percent_equity",
+        position_allocation_pct=1.0,
+        max_daily_exposure_pct=100.0,
+        max_spend_per_trade=1_000_000.0,
+        max_daily_capital=1_000_000.0,
+        recycle_capital_after_exit=True,
+        reserve_capital_for_remaining_trades=False,
+        max_contracts=0,
+        option_dte_values=tuple(dtes),
+        stop_loss_pct=float(lab_cfg.get("stop_loss_pct", risk.get("stop_loss_pct", 20.0))),
+        take_profit_pct=float(lab_cfg.get("take_profit_pct", risk.get("take_profit_pct", 30.0))),
+        breakeven_trigger_pct=float(lab_cfg.get("breakeven_trigger_pct", risk.get("breakeven_trigger_pct", 15.0))),
+        trailing_trigger_pct=float(lab_cfg.get("trailing_trigger_pct", risk.get("trailing_trigger_pct", 25.0))),
+        trailing_stop_pct=float(lab_cfg.get("trailing_stop_pct", risk.get("trailing_stop_pct", 10.0))),
+        entry_cutoff_hour=int(lab_cfg.get("entry_cutoff_hour", risk.get("entry_cutoff_hour", 11))),
+        entry_cutoff_minute=int(lab_cfg.get("entry_cutoff_minute", risk.get("entry_cutoff_minute", 0))),
+        force_exit_enabled=bool(lab_cfg.get("force_exit_enabled", risk.get("force_exit_enabled", True))),
+        force_exit_hour=int(lab_cfg.get("force_exit_hour", risk.get("force_exit_hour", 15))),
+        force_exit_minute=int(lab_cfg.get("force_exit_minute", risk.get("force_exit_minute", 55))),
+        max_consecutive_losses=999,
+        max_daily_drawdown_pct=100.0,
+        premium_pct=float(lab_cfg.get("premium_pct_ui", 0.25)) / 100.0,
+        slippage_pct=float(lab_cfg.get("slippage_pct", 2.0)),
+        allow_same_symbol_same_day=True,
+        selected_strategies=("PMB",),
+        data_source="IBKR",
+    )
+
+
+def run_backtester_cache_warmup_if_due() -> None:
+    cfg = load_config()
+    automation = cfg.get("automation", {}) if isinstance(cfg.get("automation", {}), dict) else {}
+    if not bool(automation.get("enabled", False)):
+        return
+    if not bool(automation.get("backtester_cache_warmup_enabled", True)):
+        return
+
+    now_et = datetime.now(EASTERN)
+    if now_et.weekday() >= 5:
+        return
+    warmup_time = dtime(
+        int(automation.get("backtester_cache_warmup_hour", 16)),
+        int(automation.get("backtester_cache_warmup_minute", 10)),
+    )
+    if now_et.time() < warmup_time:
+        return
+
+    state = read_backtester_cache_warmup_state()
+    today_key = now_et.date().isoformat()
+    if state.get("date") == today_key and state.get("status") == "COMPLETE":
+        return
+    last_attempt = pd.to_datetime(state.get("last_attempt_at"), errors="coerce")
+    if pd.notna(last_attempt):
+        if last_attempt.tzinfo is None:
+            last_attempt = last_attempt.tz_localize(EASTERN)
+        else:
+            last_attempt = last_attempt.tz_convert(EASTERN)
+        retry_minutes = max(5, int(automation.get("backtester_cache_warmup_retry_minutes", 30)))
+        if state.get("date") == today_key and now_et < last_attempt.to_pydatetime() + timedelta(minutes=retry_minutes):
+            return
+
+    symbols = backtester_cache_warmup_symbols(cfg)
+    if not symbols:
+        return
+
+    write_backtester_cache_warmup_state({
+        "date": today_key,
+        "status": "RUNNING",
+        "last_attempt_at": now_et.isoformat(),
+        "symbols": symbols,
+    })
+    app_log(f"Backtester IBKR cache warmup started | symbols={len(symbols)} | first={symbols[:5]}")
+    provider = None
+    try:
+        provider = create_market_data_provider("IBKR", cfg, client_id_offset=260, readonly_override=True)
+        controller = StrategyLabController(data_provider=provider)
+        settings = build_backtester_cache_warmup_settings(cfg, symbols)
+        result = controller.run(settings, save=False)
+        meta = result.get("meta", {}) if isinstance(result, dict) else {}
+        errors = result.get("errors", pd.DataFrame()) if isinstance(result, dict) else pd.DataFrame()
+        state = {
+            "date": today_key,
+            "status": "COMPLETE",
+            "completed_at": datetime.now(EASTERN).isoformat(),
+            "symbols": symbols,
+            "period": settings.period,
+            "interval": settings.interval,
+            "option_dte_values": list(settings.option_dte_values),
+            "candles": int(meta.get("candles", 0) or 0),
+            "signals": int(meta.get("signals", 0) or 0),
+            "decisions": int(meta.get("decisions", 0) or 0),
+            "data_errors": int(len(errors)) if isinstance(errors, pd.DataFrame) else int(meta.get("data_errors", 0) or 0),
+        }
+        write_backtester_cache_warmup_state(state)
+        app_log(f"Backtester IBKR cache warmup complete | candles={state['candles']} | signals={state['signals']} | decisions={state['decisions']} | errors={state['data_errors']}")
+    except Exception as exc:
+        write_backtester_cache_warmup_state({
+            "date": today_key,
+            "status": "FAILED",
+            "last_attempt_at": now_et.isoformat(),
+            "error": str(exc),
+            "symbols": symbols,
+        })
+        app_log(f"Backtester IBKR cache warmup failed: {exc}", "WARN")
+    finally:
+        disconnect = getattr(provider, "disconnect", None)
+        if callable(disconnect):
+            try:
+                disconnect()
+            except Exception:
+                pass
+
+
+def request_eod_exit_approvals(tg_cfg: TelegramConfig, events: list[dict] | None, mode: str) -> list[dict]:
+    requested = []
+    for event in events or []:
+        if str(event.get("Action") or "").upper() != "EXIT_APPROVAL_REQUIRED":
+            continue
+        position = event.get("Position") if isinstance(event.get("Position"), dict) else {}
+        if not position:
+            continue
+        order, created = create_pending_exit_approval(
+            position,
+            event.get("Current"),
+            str(event.get("Reason") or "End-of-day close approval"),
+            mode,
+            approval_mode="Telegram",
+        )
+        sent = False
+        if created:
+            try:
+                sent = send_order_approval_message(tg_cfg, order)
+            except Exception as exc:
+                update_pending_approval(order["id"], status="approval_send_failed", error=str(exc))
+                app_log(f"{position.get('symbol')}: EOD exit approval send failed | id={order.get('id')} | {exc}", "WARN")
+        requested.append({
+            "Symbol": position.get("symbol"),
+            "Option": position.get("option"),
+            "Action": "EXIT_APPROVAL_SENT" if sent else "EXIT_APPROVAL_PENDING",
+            "Approval ID": order.get("id"),
+            "Created": created,
+        })
+    return requested
 
 
 def _is_pid_running(pid: int) -> bool:
@@ -197,6 +431,208 @@ def write_json_file(path: Path, data) -> None:
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, default=str)
     tmp.replace(path)
+
+
+def opening_orb_trade_config(cfg: dict) -> dict:
+    raw = cfg.get("opening_orb_trade", {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def opening_orb_trade_window(cfg: dict, now_et: datetime | None = None) -> tuple[datetime, datetime]:
+    now_et = now_et or datetime.now(EASTERN)
+    opening_cfg = opening_orb_trade_config(cfg)
+    start = now_et.replace(
+        hour=int(opening_cfg.get("start_hour", 9)),
+        minute=int(opening_cfg.get("start_minute", 35)),
+        second=0,
+        microsecond=0,
+    )
+    end = now_et.replace(
+        hour=int(opening_cfg.get("end_hour", 9)),
+        minute=int(opening_cfg.get("end_minute", 45)),
+        second=0,
+        microsecond=0,
+    )
+    return start, end
+
+
+def opening_orb_trade_window_phase(cfg: dict, now_et: datetime | None = None) -> str:
+    now_et = now_et or datetime.now(EASTERN)
+    start, end = opening_orb_trade_window(cfg, now_et)
+    if now_et < start:
+        return "before"
+    if now_et <= end:
+        return "active"
+    return "after"
+
+
+def _new_opening_orb_trade_state(now_et: datetime | None = None) -> dict:
+    now_et = now_et or datetime.now(EASTERN)
+    return {
+        "session_date": now_et.date().isoformat(),
+        "status": "WAITING",
+        "updated_at": now_et.isoformat(),
+    }
+
+
+def read_opening_orb_trade_state(now_et: datetime | None = None) -> dict:
+    now_et = now_et or datetime.now(EASTERN)
+    state = read_json_file(OPENING_ORB_TRADE_STATE_FILE, {})
+    if not isinstance(state, dict) or state.get("session_date") != now_et.date().isoformat():
+        return _new_opening_orb_trade_state(now_et)
+    return state
+
+
+def write_opening_orb_trade_state(state: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = OPENING_ORB_TRADE_STATE_FILE.with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, default=str)
+    tmp.replace(OPENING_ORB_TRADE_STATE_FILE)
+
+
+def update_opening_orb_trade_state(now_et: datetime | None = None, **updates) -> dict:
+    now_et = now_et or datetime.now(EASTERN)
+    state = read_opening_orb_trade_state(now_et)
+    state.update(updates)
+    state["session_date"] = now_et.date().isoformat()
+    state["updated_at"] = now_et.isoformat()
+    write_opening_orb_trade_state(state)
+    return state
+
+
+def _opening_orb_position_matches(state: dict, position: dict) -> bool:
+    position_id = str(state.get("position_id") or "")
+    if position_id and str(position.get("id") or "") == position_id:
+        return True
+    state_con_id = str(state.get("con_id") or "")
+    position_con_id = str(position.get("con_id") or "")
+    if state_con_id and position_con_id and state_con_id == position_con_id:
+        return True
+    state_option = str(state.get("option") or "")
+    position_option = str(position.get("option") or "")
+    if state_option and position_option and state_option == position_option:
+        return True
+    return (
+        str(position.get("entry_source") or "").lower() == OPENING_ORB_SOURCE
+        and str(position.get("symbol") or "").upper() == str(state.get("symbol") or "").upper()
+    )
+
+
+def _opening_orb_order_is_active(ib, state: dict) -> bool:
+    if ib is None:
+        return False
+    try:
+        ib.reqAllOpenOrders()
+        ib.sleep(0.2)
+    except Exception:
+        pass
+    wanted_order_id = str(state.get("broker_order_id") or "")
+    wanted_con_id = str(state.get("con_id") or "")
+    for trade in ib.openTrades() or []:
+        order = getattr(trade, "order", None)
+        contract = getattr(trade, "contract", None)
+        status = str(getattr(getattr(trade, "orderStatus", None), "status", "") or "").lower()
+        if status in {"filled", "cancelled", "canceled", "apicancelled", "inactive"}:
+            continue
+        order_id = str(getattr(order, "orderId", "") or "")
+        con_id = str(getattr(contract, "conId", "") or "")
+        if (wanted_order_id and order_id == wanted_order_id) or (wanted_con_id and con_id == wanted_con_id):
+            return True
+    return False
+
+
+def refresh_opening_orb_trade_state(cfg: dict, ib=None, now_et: datetime | None = None) -> dict:
+    now_et = now_et or datetime.now(EASTERN)
+    state = read_opening_orb_trade_state(now_et)
+    status = str(state.get("status") or "WAITING").upper()
+
+    if status == "WAITING" and opening_orb_trade_window_phase(cfg, now_et) == "after":
+        return update_opening_orb_trade_state(now_et, status="WINDOW_EXPIRED", completed_at=now_et.isoformat())
+
+    if status == "PENDING_APPROVAL" and state.get("approval_id"):
+        if opening_orb_trade_window_phase(cfg, now_et) == "after":
+            update_pending_approval(
+                str(state.get("approval_id")),
+                status="expired",
+                decision_at=now_et.isoformat(),
+                reason="Opening ORB approval window ended at 09:45 ET.",
+            )
+            return update_opening_orb_trade_state(
+                now_et,
+                status="WINDOW_EXPIRED",
+                completed_at=now_et.isoformat(),
+                reason="Opening ORB approval was not completed by 09:45 ET.",
+            )
+        approval = next(
+            (item for item in read_pending_approvals() if str(item.get("id") or "") == str(state.get("approval_id") or "")),
+            None,
+        )
+        approval_status = str((approval or {}).get("status") or "").lower()
+        if approval_status == "rejected":
+            return update_opening_orb_trade_state(now_et, status="DECLINED", completed_at=now_et.isoformat())
+        if approval_status in {"failed", "expired", "cancelled", "canceled"}:
+            return update_opening_orb_trade_state(now_et, status="FAILED", completed_at=now_et.isoformat())
+
+    matching_position = next(
+        (pos for pos in read_active_positions() if _opening_orb_position_matches(state, pos)),
+        None,
+    )
+    if matching_position:
+        if status != "OPEN" or state.get("position_id") != matching_position.get("id"):
+            return update_opening_orb_trade_state(
+                now_et,
+                status="OPEN",
+                position_id=matching_position.get("id"),
+                con_id=matching_position.get("con_id") or state.get("con_id"),
+                option=matching_position.get("option") or state.get("option"),
+                opened_at=state.get("opened_at") or matching_position.get("entry_time") or now_et.isoformat(),
+            )
+        return state
+
+    if status == "OPEN" and _opening_orb_order_is_active(ib, state):
+        return update_opening_orb_trade_state(now_et, status="ORDER_SUBMITTED")
+    if status == "OPEN":
+        return update_opening_orb_trade_state(now_et, status="COMPLETE", completed_at=now_et.isoformat())
+    if status == "ORDER_SUBMITTED" and ib is not None and not _opening_orb_order_is_active(ib, state):
+        terminal_status = "COMPLETE" if state.get("opened_at") else "NOT_FILLED"
+        return update_opening_orb_trade_state(now_et, status=terminal_status, completed_at=now_et.isoformat())
+    return state
+
+
+def opening_orb_trade_needs_scan(cfg: dict, now_et: datetime | None = None) -> bool:
+    now_et = now_et or datetime.now(EASTERN)
+    if not bool(opening_orb_trade_config(cfg).get("enabled", False)):
+        return False
+    state = read_opening_orb_trade_state(now_et)
+    return str(state.get("status") or "WAITING").upper() == "WAITING" and opening_orb_trade_window_phase(cfg, now_et) == "active"
+
+
+def opening_orb_trade_pauses_normal_entries(cfg: dict, state: dict | None = None, now_et: datetime | None = None) -> bool:
+    now_et = now_et or datetime.now(EASTERN)
+    state = state or read_opening_orb_trade_state(now_et)
+    status = str(state.get("status") or "WAITING").upper()
+    if status in OPENING_ORB_ACTIVE_STATUSES:
+        return True
+    if not bool(opening_orb_trade_config(cfg).get("enabled", False)) or status in OPENING_ORB_TERMINAL_STATUSES:
+        return False
+    market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    return now_et >= market_open and opening_orb_trade_window_phase(cfg, now_et) in {"before", "active"}
+
+
+def opening_orb_spend_limit(
+    account_size: float,
+    remaining_daily_capital: float,
+    capital_pct: float = 50.0,
+    liquidity_available: float | None = None,
+) -> float:
+    limit = min(
+        max(float(account_size), 0.0) * max(float(capital_pct), 0.0) / 100.0,
+        max(float(remaining_daily_capital), 0.0),
+    )
+    if liquidity_available is not None and float(liquidity_available) > 0:
+        limit = min(limit, float(liquidity_available))
+    return max(0.0, float(limit))
 
 
 def _decision_cell(value):
@@ -325,6 +761,28 @@ def top_candidate_reject_reason(result: dict, strategy: dict) -> str:
     if str(result.get("Room Check") or "").lower() == "blocked":
         return str(result.get("Room Reason") or "support/resistance room blocked")
     return "scanner filter rejected"
+
+
+def opening_orb_directional_reject_reason(result: dict) -> str:
+    signal = str(result.get("Signal") or "").upper()
+    required_by_signal = {
+        "CALL": (
+            ("ORB Up", "5-minute ORB break"),
+            ("PDH Break", "PDH break"),
+            ("Above VWAP", "price above VWAP"),
+            ("EMA Bullish", "EMA9 above EMA21"),
+        ),
+        "PUT": (
+            ("ORB Down", "5-minute ORB breakdown"),
+            ("PDL Break", "PDL break"),
+            ("Below VWAP", "price below VWAP"),
+            ("EMA Bearish", "EMA9 below EMA21"),
+        ),
+    }
+    if signal not in required_by_signal:
+        return f"normal PMB signal not ready: {signal or 'N/A'}"
+    missing = [label for key, label in required_by_signal[signal] if result.get(key) is not True]
+    return f"missing opening conditions: {', '.join(missing)}" if missing else ""
 
 
 def read_pending_approvals() -> list[dict]:
@@ -499,14 +957,75 @@ def create_pending_approval(row: pd.Series, option_clean: dict, option_full: dic
     return order
 
 
+def create_pending_exit_approval(position: dict, current_price: float | None, reason: str, mode: str, *, approval_mode: str = "Telegram") -> tuple[dict, bool]:
+    position_id = str(position.get("id") or position.get("con_id") or position.get("option") or "")
+    orders = read_pending_approvals()
+    for order in orders:
+        if (
+            str(order.get("status", "")).lower() in ["pending", "sent", "approval_send_failed"]
+            and str(order.get("source") or "") == "position_exit"
+            and str(order.get("position_id") or "") == position_id
+        ):
+            return order, False
+
+    qty = int(float(position.get("quantity") or 0))
+    mid = float(current_price or position.get("current_price") or position.get("entry_price") or 0)
+    order = {
+        "id": make_approval_id(str(position.get("symbol") or ""), "EXIT"),
+        "status": "pending",
+        "created_at": datetime.now(EASTERN).isoformat(),
+        "source": "position_exit",
+        "approval_mode": approval_mode,
+        "action": "SELL",
+        "position_id": position_id,
+        "symbol": position.get("symbol"),
+        "signal": position.get("signal"),
+        "option": position.get("option"),
+        "expiry": position.get("expiry"),
+        "strike": position.get("strike"),
+        "type": position.get("signal"),
+        "con_id": position.get("con_id"),
+        "quantity": qty,
+        "mid": round(mid, 2) if mid else None,
+        "entry_price": position.get("entry_price"),
+        "estimated_cost": round(mid * qty * 100, 2) if mid and qty else 0.0,
+        "order_type": "MARKET",
+        "limit_price": None,
+        "account_mode": mode,
+        "score": "EOD",
+        "grade": "Exit",
+        "setup_quality": "End-of-day close approval",
+        "rank_score": 0,
+        "reasons": reason,
+        "raw_signal": {
+            "Symbol": position.get("symbol"),
+            "Signal": position.get("signal"),
+            "Price": position.get("underlying_current_price") or position.get("underlying_entry_price"),
+        },
+        "option_data": {
+            "Option": position.get("option"),
+            "Expiry": position.get("expiry"),
+            "Strike": position.get("strike"),
+            "Type": position.get("signal"),
+            "Mid": round(mid, 2) if mid else None,
+        },
+    }
+    orders.append(order)
+    write_pending_approvals(orders)
+    return order, True
+
+
 def approval_message(order: dict) -> str:
     reasons = str(order.get("reasons") or "")
     if len(reasons) > 500:
         reasons = reasons[:500] + "..."
     limit_price = order.get("limit_price")
     limit_line = f"Limit: ${float(limit_price):.2f}" if limit_price not in [None, "", 0] else "Limit: N/A"
+    action = str(order.get("action") or "BUY").upper()
+    title = "PulseTrade Exit Approval" if action == "SELL" else "PulseTrade Order Approval"
+    cost_label = "Estimated proceeds" if action == "SELL" else "Estimated cost"
     return (
-        "🚨 <b>PulseTrade Order Approval</b>\n\n"
+        f"🚨 <b>{title}</b>\n\n"
         f"<b>{escape(str(order.get('symbol', 'N/A')))} {escape(str(order.get('signal', 'N/A')))}</b>\n"
         f"Mode: <b>{escape(str(order.get('account_mode', 'N/A')))}</b>\n"
         f"Score: <b>{escape(str(order.get('score', 'N/A')))}</b> | Grade: <b>{escape(str(order.get('grade', 'N/A')))}</b>\n"
@@ -517,8 +1036,8 @@ def approval_message(order: dict) -> str:
         f"Mid: ${float(order.get('mid') or 0):.2f}\n"
         f"Delta: <b>{escape(str(order.get('delta', 'N/A')))}</b> | Spread: <b>{escape(str(order.get('spread_pct', 'N/A')))}%</b>\n"
         f"Theta: <b>{escape(str(order.get('theta', 'N/A')))}</b> | IV: <b>{escape(str(order.get('implied_vol', 'N/A')))}</b>\n"
-        f"Estimated cost: ${float(order.get('estimated_cost') or 0):,.2f}\n"
-        f"Order: {escape(str(order.get('order_type', 'LIMIT')))}\n"
+        f"{cost_label}: ${float(order.get('estimated_cost') or 0):,.2f}\n"
+        f"Order: {escape(action)} {escape(str(order.get('order_type', 'LIMIT')))}\n"
         f"{limit_line}\n\n"
         "<b>Why</b>\n"
         f"{escape(reasons)}\n\n"
@@ -600,6 +1119,16 @@ def update_pending_approval(order_id: str, **updates) -> dict | None:
 
 
 def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: int = 60) -> str:
+    if str(order.get("source") or "").lower() == OPENING_ORB_SOURCE:
+        approval_cfg = load_config()
+        approval_now = datetime.now(EASTERN)
+        approval_state = refresh_opening_orb_trade_state(approval_cfg, ib=ib, now_et=approval_now)
+        if (
+            not bool(opening_orb_trade_config(approval_cfg).get("enabled", False))
+            or opening_orb_trade_window_phase(approval_cfg, approval_now) != "active"
+            or str(approval_state.get("status") or "").upper() != "PENDING_APPROVAL"
+        ):
+            raise RuntimeError("The 09:35-09:45 ET opening ORB approval window is closed.")
     contract = reconstruct_option_contract(order)
     qualified = ib.qualifyContracts(contract)
     if qualified:
@@ -607,12 +1136,58 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
     qty = int(order.get("quantity") or 0)
     order_type = str(order.get("order_type") or "LIMIT")
     limit_price = float(order.get("limit_price") or order.get("mid") or 0) if order_type == "LIMIT" else None
-    trade = place_option_order(ib, contract, "BUY", qty, order_type, limit_price, ib_cfg.account, max_wait_seconds=max_wait_seconds)
-    fallback_entry_price = float(limit_price if limit_price else order.get("mid") or 0)
+    action = str(order.get("action") or "BUY").upper()
+    trade = place_option_order(ib, contract, action, qty, order_type, limit_price, ib_cfg.account, max_wait_seconds=max_wait_seconds)
+    fallback_entry_price = float(limit_price if limit_price else order.get("mid") or order.get("entry_price") or 0)
     fill = trade_fill_details(trade, qty, fallback_entry_price)
     status = str(fill["status"])
     filled_qty = int(fill.get("filled_qty") or 0)
     entry_price = float(fill.get("avg_fill_price") or fallback_entry_price)
+    if action == "SELL":
+        original_entry = float(order.get("entry_price") or 0)
+        realized = round((entry_price - original_entry) * filled_qty * 100, 2) if filled_qty and original_entry else 0.0
+        log_trade({
+            "timestamp": datetime.now(EASTERN).isoformat(),
+            "event": "EXIT",
+            "account_mode": order.get("account_mode"),
+            "symbol": order.get("symbol"),
+            "signal": order.get("signal"),
+            "option": order.get("option"),
+            "quantity": qty,
+            "filled_quantity": filled_qty,
+            "remaining_quantity": fill.get("remaining_qty"),
+            "order_type": order_type,
+            "limit_price": entry_price,
+            "entry_price": original_entry or order.get("entry_price"),
+            "exit_price": entry_price,
+            "realized_pnl": realized,
+            "status": status,
+            "broker_status": fill.get("raw_status"),
+            "exit_reason": order.get("reasons") or "Approved exit",
+            "source": "APPROVED_EXIT_ORDER",
+            "broker_order_ids": str(getattr(getattr(trade, "order", None), "orderId", "") or ""),
+            "broker_perm_ids": str(getattr(getattr(trade, "order", None), "permId", "") or ""),
+            "broker_client_ids": str(getattr(getattr(trade, "order", None), "clientId", "") or ""),
+            "close_classification": "approved_exit_order",
+        })
+        if filled_qty > 0:
+            remaining_positions = []
+            position_id = str(order.get("position_id") or "")
+            for pos in read_active_positions():
+                same_position = position_id and str(pos.get("id") or "") == position_id
+                same_con_id = str(pos.get("con_id") or "") and str(pos.get("con_id") or "") == str(order.get("con_id") or "")
+                if same_position or same_con_id:
+                    current_qty = int(float(pos.get("quantity") or 0))
+                    left_qty = current_qty - filled_qty
+                    if left_qty > 0:
+                        pos["quantity"] = left_qty
+                        remaining_positions.append(pos)
+                    continue
+                remaining_positions.append(pos)
+            write_active_positions(remaining_positions)
+        update_pending_approval(order["id"], status="submitted", submitted_at=datetime.now(EASTERN).isoformat(), broker_status=status)
+        return status
+
     option_full = {
         "Contract": contract,
         "Option": order.get("option"),
@@ -647,6 +1222,7 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
         "setup_quality": order.get("setup_quality"),
         "rank_score": order.get("rank_score"),
         "reasons": order.get("reasons"),
+        "source": order.get("source"),
     })
     approval_label = str(order.get("approval_mode") or "Order").strip() or "Order"
     save_trade_replay(
@@ -659,11 +1235,12 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
         estimated_cost=order.get("estimated_cost"),
         notes=f"{approval_label} approval submitted: {order.get('id')}",
     )
+    active_position = None
     if filled_qty > 0:
         cfg = load_config()
         risk = cfg.get("risk", {})
         take_profit_pct = float(risk.get("take_profit_pct", 30.0))
-        add_active_position_from_entry(
+        active_position = add_active_position_from_entry(
             row,
             option_full,
             filled_qty,
@@ -673,6 +1250,24 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
             account=ib_cfg.account,
             stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
             take_profit_pct=take_profit_pct,
+            trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
+            trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
+            fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+            entry_source=str(order.get("source") or "") or None,
+        )
+    if str(order.get("source") or "").lower() == OPENING_ORB_SOURCE:
+        broker_order_id = getattr(getattr(trade, "order", None), "orderId", None)
+        update_opening_orb_trade_state(
+            status="OPEN" if filled_qty > 0 else "ORDER_SUBMITTED",
+            symbol=order.get("symbol"),
+            signal=order.get("signal"),
+            option=order.get("option"),
+            con_id=getattr(contract, "conId", None),
+            position_id=(active_position or {}).get("id"),
+            approval_id=order.get("id"),
+            broker_order_id=broker_order_id,
+            opened_at=datetime.now(EASTERN).isoformat() if filled_qty > 0 else None,
+            order_submitted_at=datetime.now(EASTERN).isoformat(),
         )
     update_pending_approval(order["id"], status="submitted", submitted_at=datetime.now(EASTERN).isoformat(), broker_status=status)
     return status
@@ -739,7 +1334,473 @@ def process_telegram_order_callbacks(ib, ib_cfg: IBConfig, tg_cfg: TelegramConfi
     return processed
 
 
-def run_cycle() -> None:
+def run_opening_orb_trade_cycle(
+    *,
+    ib,
+    ib_cfg: IBConfig,
+    cfg: dict,
+    can_trade: bool,
+    account_size: float,
+    liquidity_available: float | None,
+    max_daily_capital: float,
+    approval_mode: str,
+    tg_cfg: TelegramConfig,
+) -> dict:
+    now_et = datetime.now(EASTERN)
+    opening_cfg = opening_orb_trade_config(cfg)
+    state = refresh_opening_orb_trade_state(cfg, ib=ib, now_et=now_et)
+    status = str(state.get("status") or "WAITING").upper()
+    if not bool(opening_cfg.get("enabled", False)) or status != "WAITING":
+        return state
+    if opening_orb_trade_window_phase(cfg, now_et) != "active":
+        return refresh_opening_orb_trade_state(cfg, ib=ib, now_et=now_et)
+
+    strategy = cfg.get("strategy", {})
+    risk = cfg.get("risk", {})
+    order_cfg = cfg.get("order", {})
+    telegram = cfg.get("telegram", {})
+    watchlist = combined_watchlist(cfg)
+    scan_id = f"OPENING_{now_et.strftime('%Y%m%d%H%M%S')}"
+    current_trade_count, daily_deployed = get_today_trade_stats()
+    if current_trade_count > 0:
+        return update_opening_orb_trade_state(
+            now_et,
+            status="SKIPPED_EXISTING_TRADE",
+            completed_at=now_et.isoformat(),
+            reason="A trade was already entered today before the opening ORB trade.",
+        )
+    if current_trade_count >= int(risk.get("max_trades_per_day", 2)):
+        return update_opening_orb_trade_state(
+            now_et,
+            status="SKIPPED_DAILY_LIMIT",
+            completed_at=now_et.isoformat(),
+            reason="The daily trade limit was already reached.",
+        )
+
+    active_positions = read_active_positions()
+    if active_positions:
+        return update_opening_orb_trade_state(
+            now_et,
+            status="SKIPPED_ACTIVE_POSITION",
+            completed_at=now_et.isoformat(),
+            reason="An option position was already open during the opening window.",
+        )
+
+    recycle_capital = bool(risk.get("recycle_capital_after_exit", False))
+    current_deployed = get_open_position_deployed() if recycle_capital else daily_deployed
+    remaining_capital = max(0.0, float(max_daily_capital) - float(current_deployed))
+    spend_limit = opening_orb_spend_limit(
+        account_size,
+        remaining_capital,
+        float(opening_cfg.get("capital_pct", 50.0)),
+        liquidity_available,
+    )
+    if spend_limit <= 0:
+        return update_opening_orb_trade_state(
+            now_et,
+            status="SKIPPED_DAILY_LIMIT",
+            completed_at=now_et.isoformat(),
+            reason="No capital was available for the opening ORB trade.",
+        )
+
+    candidates: list[dict] = []
+    scan_display_rows: list[dict] = []
+    opening_strategy = dict(strategy)
+    opening_min_score = float(strategy.get("min_score", 90.0))
+    opening_strategy["min_score"] = opening_min_score
+    orb_minutes = int(opening_cfg.get("orb_minutes", 5))
+    for symbol in watchlist:
+        try:
+            result = scan_symbol_ib(
+                ib,
+                symbol,
+                bool(strategy.get("use_rvol_score", False)),
+                "pmb",
+                orb_minutes,
+                2,
+                min_score=70.0,
+            )
+            if not result:
+                log_engine_decision(
+                    symbol=symbol,
+                    decision="OPENING_SCAN_NO_RESULT",
+                    reason="Opening ORB data was not ready",
+                )
+                continue
+            if scan_result_session_date(result) != now_et.date():
+                log_engine_decision(
+                    symbol=symbol,
+                    row=result,
+                    decision="OPENING_SKIP_STALE_DATA",
+                    reason="Opening ORB scan did not use today's session",
+                )
+                continue
+            directional_reject_reason = opening_orb_directional_reject_reason(result)
+            passed_filters = not directional_reject_reason and is_top_candidate(
+                result,
+                opening_min_score,
+                float(strategy.get("min_confidence", 70.0)),
+                float(strategy.get("min_rvol", 1.5)),
+                float(strategy.get("min_atr", 0.3)),
+                bool(strategy.get("use_rvol_filter", False)),
+                bool(strategy.get("use_sr_filter", True)),
+                float(strategy.get("min_sr_room_pct", 0.75)),
+            )
+            rank_score = opportunity_rank_score(result, None, bool(strategy.get("use_rvol_ranking", False)))
+            if not passed_filters:
+                scan_display_rows.append(scan_candidate_display_row(
+                    {"Rank Score": rank_score, **clean_for_table(result), "Option": "Not priced"},
+                    scan_id=scan_id,
+                    approval_mode=approval_mode,
+                    tradable=False,
+                    trade_status="Opening ORB waiting",
+                    block_reason=directional_reject_reason or top_candidate_reject_reason(result, opening_strategy),
+                    spend_limit=spend_limit,
+                    remaining_capital=remaining_capital,
+                ))
+                continue
+            candidates.append({
+                "Rank Score": rank_score,
+                **clean_for_table(result),
+                "Option": "Not priced",
+                "Mid": None,
+                "Option Score": 0,
+                "Qty": 0,
+                "Estimated Cost": 0.0,
+            })
+            log_engine_decision(
+                symbol=symbol,
+                row=result,
+                decision="OPENING_CANDIDATE",
+                reason="Score and all opening directional conditions passed",
+                spend_limit=spend_limit,
+                max_daily_capital=max_daily_capital,
+            )
+        except Exception as exc:
+            app_log(f"{symbol}: opening ORB scan error: {exc}", "ERROR")
+            log_engine_decision(symbol=symbol, decision="OPENING_SCAN_ERROR", reason=str(exc))
+
+    if not candidates:
+        finished_at = datetime.now(EASTERN)
+        state = read_opening_orb_trade_state(finished_at)
+        if opening_orb_trade_window_phase(cfg, finished_at) == "after":
+            state = update_opening_orb_trade_state(
+                finished_at,
+                status="WINDOW_EXPIRED",
+                completed_at=finished_at.isoformat(),
+                reason="No eligible 5-minute ORB break was found by 09:45 ET.",
+            )
+        write_current_scan_candidates({
+            "scan_id": scan_id,
+            "generated_at": finished_at.isoformat(),
+            "approval_mode": approval_mode,
+            "entry_mode": OPENING_ORB_SOURCE,
+            "candidates": sort_scan_display_rows(scan_display_rows),
+            "message": "Opening ORB window active; no eligible breakout yet.",
+        })
+        write_health(
+            last_scan_finish=finished_at.isoformat(),
+            last_status="Opening ORB window: waiting for breakout",
+            opening_orb_trade_status=state.get("status"),
+            candidates=0,
+            ib_connected=True,
+            last_error="",
+        )
+        return state
+
+    df = pd.DataFrame(candidates).sort_values(
+        ["Rank Score", "Score", "RVOL"],
+        ascending=[False, False, False],
+    )
+    selected = False
+    for _, row in df.iterrows():
+        symbol = str(row["Symbol"])
+        try:
+            option_filters = dict(cfg.get("option_filters", {}) or {})
+            option_filters["_max_contract_cost"] = spend_limit
+            option_full = recommend_option_ib(
+                ib,
+                symbol,
+                row["Signal"],
+                float(row["Price"]),
+                int(strategy.get("option_dte", 7)),
+                option_filters,
+            )
+        except Exception as exc:
+            app_log(f"{symbol}: opening ORB option pricing error: {exc}", "ERROR")
+            option_full = None
+        option_clean = {k: v for k, v in option_full.items() if k != "Contract"} if option_full else None
+        qty = calculate_contract_quantity(
+            float(option_full["Mid"]),
+            spend_limit,
+            int(risk.get("max_contracts", 2)),
+        ) if option_full else 0
+        estimated_cost = round(qty * float(option_full["Mid"]) * 100, 2) if option_full and qty else 0.0
+        row["Option"] = option_clean["Option"] if option_clean else "No clean contract"
+        row["Mid"] = option_clean["Mid"] if option_clean else None
+        row["Option Score"] = option_clean["Option Score"] if option_clean else 0
+        row["Qty"] = qty
+        row["Estimated Cost"] = estimated_cost
+
+        if qty <= 0 or option_full is None or estimated_cost > spend_limit:
+            scan_display_rows.append(scan_candidate_display_row(
+                row,
+                scan_id=scan_id,
+                approval_mode=approval_mode,
+                tradable=False,
+                trade_status="Opening ORB blocked",
+                block_reason="No clean option contract fit inside the 50% opening-trade cap.",
+                option_clean=option_clean,
+                qty=qty,
+                estimated_cost=estimated_cost,
+                spend_limit=spend_limit,
+                remaining_capital=remaining_capital,
+            ))
+            continue
+
+        submission_now = datetime.now(EASTERN)
+        if opening_orb_trade_window_phase(cfg, submission_now) != "active":
+            selected = True
+            state = update_opening_orb_trade_state(
+                submission_now,
+                status="WINDOW_EXPIRED",
+                completed_at=submission_now.isoformat(),
+                reason="The opening ORB scan finished after 09:45 ET; no order was submitted.",
+            )
+            scan_display_rows.append(scan_candidate_display_row(
+                row,
+                scan_id=scan_id,
+                approval_mode=approval_mode,
+                tradable=False,
+                trade_status="Opening ORB window closed",
+                block_reason="The 09:35-09:45 ET entry window closed before submission.",
+                option_clean=option_clean,
+                qty=qty,
+                estimated_cost=estimated_cost,
+                spend_limit=spend_limit,
+                remaining_capital=remaining_capital,
+            ))
+            break
+
+        selected = True
+        if telegram.get("send_alerts", False):
+            ok = send_telegram_message(tg_cfg, make_alert_message(row.to_dict(), option_clean))
+            log_alert({
+                "timestamp": datetime.now(EASTERN).isoformat(),
+                "symbol": symbol,
+                "signal": row["Signal"],
+                "score": row["Score"],
+                "grade": row.get("Grade"),
+                "entry_mode": OPENING_ORB_SOURCE,
+                "telegram_sent": ok,
+            })
+
+        if not can_trade:
+            scan_display_rows.append(scan_candidate_display_row(
+                row,
+                scan_id=scan_id,
+                approval_mode=approval_mode,
+                tradable=False,
+                trade_status="Opening ORB signal only",
+                block_reason="Order placement is not armed; the opening window will keep monitoring.",
+                option_clean=option_clean,
+                qty=qty,
+                estimated_cost=estimated_cost,
+                spend_limit=spend_limit,
+                remaining_capital=remaining_capital,
+            ))
+            break
+
+        entry_order_type = str(order_cfg.get("type", "LIMIT") or "LIMIT").upper()
+        limit_price = option_full["Mid"] if entry_order_type == "LIMIT" else None
+        if approval_mode != "Automatic":
+            pending = create_pending_approval(
+                row,
+                option_clean,
+                option_full,
+                qty,
+                estimated_cost,
+                entry_order_type,
+                limit_price,
+                str(cfg.get("account_mode", "Simulation")),
+                source=OPENING_ORB_SOURCE,
+                scan_id=scan_id,
+                approval_mode=approval_mode,
+            )
+            sent = False
+            if approval_mode == "Telegram":
+                try:
+                    sent = send_order_approval_message(tg_cfg, pending)
+                except Exception as exc:
+                    app_log(f"{symbol}: opening ORB approval send failed: {exc}", "WARN")
+                update_pending_approval(pending["id"], status="sent" if sent else "approval_send_failed")
+            state = update_opening_orb_trade_state(
+                status="PENDING_APPROVAL",
+                symbol=symbol,
+                signal=row["Signal"],
+                score=row["Score"],
+                rank_score=row["Rank Score"],
+                option=option_full["Option"],
+                con_id=getattr(option_full["Contract"], "conId", None),
+                approval_id=pending["id"],
+                selected_at=datetime.now(EASTERN).isoformat(),
+                spend_limit=spend_limit,
+                estimated_cost=estimated_cost,
+            )
+            scan_display_rows.append(scan_candidate_display_row(
+                row,
+                scan_id=scan_id,
+                approval_mode=approval_mode,
+                tradable=True,
+                trade_status="Opening ORB approval pending",
+                block_reason=f"{approval_mode} approval required for the opening ORB trade.",
+                option_clean=option_clean,
+                qty=qty,
+                estimated_cost=estimated_cost,
+                spend_limit=spend_limit,
+                remaining_capital=remaining_capital,
+                approval_id=pending["id"],
+            ))
+            break
+
+        try:
+            trade = place_option_order(
+                ib,
+                option_full["Contract"],
+                "BUY",
+                qty,
+                entry_order_type,
+                limit_price,
+                ib_cfg.account,
+            )
+            fallback_entry_price = float(limit_price if limit_price else option_full["Mid"])
+            fill = trade_fill_details(trade, qty, fallback_entry_price)
+            trade_status = str(fill["status"])
+            filled_qty = int(fill.get("filled_qty") or 0)
+            entry_price = float(fill.get("avg_fill_price") or fallback_entry_price)
+            log_trade({
+                "timestamp": datetime.now(EASTERN).isoformat(),
+                "event": "ENTRY",
+                "account_mode": cfg.get("account_mode"),
+                "symbol": symbol,
+                "signal": row["Signal"],
+                "option": option_full["Option"],
+                "quantity": qty,
+                "filled_quantity": filled_qty,
+                "remaining_quantity": fill.get("remaining_qty"),
+                "order_type": entry_order_type,
+                "limit_price": entry_price,
+                "estimated_cost": estimated_cost,
+                "status": trade_status,
+                "broker_status": fill.get("raw_status"),
+                "score": row["Score"],
+                "confidence": row.get("Confidence"),
+                "grade": row.get("Grade"),
+                "setup_quality": row.get("Setup Quality"),
+                "rank_score": row["Rank Score"],
+                "orb_high": row.get("ORB High"),
+                "orb_low": row.get("ORB Low"),
+                "rvol": row.get("RVOL"),
+                "atr_pct": row.get("ATR %"),
+                "reasons": row.get("Reasons"),
+                "source": OPENING_ORB_SOURCE,
+            })
+            save_trade_replay(
+                row.to_dict(),
+                option_clean,
+                event="ENTRY",
+                order_status=trade_status,
+                quantity=filled_qty or qty,
+                entry_price=entry_price,
+                estimated_cost=estimated_cost,
+                notes="09:35-09:45 opening ORB entry",
+            )
+            active_position = None
+            if filled_qty > 0:
+                active_position = add_active_position_from_entry(
+                    row,
+                    option_full,
+                    filled_qty,
+                    entry_price,
+                    trade_status,
+                    ib=ib,
+                    account=ib_cfg.account,
+                    stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
+                    take_profit_pct=float(risk.get("take_profit_pct", 30.0)),
+                    trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
+                    trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
+                    fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+                    entry_source=OPENING_ORB_SOURCE,
+                )
+            state = update_opening_orb_trade_state(
+                status="OPEN" if filled_qty > 0 else "ORDER_SUBMITTED",
+                symbol=symbol,
+                signal=row["Signal"],
+                score=row["Score"],
+                rank_score=row["Rank Score"],
+                option=option_full["Option"],
+                con_id=getattr(option_full["Contract"], "conId", None),
+                position_id=(active_position or {}).get("id"),
+                broker_order_id=getattr(getattr(trade, "order", None), "orderId", None),
+                opened_at=datetime.now(EASTERN).isoformat() if filled_qty > 0 else None,
+                order_submitted_at=datetime.now(EASTERN).isoformat(),
+                spend_limit=spend_limit,
+                estimated_cost=estimated_cost,
+            )
+            scan_display_rows.append(scan_candidate_display_row(
+                row,
+                scan_id=scan_id,
+                approval_mode=approval_mode,
+                tradable=False,
+                trade_status="Opening ORB submitted",
+                block_reason=f"Opening ORB order submitted; broker status {trade_status}.",
+                option_clean=option_clean,
+                qty=qty,
+                estimated_cost=estimated_cost,
+                spend_limit=spend_limit,
+                remaining_capital=max(0.0, remaining_capital - estimated_cost),
+            ))
+        except Exception as exc:
+            state = update_opening_orb_trade_state(
+                status="ORDER_SUBMITTED",
+                symbol=symbol,
+                signal=row["Signal"],
+                option=option_full["Option"],
+                con_id=getattr(option_full["Contract"], "conId", None),
+                order_submitted_at=datetime.now(EASTERN).isoformat(),
+                reason=f"Opening ORB submission outcome requires broker reconciliation: {exc}",
+            )
+            app_log(f"{symbol}: opening ORB order submission failed: {exc}", "ERROR")
+        break
+
+    finished_at = datetime.now(EASTERN)
+    if not selected and opening_orb_trade_window_phase(cfg, finished_at) == "after":
+        state = update_opening_orb_trade_state(
+            finished_at,
+            status="WINDOW_EXPIRED",
+            completed_at=finished_at.isoformat(),
+            reason="No affordable clean option was found by 09:45 ET.",
+        )
+    write_current_scan_candidates({
+        "scan_id": scan_id,
+        "generated_at": finished_at.isoformat(),
+        "approval_mode": approval_mode,
+        "entry_mode": OPENING_ORB_SOURCE,
+        "candidates": sort_scan_display_rows(scan_display_rows),
+        "message": "Opening ORB cycle complete",
+    })
+    write_health(
+        last_scan_finish=finished_at.isoformat(),
+        last_status="Opening ORB cycle complete",
+        opening_orb_trade_status=state.get("status"),
+        candidates=len(candidates),
+        ib_connected=True,
+        last_error="",
+    )
+    return state
+
+
+def run_cycle(*, opening_trade_only: bool = False) -> None:
     cfg = load_config()
     mode = cfg.get("account_mode", "Simulation")
     ibs = cfg.get("ib", {})
@@ -799,7 +1860,10 @@ def run_cycle() -> None:
             account=ib_cfg.account,
             stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
             take_profit_pct=float(risk.get("take_profit_pct", 30.0)),
-            submit_protection=orders_unlocked_from_config(cfg),
+            trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
+            trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
+            fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+            submit_protection=orders_unlocked_from_config(cfg) and market_open,
         )
         if sync_events:
             app_log(f"IBKR position sync restored active positions | events={len(sync_events)}")
@@ -830,10 +1894,17 @@ def run_cycle() -> None:
         trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
         force_exit_time=force_exit_time,
         force_exit_enabled=bool(risk.get("force_exit_enabled", True)),
+        require_eod_exit_approval=bool(risk.get("require_eod_exit_approval", True)),
         allow_live_orders=can_trade,
+        trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
+        fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
     )
     if management_events:
         app_log(f"Managed open positions | events={len(management_events)}")
+        exit_approval_events = request_eod_exit_approvals(tg_cfg, management_events, mode)
+        if exit_approval_events:
+            sent_count = sum(1 for event in exit_approval_events if event.get("Action") == "EXIT_APPROVAL_SENT")
+            app_log(f"EOD exit approval requested | events={len(exit_approval_events)} | sent={sent_count}")
         close_alerts = notify_position_close_events(tg_cfg, management_events)
         if close_alerts:
             app_log(f"Telegram position close alerts sent | count={close_alerts}")
@@ -911,6 +1982,40 @@ def run_cycle() -> None:
     expired = expire_open_scanner_approvals(scan_id)
     if expired:
         app_log(f"Expired {expired} open scanner approval candidate(s) for the new scan.")
+
+    opening_state = refresh_opening_orb_trade_state(cfg, ib=ib)
+    if opening_trade_only:
+        run_opening_orb_trade_cycle(
+            ib=ib,
+            ib_cfg=ib_cfg,
+            cfg=cfg,
+            can_trade=can_trade,
+            account_size=account_size,
+            liquidity_available=liquidity_available,
+            max_daily_capital=max_daily_capital,
+            approval_mode=approval_mode,
+            tg_cfg=tg_cfg,
+        )
+        try:
+            ib.disconnect()
+        except Exception:
+            pass
+        return
+    if opening_orb_trade_pauses_normal_entries(cfg, opening_state):
+        status = str(opening_state.get("status") or "WAITING")
+        app_log(f"Normal scanner entries paused for opening ORB trade | status={status}")
+        write_health(
+            last_scan_finish=datetime.now(EASTERN).isoformat(),
+            last_status=f"Normal entries paused for opening ORB trade ({status})",
+            opening_orb_trade_status=status,
+            ib_connected=True,
+            last_error="",
+        )
+        try:
+            ib.disconnect()
+        except Exception:
+            pass
+        return
 
     candidates: list[dict] = []
     scan_display_rows: list[dict] = []
@@ -1450,6 +2555,9 @@ def run_cycle() -> None:
                     account=ib_cfg.account,
                     stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
                     take_profit_pct=take_profit_pct,
+                    trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
+                    trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
+                    fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
                 )
             submitted += 1
             remaining_trades -= 1
@@ -1550,20 +2658,34 @@ def run_broker_sync_cycle() -> None:
         write_health(engine_running=True, mode=mode, last_status="Automation disabled")
         return
 
-    if automation.get("scan_only_market_hours", True) and not is_market_open_now(cfg):
-        write_health(engine_running=True, market_open=False, mode=mode, last_status="Waiting for market hours")
-        return
+    market_open = is_market_open_now(cfg)
 
     ib_cfg = IBConfig(
         host=ibs.get("host", "127.0.0.1"),
         port=ib_port_from_config(cfg),
-        client_id=int(ibs.get("client_id", 11)) + 7,
+        client_id=int(ibs.get("client_id", 11)),
         account=ibs.get("account") or None,
         readonly=bool(ibs.get("readonly", False)),
     )
     ib = connect_ib(ib_cfg)
     write_health(ib_connected=bool(ib.isConnected()), mode=mode, last_status="IBKR sync connected", last_error="")
     try:
+        if tg_cfg := TelegramConfig(bot_token=cfg.get("telegram", {}).get("bot_token", ""), chat_id=cfg.get("telegram", {}).get("chat_id", "")):
+            try:
+                processed_callbacks = process_telegram_order_callbacks(
+                    ib,
+                    ib_cfg,
+                    tg_cfg,
+                    can_trade=orders_unlocked_from_config(cfg) and market_open,
+                )
+                if processed_callbacks:
+                    app_log(f"Processed {processed_callbacks} Telegram order approval callback(s)")
+            except Exception as exc:
+                if is_telegram_polling_noise(exc):
+                    app_log(f"Telegram order approval polling skipped: {exc}", "WARN")
+                else:
+                    app_log(f"Telegram order approval callback check failed: {exc}", "WARN")
+
         imported, message = sync_today_executions_to_trade_log(ib, account=ib_cfg.account)
         if imported:
             app_log(f"IBKR execution sync | {message}")
@@ -1573,27 +2695,72 @@ def run_broker_sync_cycle() -> None:
             account=ib_cfg.account,
             stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
             take_profit_pct=float(risk.get("take_profit_pct", 30.0)),
-            submit_protection=orders_unlocked_from_config(cfg),
+            trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
+            trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
+            fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+            submit_protection=orders_unlocked_from_config(cfg) and market_open,
         )
-        reconcile_events = reconcile_active_positions_with_broker(ib, account=ib_cfg.account, log_closures=True)
-        sync_events = list(added_events or []) + list(reconcile_events or [])
-        if sync_events:
-            app_log(f"IBKR live trade sync updated positions | events={len(sync_events)}")
+        if automation.get("scan_only_market_hours", True) and not market_open:
+            position_refresh_at = datetime.now(EASTERN).isoformat()
+            opening_state = refresh_opening_orb_trade_state(cfg, ib=ib)
+            write_health(
+                engine_running=True,
+                market_open=False,
+                ib_connected=True,
+                mode=mode,
+                last_broker_sync=position_refresh_at,
+                last_position_refresh=position_refresh_at,
+                positions_monitored=len(read_active_positions()),
+                opening_orb_trade_status=opening_state.get("status"),
+                last_status="IBKR position sync complete outside market hours",
+            )
+            return
+        position_events = manage_open_positions(
+            ib=ib,
+            account=ib_cfg.account,
+            stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
+            take_profit_pct=float(risk.get("take_profit_pct", 30.0)),
+            breakeven_trigger_pct=float(risk.get("breakeven_trigger_pct", 15.0)),
+            trailing_trigger_pct=float(risk.get("trailing_trigger_pct", 25.0)),
+            trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
+            force_exit_time=dtime(int(risk.get("force_exit_hour", 15)), int(risk.get("force_exit_minute", 55))),
+            force_exit_enabled=bool(risk.get("force_exit_enabled", True)),
+            require_eod_exit_approval=bool(risk.get("require_eod_exit_approval", True)),
+            allow_live_orders=orders_unlocked_from_config(cfg),
+            trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
+            fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+        )
+        sync_events = list(added_events or []) + list(position_events or [])
+        exit_approval_events = request_eod_exit_approvals(tg_cfg, sync_events, mode)
+        if exit_approval_events:
+            sent_count = sum(1 for event in exit_approval_events if event.get("Action") == "EXIT_APPROVAL_SENT")
+            app_log(f"EOD exit approval requested | events={len(exit_approval_events)} | sent={sent_count}")
+        material_events = [
+            event for event in sync_events
+            if str(event.get("Action") or "").upper() not in {"HOLD", "EXIT_APPROVAL_REQUIRED"}
+        ]
+        if material_events:
+            app_log(f"IBKR live position monitor updated positions | events={len(material_events)}")
             close_alerts = notify_position_close_events(
                 TelegramConfig(
                     bot_token=cfg.get("telegram", {}).get("bot_token", ""),
                     chat_id=cfg.get("telegram", {}).get("chat_id", ""),
                 ),
-                sync_events,
+                material_events,
             )
             if close_alerts:
                 app_log(f"Telegram position close alerts sent | count={close_alerts}")
+        opening_state = refresh_opening_orb_trade_state(cfg, ib=ib)
+        position_refresh_at = datetime.now(EASTERN).isoformat()
         write_health(
             engine_running=True,
-            market_open=is_market_open_now(cfg),
+            market_open=market_open,
             ib_connected=True,
-            last_broker_sync=datetime.now(EASTERN).isoformat(),
-            last_status="IBKR live trade sync complete",
+            last_broker_sync=position_refresh_at,
+            last_position_refresh=position_refresh_at,
+            positions_monitored=len(read_active_positions()),
+            opening_orb_trade_status=opening_state.get("status"),
+            last_status="IBKR live position monitor complete",
         )
     finally:
         try:
@@ -1609,6 +2776,7 @@ def main() -> None:
     write_health(engine_running=True, started_at=datetime.now(EASTERN).isoformat(), last_status="Engine started")
     last_scan = 0.0
     last_sync = 0.0
+    last_opening_scan = 0.0
     next_scan_at: datetime | None = None
     previous_scan_interval = 0
     while True:
@@ -1627,6 +2795,17 @@ def main() -> None:
             if now - last_sync >= sync_interval:
                 run_broker_sync_cycle()
                 last_sync = time.monotonic()
+
+            run_backtester_cache_warmup_if_due()
+
+            opening_cfg = opening_orb_trade_config(cfg)
+            opening_scan_interval = max(10, int(opening_cfg.get("scan_interval_seconds", 30)))
+            now_wall = datetime.now(EASTERN)
+            if opening_orb_trade_needs_scan(cfg, now_wall) and now - last_opening_scan >= opening_scan_interval:
+                run_cycle(opening_trade_only=True)
+                last_opening_scan = time.monotonic()
+                last_sync = last_opening_scan
+                now = last_opening_scan
 
             if align_scans and scan_interval >= 60 and scan_interval % 60 == 0:
                 now_wall = datetime.now(EASTERN)

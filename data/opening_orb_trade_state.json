@@ -1,0 +1,17 @@
+{
+  "session_date": "2026-08-28",
+  "status": "OPEN",
+  "updated_at": "2026-08-28T09:41:08.237043-04:00",
+  "symbol": "SMCI",
+  "signal": "CALL",
+  "score": 65.0,
+  "rank_score": 61.9,
+  "option": "SMCI 20260904 38.5 CALL",
+  "con_id": 912990412,
+  "position_id": "SMCI-20260904-38.5-CALL-20260828094107",
+  "broker_order_id": 5235,
+  "opened_at": "2026-08-28T09:41:08.237011-04:00",
+  "order_submitted_at": "2026-08-28T09:41:08.237034-04:00",
+  "spend_limit": 4138.17,
+  "estimated_cost": 3620.0
+}

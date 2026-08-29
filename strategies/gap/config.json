@@ -1,0 +1,13 @@
+{
+  "enabled_for_live_orders": false,
+  "price_min": 3.0,
+  "price_max": 15.0,
+  "min_abs_gap_pct": 8.0,
+  "min_premarket_volume": 500000,
+  "min_premarket_rvol": 3.0,
+  "min_avg_daily_volume": 1000000,
+  "entry_time": "09:45",
+  "allow_gap_up_shorts": true,
+  "allow_gap_down_longs": true,
+  "require_no_catalyst": true
+}

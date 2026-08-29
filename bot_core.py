@@ -17,6 +17,7 @@ import sys
 import math
 import time
 import json
+import re
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta, time as dtime
@@ -107,6 +108,21 @@ DEFAULT_ORDER_TYPE = "LIMIT"
 TRADE_LOG_FILE = os.path.join(EXPORT_DIR, "trade_log.csv")
 ALERT_LOG_FILE = os.path.join(EXPORT_DIR, "alert_log.csv")
 ACTIVE_POSITIONS_FILE = os.path.join(EXPORT_DIR, "active_positions.json")
+TRADE_LOG_EXTRA_COLUMNS = [
+    "exit_reason",
+    "broker_status",
+    "commission",
+    "sec_type",
+    "multiplier",
+    "broker_order_ids",
+    "broker_perm_ids",
+    "broker_client_ids",
+    "broker_order_refs",
+    "broker_liquidation_flags",
+    "matched_exit_external_id",
+    "matched_exit_source",
+    "close_classification",
+]
 
 # Trade management defaults for intraday 7 DTE options
 DEFAULT_STOP_LOSS_PCT = 20.0
@@ -472,6 +488,7 @@ def scan_symbol_ib(
     strategy_name: str = "pmb",
     orb_minutes: int = 15,
     min_session_bars: int = 7,
+    min_score: float | None = None,
 ) -> dict | None:
     """Run the active scanner strategy on IBKR historical bars.
 
@@ -505,7 +522,7 @@ def scan_symbol_ib(
             intraday=intraday,
             daily=daily,
             use_rvol_score=use_rvol_score,
-            min_score=MIN_SCORE,
+            min_score=MIN_SCORE if min_score is None else float(min_score),
             timezone=EASTERN,
             orb_minutes=int(orb_minutes),
             min_session_bars=int(min_session_bars),
@@ -521,7 +538,7 @@ def scan_symbol_ib(
         intraday=intraday,
         daily=daily,
         use_rvol_score=use_rvol_score,
-        min_score=MIN_SCORE,
+        min_score=MIN_SCORE if min_score is None else float(min_score),
         timezone=EASTERN,
         orb_minutes=int(orb_minutes),
         min_session_bars=int(min_session_bars),
@@ -1279,6 +1296,8 @@ def trade_fill_details(trade, requested_quantity: int, fallback_price: float | N
 
 def log_trade(row: dict):
     exists = os.path.exists(TRADE_LOG_FILE)
+    for column in TRADE_LOG_EXTRA_COLUMNS:
+        row.setdefault(column, None)
     columns = None
     if exists:
         try:
@@ -1286,6 +1305,21 @@ def log_trade(row: dict):
         except Exception:
             columns = None
     if columns:
+        expanded_columns = list(columns)
+        for column in list(row.keys()) + TRADE_LOG_EXTRA_COLUMNS:
+            if column not in expanded_columns:
+                expanded_columns.append(column)
+        if expanded_columns != columns:
+            try:
+                existing = pd.read_csv(TRADE_LOG_FILE)
+                for column in expanded_columns:
+                    if column not in existing.columns:
+                        existing[column] = None
+                existing = existing[expanded_columns]
+                existing.to_csv(TRADE_LOG_FILE, index=False)
+                columns = expanded_columns
+            except Exception:
+                columns = expanded_columns
         row = {column: row.get(column) for column in columns}
     df = pd.DataFrame([row])
     df.to_csv(TRADE_LOG_FILE, mode="a", index=False, header=not exists)
@@ -1371,10 +1405,28 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             "quantity": 0.0,
             "value": 0.0,
             "exec_ids": [],
+            "broker_order_ids": [],
+            "broker_perm_ids": [],
+            "broker_client_ids": [],
+            "broker_order_refs": [],
+            "broker_liquidation_flags": [],
         })
         row["quantity"] += shares
         row["value"] += shares * price
         row["exec_ids"].append(str(getattr(execution, "execId", "")))
+        for source_attr, target_key in [
+            ("orderId", "broker_order_ids"),
+            ("permId", "broker_perm_ids"),
+            ("clientId", "broker_client_ids"),
+            ("orderRef", "broker_order_refs"),
+            ("liquidation", "broker_liquidation_flags"),
+        ]:
+            value = getattr(execution, source_attr, None)
+            if value is None or value == "":
+                continue
+            value = str(value)
+            if value not in row[target_key]:
+                row[target_key].append(value)
         if exec_time and exec_time < row["timestamp"]:
             row["timestamp"] = exec_time
 
@@ -1461,6 +1513,12 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             "status": "Filled",
             "broker_status": "Execution",
             "exec_ids": ",".join(item["exec_ids"]),
+            "broker_order_ids": ",".join(item.get("broker_order_ids") or []),
+            "broker_perm_ids": ",".join(item.get("broker_perm_ids") or []),
+            "broker_client_ids": ",".join(item.get("broker_client_ids") or []),
+            "broker_order_refs": ",".join(item.get("broker_order_refs") or []),
+            "broker_liquidation_flags": ",".join(item.get("broker_liquidation_flags") or []),
+            "exit_reason": "IBKR sell execution imported" if item["event"] == "EXIT" else None,
         })
 
     for row in rows:
@@ -1562,6 +1620,78 @@ def _position_age_seconds(pos: dict, now_et: datetime) -> float | None:
         return max(0.0, (now_et - opened.astimezone(EASTERN)).total_seconds())
     except Exception:
         return None
+
+
+def record_position_market_snapshot(
+    pos: dict,
+    market: dict,
+    now_et: datetime,
+) -> float | None:
+    """Persist the latest option quote and derived open-position P/L fields."""
+    checked_at = now_et.isoformat()
+    pos["market_data_checked_at"] = checked_at
+
+    current_price = _finite_number(market.get("Mid"))
+    if current_price is None or current_price <= 0:
+        pos["market_data_status"] = "Quote unavailable"
+        pos["market_data_stale"] = True
+        pos["premium_health"] = "Unavailable"
+        pos["premium_health_detail"] = "IBKR did not return a current option quote."
+        pos["premium_health_checked_at"] = checked_at
+        return None
+
+    pos["market_data_status"] = "Live"
+    pos["market_data_stale"] = False
+    pos["market_data_source"] = str(market.get("Quote Source") or "IBKR snapshot")
+    pos["current_price"] = round(current_price, 2)
+
+    quote_fields = {
+        "Bid": ("current_bid", 2),
+        "Ask": ("current_ask", 2),
+        "Last": ("current_last", 2),
+        "Delta": ("current_delta", 4),
+        "Gamma": ("current_gamma", 6),
+        "Theta": ("current_theta", 6),
+        "Vega": ("current_vega", 6),
+        "Implied Vol": ("current_implied_vol", 4),
+    }
+    for source_key, (target_key, precision) in quote_fields.items():
+        value = _finite_number(market.get(source_key))
+        if value is not None:
+            pos[target_key] = round(value, precision)
+        else:
+            pos.pop(target_key, None)
+
+    spread_fraction = _finite_number(market.get("Spread %"))
+    if spread_fraction is not None:
+        pos["current_spread_pct"] = round(spread_fraction * 100.0, 2)
+    else:
+        pos.pop("current_spread_pct", None)
+    volume = _finite_number(market.get("Volume"))
+    if volume is not None:
+        pos["current_option_volume"] = int(volume)
+    else:
+        pos.pop("current_option_volume", None)
+
+    entry_price = _finite_number(pos.get("entry_price"))
+    quantity = _finite_number(pos.get("quantity"))
+    if entry_price is not None and entry_price > 0 and quantity is not None and quantity > 0:
+        pos["cost_basis"] = round(entry_price * quantity * 100.0, 2)
+        pos["market_value"] = round(current_price * quantity * 100.0, 2)
+        pos["unrealized_pnl"] = round((current_price - entry_price) * quantity * 100.0, 2)
+        pos["unrealized_pct"] = round(((current_price - entry_price) / entry_price) * 100.0, 2)
+
+    broker_market_value = _finite_number(market.get("Portfolio Market Value"))
+    if broker_market_value is not None:
+        pos["market_value"] = round(broker_market_value, 2)
+    broker_unrealized = _finite_number(market.get("Portfolio Unrealized PnL"))
+    if broker_unrealized is not None:
+        pos["unrealized_pnl"] = round(broker_unrealized, 2)
+        cost_basis = _finite_number(pos.get("cost_basis"))
+        if cost_basis is not None and cost_basis > 0:
+            pos["unrealized_pct"] = round((broker_unrealized / cost_basis) * 100.0, 2)
+
+    return current_price
 
 
 def evaluate_premium_health(
@@ -1749,6 +1879,9 @@ def sync_active_positions_from_broker(
     account: str | None = None,
     stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
     take_profit_pct: float = DEFAULT_TAKE_PROFIT_PCT,
+    trailing_stop_pct: float = 0.0,
+    trailing_from_entry: bool = False,
+    fixed_take_profit_enabled: bool = True,
     submit_protection: bool = False,
 ) -> list[dict]:
     """Add missing local active-position records for filled IBKR option positions.
@@ -1800,6 +1933,7 @@ def sync_active_positions_from_broker(
         symbol = broker_pos.get("symbol") or str(log_row.get("symbol", "") or "").upper()
         signal = broker_pos.get("signal") or str(log_row.get("signal", "") or "").upper()
         position_id = f"{symbol}-{broker_pos.get('expiry')}-{broker_pos.get('strike')}-{signal}-{datetime.now(EASTERN).strftime('%Y%m%d%H%M%S')}"
+        initial_stop_pct = float(trailing_stop_pct) if trailing_from_entry and float(trailing_stop_pct or 0) > 0 else float(stop_loss_pct)
         position = {
             "id": position_id,
             "symbol": symbol,
@@ -1811,15 +1945,17 @@ def sync_active_positions_from_broker(
             "quantity": broker_pos.get("quantity"),
             "entry_price": round(float(entry_price), 2),
             "underlying_entry_price": _number_or_none(log_row.get("price")) if log_row is not None else None,
-            "current_stop_price": round(float(entry_price) * (1 - float(stop_loss_pct) / 100), 2),
+            "current_stop_price": round(float(entry_price) * (1 - initial_stop_pct / 100), 2),
             "take_profit_price": round(float(entry_price) * (1 + float(take_profit_pct) / 100), 2),
             "take_profit_pct": round(float(take_profit_pct), 4),
             "highest_price": round(float(entry_price), 2),
             "breakeven_active": False,
-            "trailing_active": False,
+            "trailing_active": bool(trailing_from_entry),
+            "trailing_from_entry": bool(trailing_from_entry),
             "entry_time": datetime.now(EASTERN).isoformat(),
             "entry_status": "Filled via IBKR sync",
             "source": "IBKR_POSITION_SYNC",
+            "entry_source": log_row.get("source") if log_row is not None else None,
         }
         if submit_protection:
             protection_events = ensure_protective_orders(
@@ -1828,6 +1964,7 @@ def sync_active_positions_from_broker(
                 account=account,
                 stop_loss_pct=stop_loss_pct,
                 take_profit_pct=take_profit_pct,
+                fixed_take_profit_enabled=fixed_take_profit_enabled,
             )
         else:
             protection_events = []
@@ -1846,29 +1983,65 @@ def sync_active_positions_from_broker(
 
 
 def get_today_loss_stats() -> tuple[int, float]:
-    """Return today's consecutive losses and realized P/L from the local trade log."""
+    """Return same-day consecutive losses and realized P/L from the local trade log.
+
+    Overnight positions closed today are intentionally excluded from the live
+    daily risk lock so yesterday's entry cannot block today's new trading.
+    """
     if not os.path.exists(TRADE_LOG_FILE):
         return 0, 0.0
     try:
         df = pd.read_csv(TRADE_LOG_FILE)
-        if df.empty or "timestamp" not in df.columns:
+        if df.empty or "timestamp" not in df.columns or "event" not in df.columns:
             return 0, 0.0
         df["timestamp"] = _parse_timestamps_utc(df["timestamp"])
         today = datetime.now(EASTERN).date()
-        df = df[df["timestamp"].dt.tz_convert(EASTERN).dt.date == today].copy()
-        if df.empty:
+        df["_event"] = df["event"].fillna("").astype(str).str.upper()
+        df["_local_date"] = df["timestamp"].dt.tz_convert(EASTERN).dt.date
+        df["_realized_pnl"] = pd.to_numeric(df.get("realized_pnl", 0), errors="coerce").fillna(0.0)
+
+        def _trade_key(row: pd.Series) -> str:
+            con_id = _number_or_none(row.get("con_id"))
+            if con_id is not None:
+                return f"conid:{int(con_id)}"
+            expiry = str(row.get("expiry") or "").strip()
+            strike = _number_or_none(row.get("strike"))
+            symbol = str(row.get("symbol") or "").strip().upper()
+            signal = str(row.get("signal") or row.get("type") or "").strip().upper()
+            if symbol and expiry and strike is not None and signal:
+                return f"opt:{symbol}:{expiry}:{float(strike):g}:{signal}"
+            return "label:" + re.sub(r"\s+", " ", str(row.get("option") or "").strip().upper())
+
+        df["_trade_key"] = df.apply(_trade_key, axis=1)
+        entries = df[df["_event"] == "ENTRY"].sort_values("timestamp")
+        exits = df[(df["_event"] == "EXIT") & (df["_local_date"] == today)].sort_values("timestamp").copy()
+        if exits.empty:
             return 0, 0.0
 
-        realized = float(pd.to_numeric(df.get("realized_pnl", 0), errors="coerce").fillna(0).sum())
-        exits = df[df.get("event", "") == "EXIT"] if "event" in df.columns else pd.DataFrame()
+        same_day_exit_indexes = []
+        for exit_index, exit_row in exits.iterrows():
+            matching_entries = entries[
+                (entries["_trade_key"] == exit_row["_trade_key"])
+                & (entries["timestamp"] <= exit_row["timestamp"])
+            ]
+            if matching_entries.empty:
+                same_day_exit_indexes.append(exit_index)
+                continue
+            entry_date = matching_entries.iloc[-1]["_local_date"]
+            if entry_date == today:
+                same_day_exit_indexes.append(exit_index)
+
+        exits = exits.loc[same_day_exit_indexes].copy()
+        if exits.empty:
+            return 0, 0.0
+
+        realized = float(exits["_realized_pnl"].sum())
         consecutive_losses = 0
-        if not exits.empty and "realized_pnl" in exits.columns:
-            exits = exits.sort_values("timestamp")
-            for pnl in reversed(pd.to_numeric(exits["realized_pnl"], errors="coerce").fillna(0).tolist()):
-                if pnl < 0:
-                    consecutive_losses += 1
-                else:
-                    break
+        for pnl in reversed(exits["_realized_pnl"].tolist()):
+            if pnl < 0:
+                consecutive_losses += 1
+            else:
+                break
         return consecutive_losses, realized
     except Exception:
         return 0, 0.0
@@ -1936,10 +2109,14 @@ def _coerce_order_ids(value) -> list[int]:
 
 def _open_sell_trades_for_position(ib: IB, pos: dict) -> list:
     try:
-        ib.reqOpenOrders()
+        ib.reqAllOpenOrders()
         ib.sleep(0.2)
     except Exception:
-        pass
+        try:
+            ib.reqOpenOrders()
+            ib.sleep(0.2)
+        except Exception:
+            pass
 
     con_id = pos.get("con_id")
     matches = []
@@ -1965,6 +2142,7 @@ def ensure_protective_orders(
     account: str | None = None,
     stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
     take_profit_pct: float = DEFAULT_TAKE_PROFIT_PCT,
+    fixed_take_profit_enabled: bool = True,
 ) -> list[dict]:
     """Create missing broker-side fixed SL/TP OCA orders for an open option position."""
     qty = int(abs(float(pos.get("quantity", 0) or 0)))
@@ -1988,7 +2166,7 @@ def ensure_protective_orders(
 
     open_sell_trades = _open_sell_trades_for_position(ib, pos)
     chunks = _order_chunks(qty)
-    want_take_profit = not bool(pos.get("trailing_active", False))
+    want_take_profit = bool(fixed_take_profit_enabled) and not bool(pos.get("trailing_active", False))
     price_tolerance = 0.009
 
     def _tracked_price(kind: str, order_id: int | None) -> float | None:
@@ -2010,6 +2188,24 @@ def ensure_protective_orders(
                 price_map = {}
             price_map[str(order_id)] = rounded_price
             pos[f"ibkr_{kind}_order_prices_by_id"] = price_map
+
+    def _tracked_protective_order_ids(kind: str) -> list[int]:
+        ids = []
+        ids.append(_coerce_order_id(pos.get(f"ibkr_{kind}_order_id")))
+        ids.extend(_coerce_order_ids(pos.get(f"ibkr_{kind}_order_ids")))
+        price_map = pos.get(f"ibkr_{kind}_order_prices_by_id")
+        if isinstance(price_map, dict):
+            ids.extend(_coerce_order_id(order_id) for order_id in price_map.keys())
+        return sorted({order_id for order_id in ids if order_id})
+
+    def _manual_cancel_is_active(kind: str) -> bool:
+        return bool(pos.get(f"ibkr_{kind}_manual_cancelled") or pos.get(f"ibkr_{kind}_manual_override"))
+
+    def _remember_manual_cancel(kind: str) -> None:
+        label = "stop" if kind == "stop" else "take profit"
+        pos[f"ibkr_{kind}_manual_override"] = True
+        pos[f"ibkr_{kind}_manual_cancelled"] = True
+        pos["protective_orders_status"] = f"Manual broker {label} cancel preserved"
 
     def _broker_price_is_manual_override(kind: str, order_id: int | None, broker_price: float, desired_price: float, position_price_key: str) -> bool:
         manual_key = f"ibkr_{kind}_manual_override"
@@ -2049,9 +2245,29 @@ def ensure_protective_orders(
                 existing_take_profit_ids.append(_order_id(order))
         existing_stop_ids = [order_id for order_id in existing_stop_ids if order_id]
         existing_take_profit_ids = [order_id for order_id in existing_take_profit_ids if order_id]
+        tracked_stop_ids = _tracked_protective_order_ids("stop")
+        tracked_take_profit_ids = _tracked_protective_order_ids("take_profit")
+        stop_manually_cancelled = (
+            (bool(tracked_stop_ids) and not existing_stop_ids)
+            or (_manual_cancel_is_active("stop") and not existing_stop_ids)
+        )
+        take_profit_manually_cancelled = (
+            want_take_profit
+            and (
+                (bool(tracked_take_profit_ids) and not existing_take_profit_ids)
+                or (_manual_cancel_is_active("take_profit") and not existing_take_profit_ids)
+            )
+        )
+        if stop_manually_cancelled:
+            _remember_manual_cancel("stop")
+        if take_profit_manually_cancelled:
+            _remember_manual_cancel("take_profit")
         if existing_stop_ids and (existing_take_profit_ids or not want_take_profit):
             pos["ibkr_stop_order_ids"] = existing_stop_ids
             pos["ibkr_take_profit_order_ids"] = existing_take_profit_ids
+            pos["ibkr_stop_manual_cancelled"] = False
+            if existing_take_profit_ids:
+                pos["ibkr_take_profit_manual_cancelled"] = False
             events = []
             for trade in open_sell_trades:
                 order = getattr(trade, "order", None)
@@ -2080,6 +2296,7 @@ def ensure_protective_orders(
                     ib.sleep(0.2)
                     _remember_protective_price("take_profit", order_id, take_profit_price)
                     pos["ibkr_take_profit_manual_override"] = False
+                    pos["ibkr_take_profit_manual_cancelled"] = False
                     events.append({
                         "Symbol": pos.get("symbol"),
                         "Option": pos.get("option"),
@@ -2093,6 +2310,8 @@ def ensure_protective_orders(
                 return events
             if not (pos.get("ibkr_stop_manual_override") or pos.get("ibkr_take_profit_manual_override")):
                 pos["protective_orders_status"] = "Already protected"
+            return []
+        if stop_manually_cancelled or take_profit_manually_cancelled:
             return []
 
         events = []
@@ -2114,6 +2333,7 @@ def ensure_protective_orders(
             stop_ids.append(stop_id)
             _remember_protective_price("stop", stop_id, stop_price)
             pos["ibkr_stop_manual_override"] = False
+            pos["ibkr_stop_manual_cancelled"] = False
             events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_STOP", "Stop": stop_price, "Qty": chunk_qty})
 
             if want_take_profit:
@@ -2129,6 +2349,7 @@ def ensure_protective_orders(
                 take_profit_ids.append(take_profit_id)
                 _remember_protective_price("take_profit", take_profit_id, take_profit_price)
                 pos["ibkr_take_profit_manual_override"] = False
+                pos["ibkr_take_profit_manual_cancelled"] = False
                 events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_TP", "TP": take_profit_price, "Qty": chunk_qty})
 
         pos["ibkr_stop_order_ids"] = [order_id for order_id in stop_ids if order_id]
@@ -2151,16 +2372,27 @@ def ensure_protective_orders(
         order_type = str(getattr(order, "orderType", "") or "").upper()
         if "STP" in order_type and not has_stop:
             pos["ibkr_stop_order_id"] = _order_id(order)
+            pos["ibkr_stop_manual_cancelled"] = False
             has_stop = True
             stop_trade = trade
         elif order_type == "LMT" and not has_take_profit:
             pos["ibkr_take_profit_order_id"] = _order_id(order)
+            pos["ibkr_take_profit_manual_cancelled"] = False
             has_take_profit = True
             take_profit_trade = trade
         elif "STP" in order_type and _order_id(order) == stop_order_id:
             stop_trade = trade
         elif order_type == "LMT" and _order_id(order) == take_profit_order_id:
             take_profit_trade = trade
+
+    tracked_stop_ids = _tracked_protective_order_ids("stop")
+    tracked_take_profit_ids = _tracked_protective_order_ids("take_profit")
+    if not has_stop and (tracked_stop_ids or _manual_cancel_is_active("stop")):
+        _remember_manual_cancel("stop")
+        has_stop = True
+    if want_take_profit and not has_take_profit and (tracked_take_profit_ids or _manual_cancel_is_active("take_profit")):
+        _remember_manual_cancel("take_profit")
+        has_take_profit = True
 
     events = []
     oca_group = str(pos.get("ibkr_oca_group") or f"PulseProtect-{pos.get('id') or pos.get('con_id')}-{int(time.time())}")
@@ -2203,6 +2435,7 @@ def ensure_protective_orders(
         pos["ibkr_stop_order_id"] = _order_id(getattr(trade, "order", None))
         _remember_protective_price("stop", pos.get("ibkr_stop_order_id"), stop_price)
         pos["ibkr_stop_manual_override"] = False
+        pos["ibkr_stop_manual_cancelled"] = False
         events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_STOP", "Stop": stop_price})
     elif stop_trade is not None:
         stop_order = getattr(stop_trade, "order", None)
@@ -2218,6 +2451,7 @@ def ensure_protective_orders(
             ib.sleep(0.2)
             _remember_protective_price("stop", stop_order_id, stop_price)
             pos["ibkr_stop_manual_override"] = False
+            pos["ibkr_stop_manual_cancelled"] = False
             events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "UPDATE_STOP", "Stop": stop_price})
 
     if want_take_profit and not has_take_profit:
@@ -2232,6 +2466,7 @@ def ensure_protective_orders(
         pos["ibkr_take_profit_order_id"] = _order_id(getattr(trade, "order", None))
         _remember_protective_price("take_profit", pos.get("ibkr_take_profit_order_id"), take_profit_price)
         pos["ibkr_take_profit_manual_override"] = False
+        pos["ibkr_take_profit_manual_cancelled"] = False
         events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "PROTECT_TP", "TP": take_profit_price})
     elif want_take_profit and take_profit_trade is not None:
         target_order = getattr(take_profit_trade, "order", None)
@@ -2247,6 +2482,7 @@ def ensure_protective_orders(
             ib.sleep(0.2)
             _remember_protective_price("take_profit", take_profit_order_id, take_profit_price)
             pos["ibkr_take_profit_manual_override"] = False
+            pos["ibkr_take_profit_manual_cancelled"] = False
             events.append({
                 "Symbol": pos.get("symbol"),
                 "Option": pos.get("option"),
@@ -2305,6 +2541,30 @@ def _position_matches_broker_position(pos: dict, broker_pos) -> bool:
         and float(getattr(contract, "strike", 0) or 0) == float(pos.get("strike", 0) or 0)
         and str(getattr(contract, "right", "")).upper() == right
     )
+
+
+def portfolio_market_snapshot_for_position(
+    portfolio_items: list,
+    pos: dict,
+    account: str | None = None,
+) -> dict:
+    """Return IBKR's portfolio mark when a contract snapshot has no quote."""
+    for item in portfolio_items or []:
+        if account and getattr(item, "account", None) not in [None, "", account]:
+            continue
+        if not _position_matches_broker_position(pos, item):
+            continue
+        market_price = _finite_number(getattr(item, "marketPrice", None))
+        if market_price is None or market_price <= 0:
+            continue
+        return {
+            "Mid": market_price,
+            "Last": market_price,
+            "Portfolio Market Value": _finite_number(getattr(item, "marketValue", None)),
+            "Portfolio Unrealized PnL": _finite_number(getattr(item, "unrealizedPNL", None)),
+            "Quote Source": "IBKR portfolio mark",
+        }
+    return {}
 
 
 def _latest_logged_exit_for_position(pos: dict) -> dict:
@@ -2399,14 +2659,21 @@ def reconcile_active_positions_with_broker(ib: IB, account: str | None = None, l
 
         if broker_qty <= 0:
             logged_exit = _latest_logged_exit_for_position(pos)
-            exit_price = _number_or_none(logged_exit.get("exit_price"))
-            entry_price = _number_or_none(pos.get("entry_price"))
-            realized_pnl = _number_or_none(logged_exit.get("realized_pnl"))
+            exit_price = _finite_number(logged_exit.get("exit_price"))
+            entry_price = _finite_number(pos.get("entry_price"))
+            realized_pnl = _finite_number(logged_exit.get("realized_pnl"))
             if realized_pnl is None and exit_price is not None and entry_price is not None:
                 realized_pnl = round((float(exit_price) - float(entry_price)) * max(local_qty, 0) * 100, 2)
             close_reason = str(logged_exit.get("exit_reason") or "").strip()
             if not close_reason:
                 close_reason = _infer_broker_close_reason(pos, exit_price, "Position not found at IBKR")
+            matched_source = str(logged_exit.get("source") or "").strip()
+            matched_external_id = str(logged_exit.get("external_id") or "").strip()
+            close_classification = "external_close"
+            if matched_source.upper() == "IBKR_EXECUTION":
+                close_classification = "matched_ibkr_execution"
+            elif close_reason in {"Protective stop filled", "Protective take profit filled"}:
+                close_classification = "protective_order_likely_filled"
             events.append({
                 "Symbol": pos.get("symbol"),
                 "Option": pos.get("option"),
@@ -2426,11 +2693,21 @@ def reconcile_active_positions_with_broker(ib: IB, account: str | None = None, l
                     "signal": pos.get("signal"),
                     "option": pos.get("option"),
                     "quantity": local_qty,
-                    "exit_reason": "Position not found at IBKR",
+                    "exit_reason": close_reason,
                     "entry_price": pos.get("entry_price"),
-                    "exit_price": None,
-                    "realized_pnl": 0.0,
+                    "exit_price": exit_price,
+                    "realized_pnl": round(float(realized_pnl or 0.0), 2),
                     "status": "Closed manually or removed during broker reconciliation",
+                    "source": "BROKER_RECONCILIATION",
+                    "matched_exit_external_id": matched_external_id or None,
+                    "matched_exit_source": matched_source or None,
+                    "close_classification": close_classification,
+                    "exec_ids": logged_exit.get("exec_ids"),
+                    "broker_order_ids": logged_exit.get("broker_order_ids"),
+                    "broker_perm_ids": logged_exit.get("broker_perm_ids"),
+                    "broker_client_ids": logged_exit.get("broker_client_ids"),
+                    "broker_order_refs": logged_exit.get("broker_order_refs"),
+                    "broker_liquidation_flags": logged_exit.get("broker_liquidation_flags"),
                 })
             continue
 
@@ -2497,6 +2774,19 @@ def submit_exit_order(
         "exit_price": round(mark, 2),
         "realized_pnl": realized_pnl,
         "status": ", ".join(str(getattr(trade.orderStatus, "status", "")) for trade in trades),
+        "source": "PULSE_EXIT_ORDER",
+        "broker_order_ids": ",".join(str(_order_id(getattr(trade, "order", None))) for trade in trades if _order_id(getattr(trade, "order", None)) is not None),
+        "broker_perm_ids": ",".join(
+            str(getattr(getattr(trade, "order", None), "permId", ""))
+            for trade in trades
+            if getattr(getattr(trade, "order", None), "permId", None)
+        ),
+        "broker_client_ids": ",".join(
+            str(getattr(getattr(trade, "order", None), "clientId", ""))
+            for trade in trades
+            if getattr(getattr(trade, "order", None), "clientId", None)
+        ),
+        "close_classification": "pulse_exit_order",
     })
     return trades[-1], realized_pnl
 
@@ -2511,6 +2801,10 @@ def add_active_position_from_entry(
     account: str | None = None,
     stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
     take_profit_pct: float = DEFAULT_TAKE_PROFIT_PCT,
+    trailing_stop_pct: float = 0.0,
+    trailing_from_entry: bool = False,
+    fixed_take_profit_enabled: bool = True,
+    entry_source: str | None = None,
 ):
     if not is_filled_order_status(trade_status):
         return None
@@ -2518,6 +2812,10 @@ def add_active_position_from_entry(
     contract = option_full["Contract"]
     positions = read_active_positions()
     position_id = f"{row['Symbol']}-{option_full['Expiry']}-{option_full['Strike']}-{option_full['Type']}-{datetime.now(EASTERN).strftime('%Y%m%d%H%M%S')}"
+    initial_stop_pct = float(trailing_stop_pct) if trailing_from_entry and float(trailing_stop_pct or 0) > 0 else float(stop_loss_pct)
+    underlying_entry_price = _number_or_none(row.get("Price") or row.get("price"))
+    if underlying_entry_price is None and ib is not None:
+        underlying_entry_price = _number_or_none(get_stock_snapshot_price(ib, str(row.get("Symbol") or "")))
     position = {
         "id": position_id,
         "symbol": row["Symbol"],
@@ -2528,15 +2826,17 @@ def add_active_position_from_entry(
         "con_id": getattr(contract, "conId", None),
         "quantity": int(qty),
         "entry_price": round(float(entry_price), 2),
-        "underlying_entry_price": _number_or_none(row.get("Price") or row.get("price")),
-        "current_stop_price": round(float(entry_price) * (1 - float(stop_loss_pct) / 100), 2),
+        "underlying_entry_price": underlying_entry_price,
+        "current_stop_price": round(float(entry_price) * (1 - initial_stop_pct / 100), 2),
         "take_profit_price": round(float(entry_price) * (1 + float(take_profit_pct) / 100), 2),
         "take_profit_pct": round(float(take_profit_pct), 4),
         "highest_price": round(float(entry_price), 2),
         "breakeven_active": False,
-        "trailing_active": False,
+        "trailing_active": bool(trailing_from_entry),
+        "trailing_from_entry": bool(trailing_from_entry),
         "entry_time": datetime.now(EASTERN).isoformat(),
         "entry_status": trade_status,
+        "entry_source": entry_source,
     }
     if ib is not None:
         ensure_protective_orders(
@@ -2545,6 +2845,7 @@ def add_active_position_from_entry(
             account=account,
             stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct,
+            fixed_take_profit_enabled=fixed_take_profit_enabled,
         )
     positions.append(position)
     write_active_positions(positions)
@@ -2562,6 +2863,9 @@ def manage_open_positions(
     force_exit_time: dtime,
     allow_live_orders: bool,
     force_exit_enabled: bool = True,
+    require_eod_exit_approval: bool = True,
+    trailing_from_entry: bool = False,
+    fixed_take_profit_enabled: bool = True,
 ) -> list[dict]:
     """Manage active option positions across Streamlit refresh cycles."""
     positions = read_active_positions()
@@ -2576,6 +2880,10 @@ def manage_open_positions(
     now_et = datetime.now(EASTERN)
     still_active = []
     events = list(reconciliation_events)
+    try:
+        portfolio_items = list(ib.portfolio() or [])
+    except Exception:
+        portfolio_items = []
 
     for pos in positions:
         try:
@@ -2591,16 +2899,21 @@ def manage_open_positions(
                     account=account,
                     stop_loss_pct=stop_loss_pct,
                     take_profit_pct=take_profit_pct,
+                    fixed_take_profit_enabled=fixed_take_profit_enabled,
                 )
                 events.extend(protection_events)
             market = get_snapshot_mid(ib, contract)
-            current_price = market.get("Mid")
-            if current_price is None or np.isnan(current_price) or current_price <= 0:
+            snapshot_mid = _finite_number(market.get("Mid"))
+            if snapshot_mid is None or snapshot_mid <= 0:
+                portfolio_market = portfolio_market_snapshot_for_position(portfolio_items, pos, account=account)
+                if portfolio_market:
+                    market = {**market, **portfolio_market}
+            current_price = record_position_market_snapshot(pos, market, now_et)
+            if current_price is None:
                 still_active.append(pos)
                 events.append({"Symbol": pos.get("symbol"), "Status": "No option price available", "Action": "Hold"})
                 continue
 
-            current_price = float(current_price)
             entry_price = float(pos["entry_price"])
             pnl_pct = ((current_price - entry_price) / entry_price) * 100
             highest = max(float(pos.get("highest_price", entry_price)), current_price)
@@ -2613,6 +2926,10 @@ def manage_open_positions(
             premium_health_events = evaluate_premium_health(ib, pos, current_price, now_et)
             events.extend(premium_health_events)
             stop_price = float(pos.get("current_stop_price", stop_price))
+
+            if trailing_from_entry and not bool(pos.get("trailing_active", False)) and float(trailing_stop_pct or 0) > 0:
+                pos["trailing_active"] = True
+                pos["trailing_from_entry"] = True
 
             # Force flat before close. This exits winners and losers that did not hit TP/SL.
             if force_exit_enabled and now_et.time() >= force_exit_time:
@@ -2642,11 +2959,12 @@ def manage_open_positions(
                     account=account,
                     stop_loss_pct=stop_loss_pct,
                     take_profit_pct=take_profit_pct,
+                    fixed_take_profit_enabled=fixed_take_profit_enabled,
                 )
                 events.extend(protection_events)
 
-            # Before trailing starts, +30% fixed take-profit is active.
-            if reason is None and not bool(pos.get("trailing_active", False)) and current_price >= take_profit_price:
+            # Fixed take-profit is optional. When trailing is the exit model, winners are uncapped.
+            if reason is None and fixed_take_profit_enabled and not bool(pos.get("trailing_active", False)) and current_price >= take_profit_price:
                 reason = "Take profit hit"
 
             # Once trailing is active, exit only on trailing stop or EOD.
@@ -2654,6 +2972,20 @@ def manage_open_positions(
                 reason = "Trailing stop hit"
 
             if reason:
+                if reason == "End-of-day forced exit" and require_eod_exit_approval:
+                    still_active.append(pos)
+                    events.append({
+                        "Symbol": pos.get("symbol"),
+                        "Option": pos.get("option"),
+                        "Action": "EXIT_APPROVAL_REQUIRED",
+                        "Reason": reason,
+                        "Quantity": pos.get("quantity"),
+                        "Entry": entry_price,
+                        "Current": round(current_price, 2),
+                        "P/L %": round(pnl_pct, 1),
+                        "Position": dict(pos),
+                    })
+                    continue
                 if allow_live_orders:
                     trade, realized = submit_exit_order(ib, pos, current_price, reason, account=account, use_market=True)
                     status = str(trade.orderStatus.status)
@@ -2937,8 +3269,9 @@ def default_config() -> dict:
         "ib": {"host": "127.0.0.1", "paper_port": 7497, "live_port": 7496, "client_id": 11, "account": "", "readonly": False},
         "telegram": {"bot_token": "", "chat_id": "", "send_alerts": False},
         "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "approval_mode": "Dashboard", "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 900, "align_scans_to_interval": True, "first_scan_hour": 9, "first_scan_minute": 45, "live_sync_interval_seconds": 15, "market_timezone": "America/New_York", "scan_only_market_hours": True},
+        "opening_orb_trade": {"enabled": False, "start_hour": 9, "start_minute": 35, "end_hour": 9, "end_minute": 45, "orb_minutes": 5, "capital_pct": 50.0, "scan_interval_seconds": 30},
         "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "use_sr_filter": True, "min_sr_room_pct": 0.75, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7},
-        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "recycle_capital_after_exit": False, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "force_exit_enabled": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
+        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "recycle_capital_after_exit": False, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_from_entry": True, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "use_take_profit_with_trailing": False, "force_exit_enabled": True, "require_eod_exit_approval": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},
         "option_filters": dict(DEFAULT_OPTION_FILTERS),
         "watchlist": WATCHLIST,

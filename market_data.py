@@ -354,7 +354,13 @@ def provider_from_ib(ib: IB, timezone: ZoneInfo = EASTERN) -> IBKRMarketDataProv
 # =========================
 # STRATEGY LAB PROVIDER FACTORY
 # =========================
-def create_market_data_provider(source: str = "IBKR", app_config: dict | None = None, ib=None):
+def create_market_data_provider(
+    source: str = "IBKR",
+    app_config: dict | None = None,
+    ib=None,
+    client_id_offset: int = 200,
+    readonly_override: bool | None = None,
+):
     """Create a market-data provider for Strategy Lab and replay workflows.
 
     source: "IBKR" or "Yahoo".
@@ -374,9 +380,9 @@ def create_market_data_provider(source: str = "IBKR", app_config: dict | None = 
             config=_Config(
                 host=ib_cfg.get("host", "127.0.0.1"),
                 port=port,
-                client_id=int(ib_cfg.get("client_id", 11)) + 200,
+                client_id=int(ib_cfg.get("client_id", 11)) + int(client_id_offset),
                 account=ib_cfg.get("account") or None,
-                readonly=bool(ib_cfg.get("readonly", False)),
+                readonly=bool(ib_cfg.get("readonly", False)) if readonly_override is None else bool(readonly_override),
                 timezone=EASTERN,
             ),
             ib=ib,

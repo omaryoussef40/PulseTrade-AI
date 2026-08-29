@@ -1,0 +1,9 @@
+{
+  "symbol": "SMCI",
+  "option_dte": 7,
+  "expiry": "20260828",
+  "strike": 36.0,
+  "right": "P",
+  "localSymbol": "SMCI  260828P00036000",
+  "conId": 899907011
+}

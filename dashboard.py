@@ -30,6 +30,7 @@ from engine import (
     make_approval_id,
     process_telegram_order_callbacks,
     read_current_scan_candidates,
+    read_opening_orb_trade_state,
     read_pending_approvals,
     run_cycle,
     send_order_approval_message,
@@ -74,6 +75,8 @@ try:
     from modules.ibkr_flex import sync_flex_trades_to_trade_log
 except Exception:
     sync_flex_trades_to_trade_log = None
+
+from modules.performance_metrics import realized_r_multiple
 
 try:
     from backtester.data import YahooDataClient, YFINANCE_AVAILABLE
@@ -132,6 +135,21 @@ getattr(st, "html", lambda body: st.markdown(body, unsafe_allow_html=True))("""
     .setup-card-call { border-left: 5px solid #16a34a; background: rgba(22,163,74,0.08); }
     .setup-card-put { border-left: 5px solid #dc2626; background: rgba(220,38,38,0.08); }
     .setup-card-wait { border-left: 5px solid #f59e0b; background: rgba(245,158,11,0.12); }
+    div[class*="st-key-bot-position-card-"] {
+        border: 2px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 1rem;
+        margin-bottom: 0.75rem;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    div[class*="st-key-bot-position-card-positive-"] {
+        border-color: #16a34a;
+        box-shadow: 0 0 0 1px rgba(22,163,74,0.10);
+    }
+    div[class*="st-key-bot-position-card-negative-"] {
+        border-color: #dc2626;
+        box-shadow: 0 0 0 1px rgba(220,38,38,0.10);
+    }
     .status-label, .setup-label { font-size: 0.78rem; color: rgba(250,250,250,0.68); margin-bottom: 6px; }
     .setup-label { color: #4b5563; }
     .status-value { font-size: 1.22rem; font-weight: 700; line-height: 1.15; }
@@ -736,28 +754,6 @@ def _number_or_none(value) -> float | None:
         return None
 
 
-def _realized_r_multiple(exits: pd.DataFrame, stop_loss_pct: float) -> float:
-    """Return net realized R using the configured initial option stop as 1R."""
-    if exits is None or exits.empty or stop_loss_pct <= 0:
-        return 0.0
-    required = {"realized_pnl", "entry_price", "quantity"}
-    if not required.issubset(set(exits.columns)):
-        return 0.0
-
-    pnl = pd.to_numeric(exits["realized_pnl"], errors="coerce").fillna(0.0)
-    entry = pd.to_numeric(exits["entry_price"], errors="coerce").fillna(0.0).abs()
-    qty = pd.to_numeric(exits["quantity"], errors="coerce").fillna(0.0).abs()
-    if "multiplier" in exits.columns:
-        multiplier = pd.to_numeric(exits["multiplier"], errors="coerce").fillna(100.0).abs()
-        multiplier = multiplier.where(multiplier > 0, 100.0)
-    else:
-        multiplier = pd.Series([100.0] * len(exits), index=exits.index)
-
-    initial_risk = entry * (float(stop_loss_pct) / 100.0) * qty * multiplier
-    total_risk = float(initial_risk[initial_risk > 0].sum())
-    return round(float(pnl.sum()) / total_risk, 2) if total_risk > 0 else 0.0
-
-
 def fetch_ibkr_account_summary(ib_cfg: IBConfig) -> dict:
     """Fetch key account fields directly from IBKR/TWS."""
     ib = connect_ib(ib_cfg)
@@ -952,6 +948,25 @@ def render_platform_settings():
         cfg["automation"]["enabled"] = st.checkbox("Enable engine automation", value=bool(cfg["automation"].get("enabled", False)))
         cfg["automation"]["place_orders"] = st.checkbox("Allow engine to place orders", value=bool(cfg["automation"].get("place_orders", False)))
         cfg["automation"]["confirm_order_risk"] = st.checkbox("I understand this can place IBKR orders", value=bool(cfg["automation"].get("confirm_order_risk", False)))
+        opening_cfg = cfg.setdefault("opening_orb_trade", {})
+        opening_cfg.setdefault("start_hour", 9)
+        opening_cfg.setdefault("start_minute", 35)
+        opening_cfg.setdefault("end_hour", 9)
+        opening_cfg.setdefault("end_minute", 45)
+        opening_cfg.setdefault("orb_minutes", 5)
+        opening_cfg.setdefault("capital_pct", 50.0)
+        opening_cfg.setdefault("scan_interval_seconds", 30)
+        opening_cfg["enabled"] = st.toggle(
+            "Enable 09:35 opening ORB trade",
+            value=bool(opening_cfg.get("enabled", False)),
+            help="During 09:35-09:45 ET, take at most one highest-ranked setup using up to 50% of account capital. Score must be at least 90 and ORB, PDH/PDL, VWAP, and EMA conditions must all agree.",
+        )
+        opening_state = read_opening_orb_trade_state()
+        opening_status = str(opening_state.get("status") or "WAITING").replace("_", " ").title()
+        opening_detail = ""
+        if opening_state.get("symbol"):
+            opening_detail = f" | {opening_state.get('symbol')} {opening_state.get('signal') or ''}".rstrip()
+        st.caption(f"Opening ORB: {opening_status}{opening_detail} | 09:35-09:45 ET | score 90+ | all conditions | max 50% capital")
         current_approval_mode = approval_mode_from_config(cfg)
         cfg["automation"]["approval_mode"] = st.selectbox(
             "Entry approval mode",
@@ -1139,11 +1154,14 @@ def render_platform_settings():
         r["stop_loss_pct"] = st.number_input("Option stop loss %", value=float(r.get("stop_loss_pct", 20.0)), min_value=1.0, max_value=90.0, step=1.0, disabled=preset_locked)
         r["take_profit_pct"] = st.number_input("Option take profit %", value=float(r.get("take_profit_pct", 30.0)), min_value=1.0, max_value=300.0, step=1.0, disabled=preset_locked)
         r["breakeven_trigger_pct"] = st.number_input("Move stop to breakeven at +%", value=float(r.get("breakeven_trigger_pct", 15.0)), min_value=1.0, max_value=200.0, step=1.0, disabled=preset_locked)
+        r["trailing_from_entry"] = st.checkbox("Trail from entry", value=bool(r.get("trailing_from_entry", True)), disabled=preset_locked)
         r["trailing_trigger_pct"] = st.number_input("Activate trailing stop at +%", value=float(r.get("trailing_trigger_pct", 25.0)), min_value=1.0, max_value=300.0, step=1.0, disabled=preset_locked)
         r["trailing_stop_pct"] = st.number_input("Trailing stop distance %", value=float(r.get("trailing_stop_pct", 10.0)), min_value=1.0, max_value=90.0, step=1.0, disabled=preset_locked)
+        r["use_take_profit_with_trailing"] = st.checkbox("Keep fixed take profit while trailing", value=bool(r.get("use_take_profit_with_trailing", False)), disabled=preset_locked)
         r["entry_cutoff_hour"] = st.number_input("No new entries after hour ET", value=int(r.get("entry_cutoff_hour", 11)), min_value=9, max_value=15, step=1, disabled=preset_locked)
         r["entry_cutoff_minute"] = st.number_input("No new entries after minute ET", value=int(r.get("entry_cutoff_minute", 0)), min_value=0, max_value=59, step=1, disabled=preset_locked)
         r["force_exit_enabled"] = st.checkbox("Force exit open trades near end of day", value=bool(r.get("force_exit_enabled", True)))
+        r["require_eod_exit_approval"] = st.checkbox("Require Telegram approval for EOD exit", value=bool(r.get("require_eod_exit_approval", True)))
         r["force_exit_hour"] = st.number_input("Force exit hour ET", value=int(r.get("force_exit_hour", 15)), min_value=9, max_value=15, step=1)
         r["force_exit_minute"] = st.number_input("Force exit minute ET", value=int(r.get("force_exit_minute", 55)), min_value=0, max_value=59, step=1)
         r["max_consecutive_losses"] = st.number_input("Stop after consecutive losses", value=int(r.get("max_consecutive_losses", 2)), min_value=1, max_value=10, step=1, disabled=preset_locked)
@@ -2157,7 +2175,16 @@ def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig
                 readonly=True,
             )
             sync_ib = connect_ib(sync_ib_cfg)
-            restored_events = sync_active_positions_from_broker(sync_ib, account=ib_cfg_snapshot.account)
+            r = cfg.get("risk", {})
+            restored_events = sync_active_positions_from_broker(
+                sync_ib,
+                account=ib_cfg_snapshot.account,
+                stop_loss_pct=float(r.get("stop_loss_pct", 20.0)),
+                take_profit_pct=float(r.get("take_profit_pct", 30.0)),
+                trailing_stop_pct=float(r.get("trailing_stop_pct", 10.0)),
+                trailing_from_entry=bool(r.get("trailing_from_entry", True)),
+                fixed_take_profit_enabled=bool(r.get("use_take_profit_with_trailing", False)),
+            )
             reconciled_events = reconcile_active_positions_with_broker(sync_ib, account=ib_cfg_snapshot.account, log_closures=True)
             sync_events = restored_events + reconciled_events
             if sync_events:
@@ -2176,6 +2203,7 @@ def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig
                 pass
 
 
+@st.fragment(run_every="5s")
 def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) -> None:
     orders_unlocked = orders_unlocked_from_config(cfg_snapshot)
     readonly = bool(cfg_snapshot.get("ib", {}).get("readonly", False))
@@ -2194,25 +2222,58 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
             * 100.0
         )
         premium_change_pct = _number_or_none(position.get("premium_change_pct"))
+        current_price = _number_or_none(position.get("current_price"))
+        unrealized_pnl = _number_or_none(position.get("unrealized_pnl"))
+        unrealized_pct = _number_or_none(position.get("unrealized_pct"))
+        pnl_color = "#16a34a" if unrealized_pnl is not None and unrealized_pnl > 0 else (
+            "#dc2626" if unrealized_pnl is not None and unrealized_pnl < 0 else "inherit"
+        )
+        pnl_tone = "positive" if unrealized_pnl is not None and unrealized_pnl > 0 else (
+            "negative" if unrealized_pnl is not None and unrealized_pnl < 0 else "neutral"
+        )
+        market_value = _number_or_none(position.get("market_value"))
         stock_with_trade_pct = _number_or_none(position.get("underlying_move_with_position_pct"))
+        underlying_entry = _number_or_none(position.get("underlying_entry_price"))
+        underlying_current = _number_or_none(position.get("underlying_current_price"))
         health_label = str(position.get("premium_health") or "Not checked")
         health_detail = str(position.get("premium_health_detail") or "")
+        market_status = str(position.get("market_data_status") or "Not checked")
+        market_source = str(position.get("market_data_source") or "")
+        checked_at = str(position.get("market_data_checked_at") or position.get("premium_health_checked_at") or "")
+        if checked_at:
+            try:
+                checked_label = datetime.fromisoformat(checked_at).astimezone(EASTERN).strftime("%H:%M:%S ET")
+            except Exception:
+                checked_label = checked_at
+        else:
+            checked_label = "Not checked"
+        protection_status = str(position.get("protective_orders_status") or "Unknown")
         close_disabled = not orders_unlocked or readonly
 
-        with st.container(border=True):
-            row_cols = st.columns([2.2, 2.2, 2.2, 1.4])
+        with st.container(key=f"bot-position-card-{pnl_tone}-{idx}"):
+            row_cols = st.columns([2.0, 3.0, 2.6, 1.4])
             with row_cols[0]:
                 st.markdown(f"**{position.get('symbol', 'N/A')} {position.get('signal', '')}**")
                 st.caption(str(position.get("option") or ""))
                 st.caption(f"Qty {position.get('quantity', 'N/A')} | Entry {_fmt_money_cell(position.get('entry_price'))}")
+                if underlying_entry is not None:
+                    underlying_text = f"Underlying {_fmt_money_cell(underlying_entry)}"
+                    if underlying_current is not None:
+                        underlying_text += f" -> {_fmt_money_cell(underlying_current)}"
+                    st.caption(underlying_text)
             with row_cols[1]:
                 st.markdown(
                     f"""
-                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:.35rem .7rem;">
+                    <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:.35rem .7rem;">
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Cost</div><div style="font-weight:800;">${estimated_cost:,.2f}</div></div>
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Mark</div><div style="font-weight:800;">{_fmt_money_cell(current_price)}</div></div>
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Value</div><div style="font-weight:800;">{_fmt_money_cell(market_value)}</div></div>
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">P/L</div><div style="color:{pnl_color};font-weight:800;">{_fmt_money_cell(unrealized_pnl)} ({_fmt_pct_cell(unrealized_pct)})</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Premium</div><div style="font-weight:800;">{_fmt_pct_cell(premium_change_pct)}</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Stop</div><div style="font-weight:800;">{_fmt_money_cell(position.get("current_stop_price"))}</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">TP</div><div style="font-weight:800;">{_fmt_money_cell(position.get("take_profit_price"))}</div></div>
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Bid / Ask</div><div style="font-weight:800;">{_fmt_money_cell(position.get("current_bid"))} / {_fmt_money_cell(position.get("current_ask"))}</div></div>
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Delta</div><div style="font-weight:800;">{_fmt_pct_cell((_number_or_none(position.get("current_delta")) or 0) * 100) if _number_or_none(position.get("current_delta")) is not None else "N/A"}</div></div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -2224,6 +2285,15 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
                     st.info(f"{health_label}: {health_detail}")
                 else:
                     st.info(health_label)
+                quote_label = f"Quote: {market_status}"
+                if market_source:
+                    quote_label += f" via {market_source}"
+                st.caption(f"{quote_label} | Updated {checked_label}")
+                st.caption(
+                    f"Protection: {protection_status} | "
+                    f"BE {'on' if position.get('breakeven_active') else 'off'} | "
+                    f"Trail {'on' if position.get('trailing_active') else 'off'}"
+                )
             with row_cols[3]:
                 if st.button(
                     "Close Position",
@@ -2864,7 +2934,7 @@ def render_yahoo_backtester_tab(config: dict, default_symbols: list[str]):
     st.markdown("### Setup")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        period = st.selectbox("Historical period", ["5d", "10d", "30d", "60d"], index=2, key="bt_period")
+        period = st.selectbox("Historical period", ["5d", "10d", "14d", "30d", "60d"], index=3, key="bt_period")
     with c2:
         interval = st.selectbox("Candle interval", ["5m", "15m", "30m", "60m", "1d"], index=0, key="bt_interval")
     with c3:
@@ -4398,6 +4468,7 @@ elif selected_page == "💼 Positions":
         st.session_state.setdefault("manual_order_strike", 0.0)
         st.session_state.setdefault("manual_order_limit", 0.0)
         st.session_state.setdefault("manual_order_mid", 0.0)
+        st.session_state.setdefault("manual_order_underlying", None)
 
         m1, m2, m3, m4 = st.columns(4)
         manual_symbol = m1.text_input("Symbol", value="SPY", key="manual_order_symbol").strip().upper()
@@ -4411,6 +4482,7 @@ elif selected_page == "💼 Positions":
                 st.session_state["manual_order_strike"] = defaults["strike"]
                 st.session_state["manual_order_mid"] = defaults["mid"]
                 st.session_state["manual_order_limit"] = defaults["limit"]
+                st.session_state["manual_order_underlying"] = defaults.get("underlying")
                 st.success(
                     f"Loaded {manual_symbol} {manual_signal}: "
                     f"{defaults['expiry']} {defaults['strike']:g} | mid ${defaults['mid']:.2f}"
@@ -4433,6 +4505,7 @@ elif selected_page == "💼 Positions":
         def build_manual_order_payload() -> dict:
             option_label = f"{manual_symbol} {manual_expiry} {manual_strike:g} {manual_signal}"
             mid_or_limit = float(manual_mid or manual_limit or 0)
+            underlying_price = _number_or_none(st.session_state.get("manual_order_underlying"))
             return {
                 "id": make_approval_id(manual_symbol, manual_signal),
                 "status": "pending",
@@ -4455,7 +4528,7 @@ elif selected_page == "💼 Positions":
                 "setup_quality": "Manual order",
                 "rank_score": 0,
                 "reasons": "Manual order entered and approved from Positions tab.",
-                "raw_signal": {"Symbol": manual_symbol, "Signal": manual_signal},
+                "raw_signal": {"Symbol": manual_symbol, "Signal": manual_signal, "Price": underlying_price},
                 "option_data": {
                     "Option": option_label,
                     "Expiry": manual_expiry,
@@ -4582,7 +4655,10 @@ elif selected_page == "💼 Positions":
                         trailing_stop_pct=float(r.get("trailing_stop_pct", 10.0)),
                         force_exit_time=dtime(int(r.get("force_exit_hour", 15)), int(r.get("force_exit_minute", 55))),
                         force_exit_enabled=bool(r.get("force_exit_enabled", True)),
+                        require_eod_exit_approval=bool(r.get("require_eod_exit_approval", True)),
                         allow_live_orders=orders_unlocked_from_config(cfg),
+                        trailing_from_entry=bool(r.get("trailing_from_entry", True)),
+                        fixed_take_profit_enabled=bool(r.get("use_take_profit_with_trailing", False)),
                     )
                 finally:
                     try:
@@ -4681,10 +4757,11 @@ elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
         except Exception:
             return pd.DataFrame()
 
-    def _render_monthly_pnl_calendar(exits_df: pd.DataFrame, month_anchor: datetime.date) -> None:
+    def _render_monthly_pnl_calendar(exits_df: pd.DataFrame, month_anchor: datetime.date, view: str = "summary") -> None:
         month_start = month_anchor.replace(day=1)
         month_label = month_start.strftime("%B %Y")
         day_stats = {}
+        day_trades: dict[datetime.date, list[dict]] = {}
         if isinstance(exits_df, pd.DataFrame) and not exits_df.empty and "timestamp" in exits_df.columns:
             month_exits = exits_df[
                 (exits_df["timestamp"].dt.year == month_start.year)
@@ -4697,6 +4774,15 @@ elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
                     trades=("realized_pnl", "size"),
                 )
                 day_stats = grouped.to_dict("index")
+                for trade_day, trades_df in month_exits.sort_values("timestamp").groupby("trade_date"):
+                    rows = []
+                    for _, trade in trades_df.iterrows():
+                        symbol = str(trade.get("symbol") or "").upper()
+                        signal = str(trade.get("signal") or "").upper()
+                        label = " ".join(part for part in [symbol, signal] if part).strip() or str(trade.get("option") or "Trade")
+                        pnl_value = float(trade.get("realized_pnl", 0.0) or 0.0)
+                        rows.append({"label": label, "pnl": pnl_value})
+                    day_trades[trade_day] = rows
 
         weeks = calendar.Calendar(firstweekday=6).monthdatescalendar(month_start.year, month_start.month)
         today_et = datetime.now(EASTERN).date()
@@ -4717,7 +4803,22 @@ elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
                 today_class = " pt-cal-today" if day == today_et else ""
                 muted_class = " pt-cal-muted" if not in_month else ""
                 trade_label = "trade" if trades == 1 else "trades"
-                pnl_html = f"<strong>${pnl:,.0f}</strong><span>{trades} {trade_label}</span>" if trades else ""
+                if view == "trades" and trades:
+                    trade_lines = []
+                    for trade in day_trades.get(day, [])[:5]:
+                        trade_pnl = float(trade.get("pnl", 0.0) or 0.0)
+                        trade_tone = "pt-cal-trade-win" if trade_pnl >= 0 else "pt-cal-trade-loss"
+                        trade_lines.append(
+                            f"<div class='pt-cal-trade-line {trade_tone}'>"
+                            f"<span>{html.escape(str(trade.get('label') or 'Trade'))}</span>"
+                            f"<strong>{html.escape(_format_signed_money(trade_pnl))}</strong>"
+                            "</div>"
+                        )
+                    extra_count = max(0, trades - 5)
+                    more_html = f"<div class='pt-cal-more'>+{extra_count} more</div>" if extra_count else ""
+                    pnl_html = f"<div class='pt-cal-trades'>{''.join(trade_lines)}{more_html}</div>"
+                else:
+                    pnl_html = f"<strong>${pnl:,.0f}</strong><span>{trades} {trade_label}</span>" if trades else ""
                 cells.append(
                     f"<div class='pt-cal-cell {tone}{today_class}{muted_class}'>"
                     f"<div class='pt-cal-day'>{day.day if in_month else ''}</div>"
@@ -4788,6 +4889,48 @@ elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
             .pt-cal-pnl span {{
                 color: #6b7280;
                 font-size: 0.95rem;
+            }}
+            .pt-cal-trades {{
+                display: flex;
+                flex-direction: column;
+                gap: 0.25rem;
+                margin-top: -0.35rem;
+            }}
+            .pt-cal-trade-line {{
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                gap: 0.35rem;
+                align-items: center;
+                text-align: left;
+                font-size: 0.78rem;
+                line-height: 1.15;
+                padding: 0.2rem 0.25rem;
+                border-radius: 4px;
+                background: rgba(255,255,255,0.52);
+            }}
+            .pt-cal-trade-line span {{
+                min-width: 0;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                color: #111827;
+                font-size: 0.78rem;
+            }}
+            .pt-cal-trade-line strong {{
+                font-size: 0.78rem;
+                white-space: nowrap;
+            }}
+            .pt-cal-trade-win strong {{
+                color: #047857;
+            }}
+            .pt-cal-trade-loss strong {{
+                color: #dc2626;
+            }}
+            .pt-cal-more {{
+                text-align: left;
+                color: #6b7280;
+                font-size: 0.76rem;
+                padding-left: 0.25rem;
             }}
             .pt-cal-win {{
                 background: #dcfce7;
@@ -5844,7 +5987,7 @@ elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
         gross_loss = abs(float(exits.loc[exits["realized_pnl"] < 0, "realized_pnl"].sum())) if losses else 0.0
         profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (round(gross_profit, 2) if gross_profit > 0 else 0.0)
         stop_loss_pct = float(cfg.get("risk", {}).get("stop_loss_pct", 20.0) or 20.0)
-        realized_r = _realized_r_multiple(exits, stop_loss_pct)
+        realized_r = realized_r_multiple(exits, stop_loss_pct, entries)
         original_deposited = float(cfg.get("performance", {}).get("original_deposited_capital", 2300.0) or 0.0)
         pct_up = (realized_pnl / original_deposited * 100.0) if original_deposited > 0 else 0.0
         account_summary = st.session_state.get("ibkr_account_summary") or {}
@@ -5913,7 +6056,14 @@ elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
             calendar_anchor = start_date
         st.markdown("### Monthly P/L Calendar")
         calendar_anchor = _render_calendar_controls(calendar_anchor, calendar_exits)
-        _render_monthly_pnl_calendar(calendar_exits, calendar_anchor)
+        calendar_view = st.radio(
+            "Monthly analytics view",
+            ["Calendar", "Trades"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="performance_monthly_analytics_view",
+        )
+        _render_monthly_pnl_calendar(calendar_exits, calendar_anchor, view="trades" if calendar_view == "Trades" else "summary")
 
         if not exits.empty:
             exits = exits.sort_values("timestamp")
