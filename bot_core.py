@@ -122,6 +122,12 @@ TRADE_LOG_EXTRA_COLUMNS = [
     "matched_exit_external_id",
     "matched_exit_source",
     "close_classification",
+    "retest_confirmed",
+    "retest_trigger_level",
+    "breakout_time",
+    "retest_time",
+    "retest_minutes_after_breakout",
+    "retest_reason",
 ]
 
 # Trade management defaults for intraday 7 DTE options
@@ -489,6 +495,12 @@ def scan_symbol_ib(
     orb_minutes: int = 15,
     min_session_bars: int = 7,
     min_score: float | None = None,
+    require_retest: bool = False,
+    retest_tolerance_pct: float = 0.10,
+    retest_max_minutes: int = 45,
+    intraday_duration: str = "5 D",
+    intraday_bar_size: str = "5 mins",
+    analysis_bar_minutes: int | None = None,
 ) -> dict | None:
     """Run the active scanner strategy on IBKR historical bars.
 
@@ -497,7 +509,7 @@ def scan_symbol_ib(
     parity. Confidence is returned only as a compatibility/debug field and is
     not used as a live trade blocker.
     """
-    intraday = fetch_ib_intraday(ib, symbol)
+    intraday = fetch_ib_intraday(ib, symbol, duration=intraday_duration, bar_size=intraday_bar_size)
     daily = fetch_ib_daily(ib, symbol)
 
     if intraday.empty or len(intraday) < 50:
@@ -526,6 +538,10 @@ def scan_symbol_ib(
             timezone=EASTERN,
             orb_minutes=int(orb_minutes),
             min_session_bars=int(min_session_bars),
+            require_retest=bool(require_retest),
+            retest_tolerance_pct=float(retest_tolerance_pct),
+            retest_max_minutes=int(retest_max_minutes),
+            analysis_bar_minutes=analysis_bar_minutes,
         )
         session_date = _result_session_date(result)
         if session_date and session_date != datetime.now(EASTERN).date():
@@ -542,6 +558,10 @@ def scan_symbol_ib(
         timezone=EASTERN,
         orb_minutes=int(orb_minutes),
         min_session_bars=int(min_session_bars),
+        require_retest=bool(require_retest),
+        retest_tolerance_pct=float(retest_tolerance_pct),
+        retest_max_minutes=int(retest_max_minutes),
+        analysis_bar_minutes=analysis_bar_minutes,
     )
     session_date = _result_session_date(result)
     if session_date and session_date != datetime.now(EASTERN).date():
@@ -1322,6 +1342,16 @@ def log_trade(row: dict):
                 columns = expanded_columns
         row = {column: row.get(column) for column in columns}
     df = pd.DataFrame([row])
+    broker_ids_present = bool(str(row.get("broker_order_ids") or "").strip() or str(row.get("broker_perm_ids") or "").strip())
+    if exists and str(row.get("event") or "").upper() in {"ENTRY", "EXIT"} and broker_ids_present:
+        try:
+            from modules.performance_metrics import deduplicate_broker_event_rows
+            existing_df = pd.read_csv(TRADE_LOG_FILE, low_memory=False)
+            combined = deduplicate_broker_event_rows(pd.concat([existing_df, df], ignore_index=True, sort=False))
+            combined.to_csv(TRADE_LOG_FILE, index=False)
+            return
+        except Exception:
+            pass
     df.to_csv(TRADE_LOG_FILE, mode="a", index=False, header=not exists)
 
 
@@ -1575,6 +1605,8 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
     if not combined.empty and "timestamp" in combined.columns:
         sort_ts = _parse_timestamps_utc(combined["timestamp"])
         combined = combined.assign(_sort_ts=sort_ts).sort_values("_sort_ts", na_position="last").drop(columns=["_sort_ts"])
+    from modules.performance_metrics import deduplicate_broker_event_rows
+    combined = deduplicate_broker_event_rows(combined)
     combined.to_csv(path, index=False)
     return imported, f"IBKR executions grouped={len(rows)} imported_or_updated={imported}"
 
@@ -3215,6 +3247,7 @@ def make_alert_message(result: dict, option: dict | None) -> str:
         f"VWAP: {result['VWAP']} | ORB: {result['ORB High']} / {result['ORB Low']}\n"
         f"PDH/PDL: {result['PDH']} / {result['PDL']}\n"
         f"ORB confirmed: {result.get('ORB Confirmation Close', 'N/A')} at {result.get('ORB Confirmation Time', 'N/A')}\n"
+        f"Retest: {result.get('Retest Reason', 'N/A')} | Trigger: {result.get('Retest Trigger Level', 'N/A')}\n"
         f"Support/Resistance: {result.get('Nearest Support', 'N/A')} / {result.get('Nearest Resistance', 'N/A')}\n"
         f"Room check: {result.get('Room Check', 'N/A')}\n"
         f"Why: {result['Reasons']}"
@@ -3268,10 +3301,11 @@ def default_config() -> dict:
         "account_mode": "Simulation",
         "ib": {"host": "127.0.0.1", "paper_port": 7497, "live_port": 7496, "client_id": 11, "account": "", "readonly": False},
         "telegram": {"bot_token": "", "chat_id": "", "send_alerts": False},
-        "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "approval_mode": "Dashboard", "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 900, "align_scans_to_interval": True, "first_scan_hour": 9, "first_scan_minute": 45, "live_sync_interval_seconds": 15, "market_timezone": "America/New_York", "scan_only_market_hours": True},
+        "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "approval_mode": "Dashboard", "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 300, "align_scans_to_interval": True, "first_scan_hour": 9, "first_scan_minute": 50, "live_sync_interval_seconds": 15, "market_timezone": "America/New_York", "scan_only_market_hours": True},
+        "staged_trading_timeline": {"enabled": False, "opening_start_hour": 9, "opening_start_minute": 35, "opening_end_hour": 9, "opening_end_minute": 45, "midday_end_hour": 11, "midday_end_minute": 30, "retest_end_hour": 13, "retest_end_minute": 30, "opening_scan_interval_seconds": 60, "orb_scan_interval_seconds": 300, "retest_scan_interval_seconds": 300},
         "opening_orb_trade": {"enabled": False, "start_hour": 9, "start_minute": 35, "end_hour": 9, "end_minute": 45, "orb_minutes": 5, "capital_pct": 50.0, "scan_interval_seconds": 30},
-        "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "use_sr_filter": True, "min_sr_room_pct": 0.75, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7},
-        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "recycle_capital_after_exit": False, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 11, "entry_cutoff_minute": 0, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_from_entry": True, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "use_take_profit_with_trailing": False, "force_exit_enabled": True, "require_eod_exit_approval": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
+        "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "use_sr_filter": True, "min_sr_room_pct": 0.75, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7, "require_break_retest": False, "retest_tolerance_pct": 0.10, "retest_max_minutes": 45},
+        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "recycle_capital_after_exit": False, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 14, "entry_cutoff_minute": 30, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_from_entry": True, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "use_take_profit_with_trailing": False, "force_exit_enabled": True, "require_eod_exit_approval": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},
         "option_filters": dict(DEFAULT_OPTION_FILTERS),
         "watchlist": WATCHLIST,
@@ -3432,6 +3466,13 @@ def save_trade_replay(row: dict, option: dict | None = None, event: str = "SIGNA
         "orb_down": row.get("ORB Down"),
         "orb_confirmation_close": row.get("ORB Confirmation Close"),
         "orb_confirmation_time": row.get("ORB Confirmation Time"),
+        "retest_required": row.get("Retest Required"),
+        "retest_confirmed": row.get("Retest Confirmed"),
+        "retest_trigger_level": row.get("Retest Trigger Level"),
+        "breakout_time": row.get("Breakout Time"),
+        "retest_time": row.get("Retest Time"),
+        "retest_minutes_after_breakout": row.get("Retest Minutes After Breakout"),
+        "retest_reason": row.get("Retest Reason"),
         "pdh": row.get("PDH"),
         "pdl": row.get("PDL"),
         "pdh_break": row.get("PDH Break"),

@@ -8,6 +8,113 @@ from typing import Any
 import pandas as pd
 
 
+def _broker_id_key(value: Any) -> str:
+    try:
+        if value is None or pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    tokens = {token.strip() for token in str(value).split(",") if token.strip()}
+    return ",".join(sorted(tokens))
+
+
+def deduplicate_broker_event_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep one authoritative row when local and broker logs describe one fill."""
+    if df is None or df.empty:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    required = {"timestamp", "event", "symbol", "quantity"}
+    if not required.issubset(df.columns):
+        return df.copy()
+
+    out = df.copy().reset_index(drop=True)
+    event = out["event"].fillna("").astype(str).str.upper().str.strip()
+    date = out["timestamp"].astype(str).str.slice(0, 10)
+    symbol = out["symbol"].fillna("").astype(str).str.upper().str.strip()
+    signal = out.get("signal", pd.Series("", index=out.index)).fillna("").astype(str).str.upper().str.strip()
+    quantity = pd.to_numeric(out["quantity"], errors="coerce").fillna(0).abs().round(6).astype(str)
+    order_ids = out.get("broker_order_ids", pd.Series("", index=out.index)).apply(_broker_id_key)
+    perm_ids = out.get("broker_perm_ids", pd.Series("", index=out.index)).apply(_broker_id_key)
+    broker_ids = order_ids.where(order_ids.ne(""), perm_ids)
+    eligible = event.isin(["ENTRY", "EXIT"]) & broker_ids.ne("")
+    out["_broker_event_key"] = ""
+    out.loc[eligible, "_broker_event_key"] = (
+        date[eligible] + "|" + event[eligible] + "|" + symbol[eligible] + "|"
+        + signal[eligible] + "|" + quantity[eligible] + "|" + broker_ids[eligible]
+    )
+
+    # A local order estimate and its eventual IBKR execution can carry entirely
+    # different order/perm IDs. Pair them by trade identity and proximity so the
+    # actual broker fill remains authoritative.
+    source = out.get("source", pd.Series("", index=out.index)).fillna("").astype(str).str.upper().str.strip()
+    broker_source = source.isin(["IBKR_EXECUTION", "IBKR_FLEX"])
+    local_source = ~broker_source
+    try:
+        timestamps = pd.to_datetime(out["timestamp"], errors="coerce", utc=True, format="mixed")
+    except TypeError:
+        timestamps = pd.to_datetime(out["timestamp"], errors="coerce", utc=True)
+    con_ids = pd.to_numeric(out.get("con_id", pd.Series(0, index=out.index)), errors="coerce").fillna(0).astype(int)
+    local_indexes = out.index[local_source & event.isin(["ENTRY", "EXIT"])]
+    for local_index in local_indexes:
+        local_time = timestamps.iloc[local_index]
+        if pd.isna(local_time):
+            continue
+        same_trade = (
+            broker_source
+            & event.eq(event.iloc[local_index])
+            & date.eq(date.iloc[local_index])
+            & symbol.eq(symbol.iloc[local_index])
+            & signal.eq(signal.iloc[local_index])
+            & quantity.eq(quantity.iloc[local_index])
+        )
+        local_con_id = con_ids.iloc[local_index]
+        if local_con_id:
+            same_trade &= con_ids.eq(0) | con_ids.eq(local_con_id)
+        candidates = out.index[same_trade]
+        if candidates.empty:
+            continue
+        deltas = (timestamps.loc[candidates] - local_time).abs().dt.total_seconds()
+        deltas = deltas[deltas <= 600]
+        if deltas.empty:
+            continue
+        broker_index = deltas.idxmin()
+        broker_key = out.at[broker_index, "_broker_event_key"]
+        if broker_key:
+            out.at[local_index, "_broker_event_key"] = broker_key
+
+    source_rank = {"IBKR_EXECUTION": 0, "IBKR_FLEX": 1, "PULSE_EXIT_ORDER": 2, "PULSE_ENTRY_ORDER": 2}
+    rows = []
+    for _, group in out[out["_broker_event_key"].ne("")].groupby("_broker_event_key", sort=False):
+        ranked = group.assign(
+            _source_rank=group.get("source", pd.Series("", index=group.index))
+            .fillna("").astype(str).str.upper().map(source_rank).fillna(9)
+        ).sort_values("_source_rank")
+        canonical = ranked.iloc[0].drop(labels=["_source_rank"]).copy()
+        for column in group.columns:
+            if column == "_broker_event_key":
+                continue
+            current = canonical.get(column)
+            try:
+                missing = current is None or pd.isna(current) or str(current).strip() == ""
+            except Exception:
+                missing = False
+            if missing:
+                values = group[column].dropna()
+                values = values[values.astype(str).str.strip().ne("")]
+                if not values.empty:
+                    canonical[column] = values.iloc[-1]
+        if "exit_reason" in group.columns:
+            reasons = group["exit_reason"].dropna().astype(str).str.strip()
+            meaningful = reasons[~reasons.str.lower().isin(["", "ibkr sell execution imported"])]
+            if not meaningful.empty:
+                canonical["exit_reason"] = meaningful.iloc[-1]
+        rows.append(canonical)
+
+    untouched = out[out["_broker_event_key"].eq("")].copy()
+    canonical_df = pd.DataFrame(rows, columns=out.columns) if rows else out.iloc[0:0].copy()
+    result = pd.concat([untouched, canonical_df], ignore_index=True, sort=False)
+    return result.drop(columns=["_broker_event_key"], errors="ignore")
+
+
 def _number(value: Any) -> float | None:
     try:
         if value is None or pd.isna(value):

@@ -1,10 +1,10 @@
 {
   "status": "complete",
-  "started_at": "2026-08-28T16:39:34",
-  "updated_at": "2026-08-28T16:40:01",
-  "finished_at": "2026-08-28T16:40:01",
+  "started_at": "2026-09-02T17:39:12",
+  "updated_at": "2026-09-02T17:39:51",
+  "finished_at": "2026-09-02T17:39:51",
   "source": "manual",
-  "run_date": "2026-08-28",
+  "run_date": "2026-09-02",
   "symbols": [
     "SPY",
     "QQQ",
@@ -25,13 +25,24 @@
     "MU",
     "ARM",
     "TSM",
+    "MRVL",
     "JPM",
     "GS",
-    "SOFI"
+    "BAC",
+    "NFLX",
+    "UBER",
+    "XOM",
+    "COST",
+    "RBLX",
+    "HOOD",
+    "SOFI",
+    "RKLB",
+    "HIMS",
+    "CRWD"
   ],
-  "completed": 22,
-  "total": 22,
-  "stock_rows": 22,
+  "completed": 33,
+  "total": 33,
+  "stock_rows": 33,
   "option_rows": 0,
   "message": "Scanner complete"
 }

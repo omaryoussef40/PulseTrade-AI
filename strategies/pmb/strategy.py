@@ -7,7 +7,7 @@ quality directly using Score + Grade. Confidence is still returned only as a
 compatibility/debug field so older engine/dashboard code does not break.
 """
 
-from datetime import time as dtime
+from datetime import time as dtime, timedelta
 from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
@@ -20,6 +20,9 @@ HUGE_ORB_ATR_MULTIPLE = 1.5
 FOLLOW_THROUGH_VOLUME_RATIO = 0.30
 MIDDAY_VOLUME_START = dtime(12, 0)
 MIDDAY_VOLUME_RATIO = 0.40
+DEFAULT_RETEST_TOLERANCE_PCT = 0.10
+DEFAULT_RETEST_MAX_MINUTES = 45
+DEFAULT_BREAKOUT_BUFFER_PCT = 0.05
 
 
 def _normalize_ohlcv(df: pd.DataFrame | None, timezone: ZoneInfo = EASTERN) -> pd.DataFrame:
@@ -58,6 +61,123 @@ def _bar_minutes(index: pd.Index, fallback: int = 5) -> int:
         return max(1, int(round(float(diffs.median()))))
     except Exception:
         return fallback
+
+
+def _resample_ohlcv(df: pd.DataFrame, minutes: int) -> pd.DataFrame:
+    minutes = max(1, int(minutes))
+    if df.empty or _bar_minutes(df.index, fallback=minutes) >= minutes:
+        return df.copy()
+    out = df.resample(f"{minutes}min").agg({
+        "Open": "first",
+        "High": "max",
+        "Low": "min",
+        "Close": "last",
+        "Volume": "sum",
+    })
+    return out.dropna(subset=["Open", "High", "Low", "Close"])
+
+
+def detect_break_and_retest(
+    bars: pd.DataFrame,
+    *,
+    direction: str,
+    orb_high: float,
+    orb_low: float,
+    pdh: float,
+    pdl: float,
+    orb_minutes: int = 5,
+    tolerance_pct: float = DEFAULT_RETEST_TOLERANCE_PCT,
+    max_minutes: int = DEFAULT_RETEST_MAX_MINUTES,
+    breakout_buffer_pct: float = DEFAULT_BREAKOUT_BUFFER_PCT,
+    require_latest: bool = True,
+) -> dict:
+    """Find the day's first breakout and its first retest of the controlling level."""
+    direction = str(direction or "").upper()
+    if direction not in {"CALL", "PUT"} or bars is None or bars.empty:
+        return {"confirmed": False, "reason": "No directional bars available"}
+
+    session_date = bars.index[-1].date()
+    session = bars[bars.index.date == session_date].copy()
+    if session.empty:
+        return {"confirmed": False, "reason": "No current session bars available"}
+    orb_end = session.index[0] + timedelta(minutes=max(1, int(orb_minutes)))
+    post_orb = session[session.index >= orb_end]
+    if len(post_orb) < 2:
+        return {"confirmed": False, "reason": "Waiting for breakout and a later retest candle"}
+
+    is_call = direction == "CALL"
+    trigger = max(float(orb_high), float(pdh)) if is_call else min(float(orb_low), float(pdl))
+    tolerance = max(float(tolerance_pct), 0.0) / 100.0
+    breakout_buffer = max(float(breakout_buffer_pct), 0.0) / 100.0
+    breakout_threshold = trigger * (1 + breakout_buffer if is_call else 1 - breakout_buffer)
+    breakout_mask = post_orb["Close"] > breakout_threshold if is_call else post_orb["Close"] < breakout_threshold
+    breakout_bars = post_orb[breakout_mask]
+    if breakout_bars.empty:
+        return {
+            "confirmed": False,
+            "direction": direction,
+            "trigger_level": trigger,
+            "reason": "Waiting for a close beyond the ORB and PDH/PDL trigger",
+        }
+
+    breakout_time = breakout_bars.index[0]
+    after_breakout = post_orb[post_orb.index > breakout_time]
+    if after_breakout.empty:
+        return {
+            "confirmed": False,
+            "direction": direction,
+            "trigger_level": trigger,
+            "breakout_time": breakout_time,
+            "reason": "Breakout found; waiting for a separate retest candle",
+        }
+
+    if is_call:
+        touch_mask = after_breakout["Low"] <= trigger * (1 + tolerance)
+    else:
+        touch_mask = after_breakout["High"] >= trigger * (1 - tolerance)
+    touches = after_breakout[touch_mask]
+    if touches.empty:
+        return {
+            "confirmed": False,
+            "direction": direction,
+            "trigger_level": trigger,
+            "breakout_time": breakout_time,
+            "reason": "Breakout found; waiting for the first retest",
+        }
+
+    retest_time = touches.index[0]
+    retest_bar = touches.iloc[0]
+    elapsed_minutes = (retest_time - breakout_time).total_seconds() / 60.0
+    held_wick = (
+        float(retest_bar["Low"]) >= trigger * (1 - tolerance)
+        if is_call
+        else float(retest_bar["High"]) <= trigger * (1 + tolerance)
+    )
+    held_close = float(retest_bar["Close"]) > trigger if is_call else float(retest_bar["Close"]) < trigger
+    is_latest = retest_time == post_orb.index[-1]
+    confirmed = bool(
+        held_wick
+        and held_close
+        and elapsed_minutes <= max(1, int(max_minutes))
+        and (is_latest or not require_latest)
+    )
+    if not held_wick or not held_close:
+        reason = "The first retest failed to hold the breakout level"
+    elif elapsed_minutes > max(1, int(max_minutes)):
+        reason = f"Retest arrived too late ({elapsed_minutes:.0f}m > {int(max_minutes)}m)"
+    elif require_latest and not is_latest:
+        reason = "Retest confirmation is stale; the latest candle is not the retest"
+    else:
+        reason = "Breakout and first retest confirmed"
+    return {
+        "confirmed": confirmed,
+        "direction": direction,
+        "trigger_level": trigger,
+        "breakout_time": breakout_time,
+        "retest_time": retest_time,
+        "elapsed_minutes": elapsed_minutes,
+        "reason": reason,
+    }
 
 
 def _grade(score: float) -> str:
@@ -290,9 +410,14 @@ def scan_dataframe(
     timezone: ZoneInfo = EASTERN,
     orb_minutes: int = DEFAULT_ORB_MINUTES,
     min_session_bars: int = 7,
+    require_retest: bool = False,
+    retest_tolerance_pct: float = DEFAULT_RETEST_TOLERANCE_PCT,
+    retest_max_minutes: int = DEFAULT_RETEST_MAX_MINUTES,
+    analysis_bar_minutes: int | None = None,
 ) -> dict | None:
     symbol = str(symbol).strip().upper()
-    intraday = _normalize_ohlcv(intraday, timezone=timezone)
+    retest_intraday = _normalize_ohlcv(intraday, timezone=timezone)
+    intraday = _resample_ohlcv(retest_intraday, int(analysis_bar_minutes)) if analysis_bar_minutes else retest_intraday.copy()
     daily = _normalize_ohlcv(daily, timezone=timezone) if daily is not None else pd.DataFrame(columns=REQUIRED_COLUMNS)
     if intraday.empty or len(intraday) < 50:
         return None
@@ -372,6 +497,29 @@ def scan_dataframe(
     call_score, call_reasons, call_components = _score_direction("CALL", price, float(last["VWAP"]), float(last["EMA9"]), float(last["EMA21"]), orb_high, orb_low, pdh, pdl, atr_percent, rvol, last, use_rvol_score, orb_minutes)
     put_score, put_reasons, put_components = _score_direction("PUT", price, float(last["VWAP"]), float(last["EMA9"]), float(last["EMA21"]), orb_high, orb_low, pdh, pdl, atr_percent, rvol, last, use_rvol_score, orb_minutes)
 
+    call_retest = detect_break_and_retest(
+        retest_intraday,
+        direction="CALL",
+        orb_high=orb_high,
+        orb_low=orb_low,
+        pdh=pdh,
+        pdl=pdl,
+        orb_minutes=orb_minutes,
+        tolerance_pct=retest_tolerance_pct,
+        max_minutes=retest_max_minutes,
+    )
+    put_retest = detect_break_and_retest(
+        retest_intraday,
+        direction="PUT",
+        orb_high=orb_high,
+        orb_low=orb_low,
+        pdh=pdh,
+        pdl=pdl,
+        orb_minutes=orb_minutes,
+        tolerance_pct=retest_tolerance_pct,
+        max_minutes=retest_max_minutes,
+    )
+
     if call_score >= float(min_score) and call_score > put_score:
         signal, score, reasons, components = "CALL", call_score, call_reasons, call_components
     elif put_score >= float(min_score) and put_score > call_score:
@@ -382,6 +530,16 @@ def scan_dataframe(
             score, reasons, components = call_score, call_reasons, call_components
         else:
             score, reasons, components = put_score, put_reasons, put_components
+
+    retest_result = call_retest if (signal == "CALL" or (signal == "WAIT" and call_score >= put_score)) else put_retest
+    if require_retest:
+        if signal in {"CALL", "PUT"} and bool(retest_result.get("confirmed", False)):
+            reasons = list(reasons) + ["Breakout and first retest confirmed"]
+            components = list(components) + ["Break-and-retest required: passed"]
+        elif signal in {"CALL", "PUT"}:
+            signal = "WAIT"
+            reasons = list(reasons) + [str(retest_result.get("reason") or "Break-and-retest not confirmed")]
+            components = list(components) + ["Break-and-retest required: not confirmed"]
 
     opening_exhaustion_block = False
 
@@ -447,6 +605,14 @@ def scan_dataframe(
         "ORB Down": orb_confirmed_down,
         "ORB Confirmation Close": round(confirmation_close, 2),
         "ORB Confirmation Time": confirmation_time.strftime("%Y-%m-%d %H:%M %Z") if hasattr(confirmation_time, "strftime") else str(confirmation_time),
+        "Retest Required": bool(require_retest),
+        "Retest Confirmed": bool(retest_result.get("confirmed", False)),
+        "Retest Direction": retest_result.get("direction"),
+        "Retest Trigger Level": round(float(retest_result["trigger_level"]), 2) if retest_result.get("trigger_level") is not None else None,
+        "Breakout Time": retest_result.get("breakout_time").strftime("%Y-%m-%d %H:%M %Z") if hasattr(retest_result.get("breakout_time"), "strftime") else None,
+        "Retest Time": retest_result.get("retest_time").strftime("%Y-%m-%d %H:%M %Z") if hasattr(retest_result.get("retest_time"), "strftime") else None,
+        "Retest Minutes After Breakout": round(float(retest_result["elapsed_minutes"]), 1) if retest_result.get("elapsed_minutes") is not None else None,
+        "Retest Reason": retest_result.get("reason"),
         "PDH Break": pdh_break,
         "PDL Break": pdl_break,
         "Above VWAP": above_vwap,

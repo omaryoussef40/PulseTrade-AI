@@ -76,7 +76,7 @@ try:
 except Exception:
     sync_flex_trades_to_trade_log = None
 
-from modules.performance_metrics import realized_r_multiple
+from modules.performance_metrics import deduplicate_broker_event_rows, realized_r_multiple
 
 try:
     from backtester.data import YahooDataClient, YFINANCE_AVAILABLE
@@ -948,6 +948,15 @@ def render_platform_settings():
         cfg["automation"]["enabled"] = st.checkbox("Enable engine automation", value=bool(cfg["automation"].get("enabled", False)))
         cfg["automation"]["place_orders"] = st.checkbox("Allow engine to place orders", value=bool(cfg["automation"].get("place_orders", False)))
         cfg["automation"]["confirm_order_risk"] = st.checkbox("I understand this can place IBKR orders", value=bool(cfg["automation"].get("confirm_order_risk", False)))
+        timeline_cfg = cfg.setdefault("staged_trading_timeline", {})
+        timeline_cfg["enabled"] = st.toggle(
+            "Automatic staged trading timeline",
+            value=bool(timeline_cfg.get("enabled", False)),
+            help="Automatically switches the ORB window, retest requirement, scan cadence, and entry cutoff by New York time.",
+        )
+        if timeline_cfg["enabled"]:
+            st.caption("09:35-09:45: 5m ORB, scan every 1m | 09:45-11:30: 15m ORB, scan every 5m | 11:30-13:30: 15m ORB break and retest, scan every 5m")
+            st.info("Automatic timeline is active. Manual scan, ORB, retest, and entry-cutoff settings are preserved and used again when this toggle is off.")
         opening_cfg = cfg.setdefault("opening_orb_trade", {})
         opening_cfg.setdefault("start_hour", 9)
         opening_cfg.setdefault("start_minute", 35)
@@ -959,7 +968,8 @@ def render_platform_settings():
         opening_cfg["enabled"] = st.toggle(
             "Enable 09:35 opening ORB trade",
             value=bool(opening_cfg.get("enabled", False)),
-            help="During 09:35-09:45 ET, take at most one highest-ranked setup using up to 50% of account capital. Score must be at least 90 and ORB, PDH/PDL, VWAP, and EMA conditions must all agree.",
+            help="During 09:35-09:45 ET, take the highest-ranked qualifying ORB and PDH/PDL breakout using up to 50% of account capital.",
+            disabled=bool(timeline_cfg["enabled"]),
         )
         opening_state = read_opening_orb_trade_state()
         opening_status = str(opening_state.get("status") or "WAITING").replace("_", " ").title()
@@ -980,11 +990,12 @@ def render_platform_settings():
             cfg["automation"]["live_confirm_text"] = st.text_input("Type TRADE LIVE to unlock live orders", value=str(cfg["automation"].get("live_confirm_text", "")))
         else:
             cfg["automation"]["live_confirm_text"] = ""
-        cfg["automation"]["scan_interval_seconds"] = st.number_input("Engine scan interval seconds", value=int(cfg["automation"].get("scan_interval_seconds", 900)), min_value=10, max_value=3600, step=10)
+        cfg["automation"]["scan_interval_seconds"] = st.number_input("Engine scan interval seconds", value=int(cfg["automation"].get("scan_interval_seconds", 900)), min_value=10, max_value=3600, step=10, disabled=bool(timeline_cfg["enabled"]))
         cfg["automation"]["align_scans_to_interval"] = st.checkbox(
             "Align scans to candle boundaries",
             value=bool(cfg["automation"].get("align_scans_to_interval", True)),
             help="For 15-minute scanning, wait until the configured first scan time, then run on 10:00, 10:15, 10:30, etc. instead of drifting from engine startup.",
+            disabled=bool(timeline_cfg["enabled"]),
         )
         first_scan_col1, first_scan_col2 = st.columns(2)
         cfg["automation"]["first_scan_hour"] = int(first_scan_col1.number_input(
@@ -993,6 +1004,7 @@ def render_platform_settings():
             min_value=9,
             max_value=15,
             step=1,
+            disabled=bool(timeline_cfg["enabled"]),
         ))
         cfg["automation"]["first_scan_minute"] = int(first_scan_col2.number_input(
             "First scan minute ET",
@@ -1000,6 +1012,7 @@ def render_platform_settings():
             min_value=0,
             max_value=59,
             step=1,
+            disabled=bool(timeline_cfg["enabled"]),
         ))
         cfg["automation"]["live_sync_interval_seconds"] = st.number_input("IBKR live trade sync seconds", value=int(cfg["automation"].get("live_sync_interval_seconds", 15)), min_value=5, max_value=300, step=5)
         cfg["automation"]["scan_only_market_hours"] = st.checkbox("Scan only during market hours", value=bool(cfg["automation"].get("scan_only_market_hours", True)))
@@ -1148,7 +1161,7 @@ def render_platform_settings():
             orb_window_options,
             index=orb_window_options.index(current_orb_minutes),
             format_func=lambda minutes: f"{minutes} minutes",
-            disabled=preset_locked,
+            disabled=preset_locked or bool(cfg.get("staged_trading_timeline", {}).get("enabled", False)),
         )
         s["min_session_bars"] = st.number_input("Minimum session bars", value=int(s.get("min_session_bars", 7)), min_value=2, max_value=30, step=1, disabled=preset_locked)
         r["stop_loss_pct"] = st.number_input("Option stop loss %", value=float(r.get("stop_loss_pct", 20.0)), min_value=1.0, max_value=90.0, step=1.0, disabled=preset_locked)
@@ -1158,8 +1171,9 @@ def render_platform_settings():
         r["trailing_trigger_pct"] = st.number_input("Activate trailing stop at +%", value=float(r.get("trailing_trigger_pct", 25.0)), min_value=1.0, max_value=300.0, step=1.0, disabled=preset_locked)
         r["trailing_stop_pct"] = st.number_input("Trailing stop distance %", value=float(r.get("trailing_stop_pct", 10.0)), min_value=1.0, max_value=90.0, step=1.0, disabled=preset_locked)
         r["use_take_profit_with_trailing"] = st.checkbox("Keep fixed take profit while trailing", value=bool(r.get("use_take_profit_with_trailing", False)), disabled=preset_locked)
-        r["entry_cutoff_hour"] = st.number_input("No new entries after hour ET", value=int(r.get("entry_cutoff_hour", 11)), min_value=9, max_value=15, step=1, disabled=preset_locked)
-        r["entry_cutoff_minute"] = st.number_input("No new entries after minute ET", value=int(r.get("entry_cutoff_minute", 0)), min_value=0, max_value=59, step=1, disabled=preset_locked)
+        timeline_locked = bool(cfg.get("staged_trading_timeline", {}).get("enabled", False))
+        r["entry_cutoff_hour"] = st.number_input("No new entries after hour ET", value=int(r.get("entry_cutoff_hour", 11)), min_value=9, max_value=15, step=1, disabled=preset_locked or timeline_locked)
+        r["entry_cutoff_minute"] = st.number_input("No new entries after minute ET", value=int(r.get("entry_cutoff_minute", 0)), min_value=0, max_value=59, step=1, disabled=preset_locked or timeline_locked)
         r["force_exit_enabled"] = st.checkbox("Force exit open trades near end of day", value=bool(r.get("force_exit_enabled", True)))
         r["require_eod_exit_approval"] = st.checkbox("Require Telegram approval for EOD exit", value=bool(r.get("require_eod_exit_approval", True)))
         r["force_exit_hour"] = st.number_input("Force exit hour ET", value=int(r.get("force_exit_hour", 15)), min_value=9, max_value=15, step=1)
@@ -1180,6 +1194,25 @@ def render_platform_settings():
         s["min_atr"] = st.number_input("Minimum ATR %", value=float(s.get("min_atr", 0.3)), min_value=0.0, max_value=10.0, step=0.1, disabled=preset_locked)
         s["use_sr_filter"] = st.checkbox("Require room to nearest support/resistance", value=bool(s.get("use_sr_filter", True)))
         s["min_sr_room_pct"] = st.number_input("Minimum room to opposing level %", value=float(s.get("min_sr_room_pct", 0.75)), min_value=0.0, max_value=10.0, step=0.1)
+        s["require_break_retest"] = st.checkbox(
+            "Require break and retest for PMB entries",
+            value=bool(s.get("require_break_retest", False)),
+            disabled=bool(cfg.get("staged_trading_timeline", {}).get("enabled", False)),
+        )
+        s["retest_tolerance_pct"] = st.number_input(
+            "Retest tolerance around trigger %",
+            value=float(s.get("retest_tolerance_pct", 0.10)),
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+        )
+        s["retest_max_minutes"] = st.number_input(
+            "Maximum minutes from breakout to retest",
+            value=int(s.get("retest_max_minutes", 45)),
+            min_value=5,
+            max_value=120,
+            step=5,
+        )
         if not s["use_rvol_filter"]:
             st.caption("RVOL is informational only and will not block trades.")
         if s["use_sr_filter"]:
@@ -3675,6 +3708,10 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
                     str(scan_cfg["strategy"].get("active_strategy", "pmb")),
                     int(scan_cfg["strategy"].get("orb_minutes", 15)),
                     int(scan_cfg["strategy"].get("min_session_bars", 7)),
+                    require_retest=bool(scan_cfg["strategy"].get("require_break_retest", False)),
+                    retest_tolerance_pct=float(scan_cfg["strategy"].get("retest_tolerance_pct", 0.10)),
+                    retest_max_minutes=int(scan_cfg["strategy"].get("retest_max_minutes", 45)),
+                    analysis_bar_minutes=5,
                 )
                 if result:
                     rows.append(clean_for_table(result))
@@ -4209,6 +4246,10 @@ elif selected_page == "📈 Scanner & Breakdown":
                     str(cfg["strategy"].get("active_strategy", "pmb")),
                     int(cfg["strategy"].get("orb_minutes", 15)),
                     int(cfg["strategy"].get("min_session_bars", 7)),
+                    require_retest=bool(cfg["strategy"].get("require_break_retest", False)),
+                    retest_tolerance_pct=float(cfg["strategy"].get("retest_tolerance_pct", 0.10)),
+                    retest_max_minutes=int(cfg["strategy"].get("retest_max_minutes", 45)),
+                    analysis_bar_minutes=5,
                 )
                 if not breakdown:
                     st.error("No breakdown available.")
@@ -4690,6 +4731,7 @@ elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
                 return pd.DataFrame()
             df["timestamp"] = _parse_dashboard_timestamps(df["timestamp"])
             df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
+            df = deduplicate_broker_event_rows(df)
             if "realized_pnl" in df.columns:
                 df["realized_pnl"] = pd.to_numeric(df["realized_pnl"], errors="coerce").fillna(0.0)
             else:

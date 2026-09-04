@@ -16,6 +16,7 @@ from engine import (
     opening_orb_trade_window_phase,
     read_opening_orb_trade_state,
     run_opening_orb_trade_cycle,
+    staged_trading_timeline_stage,
     update_opening_orb_trade_state,
 )
 from strategies.pmb.strategy import scan_dataframe
@@ -63,6 +64,7 @@ class OpeningOrbSignalTests(unittest.TestCase):
     def test_call_requires_orb_pdh_vwap_and_ema_together(self):
         result = {
             "Signal": "CALL",
+            "Retest Confirmed": True,
             "ORB Up": True,
             "PDH Break": False,
             "Above VWAP": True,
@@ -73,11 +75,13 @@ class OpeningOrbSignalTests(unittest.TestCase):
             "missing opening conditions: PDH break",
         )
         result["PDH Break"] = True
+        result["Retest Confirmed"] = False
         self.assertEqual(opening_orb_directional_reject_reason(result), "")
 
     def test_put_requires_orb_pdl_vwap_and_ema_together(self):
         result = {
             "Signal": "PUT",
+            "Retest Confirmed": True,
             "ORB Down": True,
             "PDL Break": False,
             "Below VWAP": True,
@@ -104,11 +108,26 @@ class OpeningOrbStateTests(unittest.TestCase):
             }
         }
 
-    def test_window_is_active_from_935_through_945(self):
+    def test_window_is_active_from_935_until_945(self):
         self.assertEqual(opening_orb_trade_window_phase(self.cfg, datetime(2026, 8, 28, 9, 34, 59, tzinfo=EASTERN)), "before")
         self.assertEqual(opening_orb_trade_window_phase(self.cfg, datetime(2026, 8, 28, 9, 35, tzinfo=EASTERN)), "active")
-        self.assertEqual(opening_orb_trade_window_phase(self.cfg, datetime(2026, 8, 28, 9, 45, tzinfo=EASTERN)), "active")
+        self.assertEqual(opening_orb_trade_window_phase(self.cfg, datetime(2026, 8, 28, 9, 44, 59, tzinfo=EASTERN)), "active")
+        self.assertEqual(opening_orb_trade_window_phase(self.cfg, datetime(2026, 8, 28, 9, 45, tzinfo=EASTERN)), "after")
         self.assertEqual(opening_orb_trade_window_phase(self.cfg, datetime(2026, 8, 28, 9, 45, 1, tzinfo=EASTERN)), "after")
+
+    def test_automatic_timeline_switches_strategy_and_cadence(self):
+        cfg = {"staged_trading_timeline": {"enabled": True}}
+        opening = staged_trading_timeline_stage(cfg, datetime(2026, 8, 28, 9, 35, tzinfo=EASTERN))
+        orb = staged_trading_timeline_stage(cfg, datetime(2026, 8, 28, 9, 45, tzinfo=EASTERN))
+        retest = staged_trading_timeline_stage(cfg, datetime(2026, 8, 28, 11, 30, tzinfo=EASTERN))
+        final_scan = staged_trading_timeline_stage(cfg, datetime(2026, 8, 28, 13, 30, 1, tzinfo=EASTERN))
+        after = staged_trading_timeline_stage(cfg, datetime(2026, 8, 28, 13, 31, tzinfo=EASTERN))
+
+        self.assertEqual((opening["name"], opening["orb_minutes"], opening["scan_interval_seconds"]), ("opening_orb", 5, 60))
+        self.assertEqual((orb["name"], orb["orb_minutes"], orb["require_retest"], orb["scan_interval_seconds"]), ("orb_15m", 15, False, 300))
+        self.assertEqual((retest["name"], retest["orb_minutes"], retest["require_retest"]), ("break_retest", 15, True))
+        self.assertEqual(final_scan["name"], "break_retest")
+        self.assertFalse(after["entries_allowed"])
 
     def test_normal_entries_pause_before_window_and_until_opening_trade_closes(self):
         waiting = {"status": "WAITING"}
@@ -167,6 +186,7 @@ class OpeningOrbSelectionTests(unittest.TestCase):
                 "ORB Low": 98.5,
                 "ORB Up": True,
                 "ORB Down": False,
+                "Retest Confirmed": True,
                 "PDH Break": True,
                 "PDL Break": False,
                 "Above VWAP": True,
@@ -252,6 +272,9 @@ class OpeningOrbSelectionTests(unittest.TestCase):
         self.assertEqual(recommend_option.call_args.args[1], "HIGH")
         self.assertEqual(recommend_option.call_args.args[5]["_max_contract_cost"], 5_000.0)
         self.assertTrue(all(call.kwargs["min_score"] == 70.0 for call in scan_symbol.call_args_list))
+        self.assertTrue(all(call.kwargs["require_retest"] is False for call in scan_symbol.call_args_list))
+        self.assertTrue(all(call.kwargs["intraday_bar_size"] == "1 min" for call in scan_symbol.call_args_list))
+        self.assertTrue(all(call.kwargs["analysis_bar_minutes"] == 5 for call in scan_symbol.call_args_list))
         self.assertTrue(all(call.args[1] == 90.0 for call in candidate_filter.call_args_list))
 
 

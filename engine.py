@@ -433,9 +433,77 @@ def write_json_file(path: Path, data) -> None:
     tmp.replace(path)
 
 
+def staged_trading_timeline_config(cfg: dict) -> dict:
+    raw = cfg.get("staged_trading_timeline", {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def staged_trading_timeline_stage(cfg: dict, now_et: datetime | None = None) -> dict:
+    """Return the active automatic strategy stage for the current ET time."""
+    now_et = now_et or datetime.now(EASTERN)
+    timeline = staged_trading_timeline_config(cfg)
+    if not bool(timeline.get("enabled", False)):
+        return {"name": "manual", "entries_allowed": True}
+
+    def boundary(hour_key: str, minute_key: str, default_hour: int, default_minute: int) -> datetime:
+        return now_et.replace(
+            hour=int(timeline.get(hour_key, default_hour)),
+            minute=int(timeline.get(minute_key, default_minute)),
+            second=0,
+            microsecond=0,
+        )
+
+    opening_start = boundary("opening_start_hour", "opening_start_minute", 9, 35)
+    opening_end = boundary("opening_end_hour", "opening_end_minute", 9, 45)
+    midday_end = boundary("midday_end_hour", "midday_end_minute", 11, 30)
+    retest_end = boundary("retest_end_hour", "retest_end_minute", 13, 30)
+    if now_et < opening_start:
+        return {"name": "before", "entries_allowed": False}
+    if now_et < opening_end:
+        return {
+            "name": "opening_orb",
+            "entries_allowed": True,
+            "orb_minutes": 5,
+            "require_retest": False,
+            "scan_interval_seconds": max(10, int(timeline.get("opening_scan_interval_seconds", 60))),
+            "first_scan_time": opening_start.time(),
+        }
+    if now_et < midday_end:
+        return {
+            "name": "orb_15m",
+            "entries_allowed": True,
+            "orb_minutes": 15,
+            "require_retest": False,
+            "scan_interval_seconds": max(60, int(timeline.get("orb_scan_interval_seconds", 300))),
+            "first_scan_time": opening_end.time(),
+        }
+    if now_et < retest_end + timedelta(minutes=1):
+        return {
+            "name": "break_retest",
+            "entries_allowed": True,
+            "orb_minutes": 15,
+            "require_retest": True,
+            "scan_interval_seconds": max(60, int(timeline.get("retest_scan_interval_seconds", 300))),
+            "first_scan_time": midday_end.time(),
+        }
+    return {"name": "after", "entries_allowed": False}
+
+
 def opening_orb_trade_config(cfg: dict) -> dict:
     raw = cfg.get("opening_orb_trade", {})
-    return raw if isinstance(raw, dict) else {}
+    opening_cfg = dict(raw) if isinstance(raw, dict) else {}
+    timeline = staged_trading_timeline_config(cfg)
+    if bool(timeline.get("enabled", False)):
+        opening_cfg.update(
+            enabled=True,
+            start_hour=int(timeline.get("opening_start_hour", 9)),
+            start_minute=int(timeline.get("opening_start_minute", 35)),
+            end_hour=int(timeline.get("opening_end_hour", 9)),
+            end_minute=int(timeline.get("opening_end_minute", 45)),
+            orb_minutes=5,
+            scan_interval_seconds=max(10, int(timeline.get("opening_scan_interval_seconds", 60))),
+        )
+    return opening_cfg
 
 
 def opening_orb_trade_window(cfg: dict, now_et: datetime | None = None) -> tuple[datetime, datetime]:
@@ -461,7 +529,7 @@ def opening_orb_trade_window_phase(cfg: dict, now_et: datetime | None = None) ->
     start, end = opening_orb_trade_window(cfg, now_et)
     if now_et < start:
         return "before"
-    if now_et <= end:
+    if now_et < end:
         return "active"
     return "after"
 
@@ -740,6 +808,8 @@ def log_engine_decision(
 def top_candidate_reject_reason(result: dict, strategy: dict) -> str:
     signal = str(result.get("Signal") or "")
     if signal not in {"CALL", "PUT"}:
+        if result.get("Retest Required") and not result.get("Retest Confirmed"):
+            return str(result.get("Retest Reason") or "break-and-retest not confirmed")
         if result.get("Opening Exhaustion Block"):
             return "opening exhaustion block"
         if result.get("Midday Volume Block"):
@@ -763,7 +833,7 @@ def top_candidate_reject_reason(result: dict, strategy: dict) -> str:
     return "scanner filter rejected"
 
 
-def opening_orb_directional_reject_reason(result: dict) -> str:
+def opening_orb_directional_reject_reason(result: dict, require_retest: bool = False) -> str:
     signal = str(result.get("Signal") or "").upper()
     required_by_signal = {
         "CALL": (
@@ -781,7 +851,10 @@ def opening_orb_directional_reject_reason(result: dict) -> str:
     }
     if signal not in required_by_signal:
         return f"normal PMB signal not ready: {signal or 'N/A'}"
-    missing = [label for key, label in required_by_signal[signal] if result.get(key) is not True]
+    required = required_by_signal[signal]
+    if require_retest:
+        required = (("Retest Confirmed", "break-and-retest confirmation"),) + required
+    missing = [label for key, label in required if result.get(key) is not True]
     return f"missing opening conditions: {', '.join(missing)}" if missing else ""
 
 
@@ -868,6 +941,11 @@ def scan_candidate_display_row(
         "price": data.get("Price"),
         "rvol": data.get("RVOL"),
         "atr_pct": data.get("ATR %"),
+        "retest_confirmed": data.get("Retest Confirmed"),
+        "retest_trigger_level": data.get("Retest Trigger Level"),
+        "breakout_time": data.get("Breakout Time"),
+        "retest_time": data.get("Retest Time"),
+        "retest_reason": data.get("Retest Reason"),
         "reasons": data.get("Reasons"),
         "option": option_clean.get("Option") or data.get("Option") or "Not priced",
         "expiry": option_clean.get("Expiry"),
@@ -1355,7 +1433,7 @@ def run_opening_orb_trade_cycle(
     if opening_orb_trade_window_phase(cfg, now_et) != "active":
         return refresh_opening_orb_trade_state(cfg, ib=ib, now_et=now_et)
 
-    strategy = cfg.get("strategy", {})
+    strategy = dict(cfg.get("strategy", {}))
     risk = cfg.get("risk", {})
     order_cfg = cfg.get("order", {})
     telegram = cfg.get("telegram", {})
@@ -1409,6 +1487,9 @@ def run_opening_orb_trade_cycle(
     opening_min_score = float(strategy.get("min_score", 90.0))
     opening_strategy["min_score"] = opening_min_score
     orb_minutes = int(opening_cfg.get("orb_minutes", 5))
+    opening_requires_retest = bool(strategy.get("require_break_retest", False))
+    if bool(staged_trading_timeline_config(cfg).get("enabled", False)):
+        opening_requires_retest = False
     for symbol in watchlist:
         try:
             result = scan_symbol_ib(
@@ -1419,6 +1500,12 @@ def run_opening_orb_trade_cycle(
                 orb_minutes,
                 2,
                 min_score=70.0,
+                require_retest=opening_requires_retest,
+                retest_tolerance_pct=float(strategy.get("retest_tolerance_pct", 0.10)),
+                retest_max_minutes=int(strategy.get("retest_max_minutes", 45)),
+                intraday_duration="2 D",
+                intraday_bar_size="1 min",
+                analysis_bar_minutes=5,
             )
             if not result:
                 log_engine_decision(
@@ -1435,7 +1522,10 @@ def run_opening_orb_trade_cycle(
                     reason="Opening ORB scan did not use today's session",
                 )
                 continue
-            directional_reject_reason = opening_orb_directional_reject_reason(result)
+            directional_reject_reason = opening_orb_directional_reject_reason(
+                result,
+                require_retest=opening_requires_retest,
+            )
             passed_filters = not directional_reject_reason and is_top_candidate(
                 result,
                 opening_min_score,
@@ -1488,7 +1578,7 @@ def run_opening_orb_trade_cycle(
                 finished_at,
                 status="WINDOW_EXPIRED",
                 completed_at=finished_at.isoformat(),
-                reason="No eligible 5-minute ORB break was found by 09:45 ET.",
+                reason="No eligible 5-minute ORB breakout was found by 09:45 ET.",
             )
         write_current_scan_candidates({
             "scan_id": scan_id,
@@ -1700,6 +1790,12 @@ def run_opening_orb_trade_cycle(
                 "rank_score": row["Rank Score"],
                 "orb_high": row.get("ORB High"),
                 "orb_low": row.get("ORB Low"),
+                "retest_confirmed": row.get("Retest Confirmed"),
+                "retest_trigger_level": row.get("Retest Trigger Level"),
+                "breakout_time": row.get("Breakout Time"),
+                "retest_time": row.get("Retest Time"),
+                "retest_minutes_after_breakout": row.get("Retest Minutes After Breakout"),
+                "retest_reason": row.get("Retest Reason"),
                 "rvol": row.get("RVOL"),
                 "atr_pct": row.get("ATR %"),
                 "reasons": row.get("Reasons"),
@@ -1804,7 +1900,7 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
     cfg = load_config()
     mode = cfg.get("account_mode", "Simulation")
     ibs = cfg.get("ib", {})
-    strategy = cfg.get("strategy", {})
+    strategy = dict(cfg.get("strategy", {}))
     risk = cfg.get("risk", {})
     order = cfg.get("order", {})
     telegram = cfg.get("telegram", {})
@@ -1964,10 +2060,24 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
         app_log(f"Risk lock active | consecutive_losses={consecutive_losses} | pnl={realized_pnl_today}", "WARN")
         can_trade = False
 
-    entry_cutoff_time = dtime(int(risk.get("entry_cutoff_hour", 11)), int(risk.get("entry_cutoff_minute", 0)))
-    if datetime.now(EASTERN).time() >= entry_cutoff_time:
+    timeline_stage = staged_trading_timeline_stage(cfg)
+    if timeline_stage.get("name") in {"orb_15m", "break_retest"}:
+        strategy["orb_minutes"] = int(timeline_stage["orb_minutes"])
+        strategy["require_break_retest"] = bool(timeline_stage["require_retest"])
+    timeline_enabled = bool(staged_trading_timeline_config(cfg).get("enabled", False))
+    if timeline_enabled:
+        timeline = staged_trading_timeline_config(cfg)
+        entry_cutoff_time = dtime(
+            int(timeline.get("retest_end_hour", 13)),
+            int(timeline.get("retest_end_minute", 30)),
+        )
+        cutoff_active = not bool(timeline_stage.get("entries_allowed", False))
+    else:
+        entry_cutoff_time = dtime(int(risk.get("entry_cutoff_hour", 11)), int(risk.get("entry_cutoff_minute", 0)))
+        cutoff_active = datetime.now(EASTERN).time() >= entry_cutoff_time
+    if cutoff_active:
         if can_trade:
-            app_log(f"Entry cutoff active after {entry_cutoff_time.strftime('%H:%M')} ET. New orders disabled for this cycle.", "WARN")
+            app_log(f"Entry cutoff active for {timeline_stage.get('name', 'manual')} at {entry_cutoff_time.strftime('%H:%M')} ET. New orders disabled for this cycle.", "WARN")
         can_trade = False
 
     if approval_mode == "Telegram":
@@ -2029,6 +2139,11 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
                 str(strategy.get("active_strategy", "pmb")),
                 int(strategy.get("orb_minutes", 15)),
                 int(strategy.get("min_session_bars", 7)),
+                require_retest=bool(strategy.get("require_break_retest", False)),
+                retest_tolerance_pct=float(strategy.get("retest_tolerance_pct", 0.10)),
+                retest_max_minutes=int(strategy.get("retest_max_minutes", 45)),
+                intraday_bar_size="5 mins",
+                analysis_bar_minutes=5,
             )
             if not result:
                 log_engine_decision(symbol=symbol, decision="SCAN_NO_RESULT", reason="IBKR scan returned no PMB result")
@@ -2526,6 +2641,12 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
                 "rank_score": row["Rank Score"],
                 "orb_high": row.get("ORB High"),
                 "orb_low": row.get("ORB Low"),
+                "retest_confirmed": row.get("Retest Confirmed"),
+                "retest_trigger_level": row.get("Retest Trigger Level"),
+                "breakout_time": row.get("Breakout Time"),
+                "retest_time": row.get("Retest Time"),
+                "retest_minutes_after_breakout": row.get("Retest Minutes After Breakout"),
+                "retest_reason": row.get("Retest Reason"),
                 "pdh": row.get("PDH"),
                 "pdl": row.get("PDL"),
                 "vwap": row.get("VWAP"),
@@ -2779,6 +2900,7 @@ def main() -> None:
     last_opening_scan = 0.0
     next_scan_at: datetime | None = None
     previous_scan_interval = 0
+    previous_schedule_stage = ""
     while True:
         try:
             cfg = load_config()
@@ -2790,6 +2912,14 @@ def main() -> None:
                 int(automation.get("first_scan_hour", 9)),
                 int(automation.get("first_scan_minute", 45)),
             )
+            now_wall = datetime.now(EASTERN)
+            timeline_stage = staged_trading_timeline_stage(cfg, now_wall)
+            schedule_stage = str(timeline_stage.get("name") or "manual")
+            normal_scanner_enabled = schedule_stage not in {"before", "opening_orb", "after"}
+            if schedule_stage in {"orb_15m", "break_retest"}:
+                scan_interval = int(timeline_stage["scan_interval_seconds"])
+                align_scans = True
+                first_scan_time = timeline_stage["first_scan_time"]
             now = time.monotonic()
 
             if now - last_sync >= sync_interval:
@@ -2807,7 +2937,16 @@ def main() -> None:
                 last_sync = last_opening_scan
                 now = last_opening_scan
 
-            if align_scans and scan_interval >= 60 and scan_interval % 60 == 0:
+            if schedule_stage != previous_schedule_stage:
+                next_scan_at = None
+                previous_schedule_stage = schedule_stage
+                app_log(f"Trading timeline stage changed to {schedule_stage}.")
+
+            if not normal_scanner_enabled:
+                next_scan_at = None
+                previous_scan_interval = scan_interval
+                next_scan = 5.0
+            elif align_scans and scan_interval >= 60 and scan_interval % 60 == 0:
                 now_wall = datetime.now(EASTERN)
                 if next_scan_at is None or previous_scan_interval != scan_interval:
                     next_scan_at = next_aligned_scan_time(now_wall, scan_interval, first_scan_time)
