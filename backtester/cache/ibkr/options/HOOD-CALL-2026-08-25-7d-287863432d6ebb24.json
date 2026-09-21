@@ -1,0 +1,9 @@
+{
+  "symbol": "HOOD",
+  "option_dte": 7,
+  "expiry": "20260911",
+  "strike": 109.0,
+  "right": "C",
+  "localSymbol": "HOOD  260911C00109000",
+  "conId": 914623498
+}

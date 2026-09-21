@@ -69,6 +69,7 @@ class SimulatedAccount:
     commissions_paid: float = 0.0
     peak_equity: float | None = None
     max_drawdown: float = 0.0
+    reserved_capital: float = 0.0
 
     def __post_init__(self):
         if self.cash is None:
@@ -78,7 +79,10 @@ class SimulatedAccount:
 
     @property
     def equity(self) -> float:
-        return float(self.cash)
+        # Open long options remain account assets while their purchase cost is
+        # unavailable as buying power. Mark them at cost until their simulated
+        # exit so future outcomes cannot leak into later entry decisions.
+        return float(self.cash) + float(self.reserved_capital)
 
     @property
     def buying_power(self) -> float:
@@ -89,9 +93,11 @@ class SimulatedAccount:
         if amount > self.cash + 1e-9:
             raise ValueError("Insufficient buying power")
         self.cash = round(float(self.cash) - float(amount), 2)
+        self.reserved_capital = round(float(self.reserved_capital) + float(amount), 2)
         self._mark_equity()
 
-    def close_position(self, exit_credit: float, realized_pnl: float, commissions: float) -> None:
+    def close_position(self, entry_cost: float, exit_credit: float, realized_pnl: float, commissions: float) -> None:
+        self.reserved_capital = round(max(0.0, float(self.reserved_capital) - float(entry_cost)), 2)
         self.cash = round(float(self.cash) + float(exit_credit), 2)
         self.realized_pnl = round(float(self.realized_pnl) + float(realized_pnl), 2)
         self.commissions_paid = round(float(self.commissions_paid) + float(commissions), 2)
@@ -323,8 +329,27 @@ def calculate_position_size(
 
 # ---------- Simulation helpers ----------
 
+
+def _completed_bar_view(df: pd.DataFrame, fallback_minutes: int = 5) -> pd.DataFrame:
+    """Expose start-labeled OHLCV bars only when their interval has completed."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    idx = pd.DatetimeIndex(pd.to_datetime(out.index, errors="coerce"))
+    valid = ~pd.isna(idx)
+    out = out.loc[valid].copy()
+    idx = idx[valid]
+    diffs = pd.Series(idx).sort_values().diff().dropna().dt.total_seconds().div(60)
+    regular_diffs = diffs[(diffs > 0) & (diffs <= 120)]
+    minutes = int(round(float(regular_diffs.median()))) if not regular_diffs.empty else int(fallback_minutes)
+    out.index = idx + pd.Timedelta(minutes=max(1, minutes))
+    out.index.name = df.index.name
+    return out[~out.index.duplicated(keep="last")].sort_index()
+
+
 def _future_session_bars(df: pd.DataFrame, entry_ts: pd.Timestamp) -> pd.DataFrame:
-    same_day = df[df.index.date == entry_ts.date()].copy()
+    completed = _completed_bar_view(df)
+    same_day = completed[completed.index.date == entry_ts.date()].copy()
     return same_day[same_day.index >= entry_ts].copy()
 
 
@@ -353,6 +378,7 @@ def _historical_option_session(
         option_bars.index = pd.to_datetime(option_bars.index, errors="coerce").tz_localize(config.timezone)
     else:
         option_bars.index = pd.to_datetime(option_bars.index, errors="coerce").tz_convert(config.timezone)
+    option_bars = _completed_bar_view(option_bars, fallback_minutes=5)
     option_bars = option_bars[option_bars.index.date == entry_ts.date()].copy()
     option_bars = option_bars[option_bars.index >= entry_ts].copy()
     option_bars = option_bars.dropna(subset=["Close"]) if "Close" in option_bars.columns else pd.DataFrame()
@@ -488,7 +514,8 @@ def _simulate_single_trade(
             buying_power_before=sizing.buying_power_before,
         ), daily_capital_used
 
-    initial_stop = entry_premium * (1 - float(config.stop_loss_pct) / 100.0)
+    effective_stop_loss_pct = float(signal_row.get("stop_loss_pct", config.stop_loss_pct))
+    initial_stop = entry_premium * (1 - effective_stop_loss_pct / 100.0)
     take_profit = entry_premium * (1 + float(config.take_profit_pct) / 100.0)
     current_stop = initial_stop
     highest_price = entry_premium
@@ -616,12 +643,8 @@ def _simulate_single_trade(
     return_pct = round((realized_pnl / sizing.entry_cost * 100.0), 2) if sizing.entry_cost else 0.0
     hold_minutes = round(max(0.0, (exit_ts - entry_ts).total_seconds() / 60.0), 1)
 
-    account.close_position(exit_credit=exit_credit, realized_pnl=realized_pnl, commissions=total_commissions)
-    daily_capital_used = (
-        round(float(daily_capital_used) + sizing.entry_cost, 2)
-        if not bool(getattr(config, "recycle_capital_after_exit", False))
-        else round(float(daily_capital_used), 2)
-    )
+    # Capital remains deployed until the event loop reaches this trade's exit.
+    daily_capital_used = round(float(daily_capital_used) + sizing.entry_cost, 2)
 
     trade = {
         "entry_time": entry_ts,
@@ -662,10 +685,12 @@ def _simulate_single_trade(
         "theta_decay_pct": exit_pricing_components.get("theta_decay_pct"),
         "hold_minutes": hold_minutes,
         "exit_reason": exit_reason,
+        "stop_loss_pct": effective_stop_loss_pct,
+        "timeline_stage": signal_row.get("timeline_stage"),
         "buying_power_before": sizing.buying_power_before,
         "buying_power_after_entry": sizing.buying_power_after_entry,
-        "buying_power_after_exit": round(account.buying_power, 2),
-        "account_equity": round(account.equity, 2),
+        "buying_power_after_exit": None,
+        "account_equity": None,
         "daily_capital_used": daily_capital_used,
         "rvol": signal_row.get("rvol"),
         "atr_pct": signal_row.get("atr_pct"),
@@ -697,10 +722,12 @@ def _simulate_single_trade(
         max_contracts=(int(config.max_contracts) if int(config.max_contracts or 0) > 0 else "unlimited"),
         buying_power_before=sizing.buying_power_before,
         buying_power_after_entry=sizing.buying_power_after_entry,
-        buying_power_after_exit=round(account.buying_power, 2),
+        buying_power_after_exit=None,
         estimated_cost=sizing.entry_cost,
         exit_credit=exit_credit,
         exit_reason=exit_reason,
+        stop_loss_pct=effective_stop_loss_pct,
+        timeline_stage=signal_row.get("timeline_stage"),
         underlying_move_pct=round(((exit_underlying - entry_underlying) / entry_underlying) * 100.0, 4) if entry_underlying else 0.0,
         option_return_pct=round(((exit_premium - entry_premium) / entry_premium) * 100.0, 2) if entry_premium else 0.0,
         pricing_model=exit_pricing_components.get("pricing_model"),
@@ -709,7 +736,7 @@ def _simulate_single_trade(
         theta_decay_pct=exit_pricing_components.get("theta_decay_pct"),
         realized_pnl=realized_pnl,
         directional_guard_applied=directional_guard_applied,
-        account_equity=round(account.equity, 2),
+        account_equity=None,
         daily_capital_used=daily_capital_used,
     )
     return trade, decision, daily_capital_used
@@ -734,8 +761,18 @@ def simulate_option_trades_with_decisions(
         return pd.DataFrame(), pd.DataFrame([{"status": "REJECTED", "stage": "VALIDATION", "reason": "Signals table has no timestamp column"}])
 
     sig["_ts"] = pd.to_datetime(sig["timestamp"], errors="coerce", utc=True)
-    sort_col = "symbol" if "symbol" in sig.columns else sig.columns[0]
-    sig = sig.dropna(subset=["_ts"]).sort_values(["_ts", sort_col])
+    sort_cols = ["_ts"]
+    ascending = [True]
+    if "selection_rank" in sig.columns:
+        sort_cols.append("selection_rank")
+        ascending.append(True)
+    elif "rank_score" in sig.columns:
+        sort_cols.append("rank_score")
+        ascending.append(False)
+    if "symbol" in sig.columns:
+        sort_cols.append("symbol")
+        ascending.append(True)
+    sig = sig.dropna(subset=["_ts"]).sort_values(sort_cols, ascending=ascending)
 
     trades: list[dict] = []
     decisions: list[dict] = []
@@ -745,93 +782,137 @@ def simulate_option_trades_with_decisions(
     day_realized_pnl: dict[str, float] = {}
     day_consecutive_losses: dict[str, int] = {}
     traded_symbols_by_day: dict[str, set[str]] = {}
+    pending_positions: list[tuple[dict, dict]] = []
+
+    def settle_positions(cutoff: pd.Timestamp | None = None) -> None:
+        nonlocal pending_positions
+        due: list[tuple[dict, dict]] = []
+        remaining: list[tuple[dict, dict]] = []
+        for pending in pending_positions:
+            exit_ts = _normalize_timestamp(pending[0].get("exit_time"), config.timezone)
+            if cutoff is None or (exit_ts is not None and exit_ts <= cutoff):
+                due.append(pending)
+            else:
+                remaining.append(pending)
+        pending_positions = remaining
+
+        due.sort(key=lambda pending: (
+            _normalize_timestamp(pending[0].get("exit_time"), config.timezone),
+            _normalize_timestamp(pending[0].get("entry_time"), config.timezone),
+            str(pending[0].get("symbol") or ""),
+        ))
+        for trade, decision in due:
+            entry_cost = float(trade.get("estimated_cost", 0.0) or 0.0)
+            account.close_position(
+                entry_cost=entry_cost,
+                exit_credit=float(trade.get("exit_credit", 0.0) or 0.0),
+                realized_pnl=float(trade.get("realized_pnl", 0.0) or 0.0),
+                commissions=float(trade.get("commissions", 0.0) or 0.0),
+            )
+            day_key = str(trade.get("date") or "")
+            if bool(getattr(config, "recycle_capital_after_exit", False)):
+                day_capital_used[day_key] = round(
+                    max(0.0, float(day_capital_used.get(day_key, 0.0)) - entry_cost),
+                    2,
+                )
+            trade_pnl = float(trade.get("realized_pnl", 0.0) or 0.0)
+            day_realized_pnl[day_key] = round(float(day_realized_pnl.get(day_key, 0.0)) + trade_pnl, 2)
+            day_consecutive_losses[day_key] = day_consecutive_losses.get(day_key, 0) + 1 if trade_pnl < 0 else 0
+            trade["buying_power_after_exit"] = round(account.buying_power, 2)
+            trade["account_equity"] = round(account.equity, 2)
+            trade["cumulative_pnl"] = round(account.realized_pnl, 2)
+            decision["buying_power_after_exit"] = round(account.buying_power, 2)
+            decision["account_equity"] = round(account.equity, 2)
 
     if not clean_data:
         for _, row in sig.iterrows():
             decisions.append(_base_decision(row.dropna().to_dict(), "REJECTED", "No clean historical data available for simulator", "DATA"))
         return pd.DataFrame(), pd.DataFrame(decisions)
 
-    for _, row in sig.iterrows():
-        row_dict = row.dropna().to_dict()
-        ts = _normalize_timestamp(row_dict.get("timestamp"), config.timezone)
-        symbol = str(row_dict.get("symbol") or row_dict.get("Symbol") or "").upper()
-        if ts is None:
-            decisions.append(_base_decision(row_dict, "REJECTED", "Invalid timestamp", "VALIDATION"))
-            continue
-        day_key = ts.date().isoformat()
+    for signal_time, signal_group in sig.groupby("_ts", sort=True):
+        group_ts = _normalize_timestamp(signal_time, config.timezone)
+        if group_ts is not None:
+            settle_positions(group_ts)
 
-        day_start_equity.setdefault(day_key, float(account.equity))
-        max_daily_loss = -abs(float(day_start_equity[day_key]) * float(getattr(config, "max_daily_drawdown_pct", 5.0)) / 100.0)
+        for _, row in signal_group.iterrows():
+            row_dict = row.dropna().to_dict()
+            ts = _normalize_timestamp(row_dict.get("timestamp"), config.timezone)
+            symbol = str(row_dict.get("symbol") or row_dict.get("Symbol") or "").upper()
+            if ts is None:
+                decisions.append(_base_decision(row_dict, "REJECTED", "Invalid timestamp", "VALIDATION"))
+                continue
+            day_key = ts.date().isoformat()
 
-        if ts.time() > getattr(config, "entry_cutoff_time", dtime(11, 0)):
-            decisions.append(_base_decision(
-                row_dict,
-                "SKIPPED",
-                "Entry cutoff time passed",
-                "RISK",
-                entry_cutoff_time=str(getattr(config, "entry_cutoff_time", dtime(11, 0))),
-                buying_power_before=round(account.buying_power, 2),
-            ))
-            continue
-        if day_consecutive_losses.get(day_key, 0) >= int(getattr(config, "max_consecutive_losses", 2)):
-            decisions.append(_base_decision(
-                row_dict,
-                "SKIPPED",
-                "Consecutive loss risk lock active",
-                "RISK",
-                consecutive_losses=day_consecutive_losses.get(day_key, 0),
-                max_consecutive_losses=int(getattr(config, "max_consecutive_losses", 2)),
-                buying_power_before=round(account.buying_power, 2),
-            ))
-            continue
-        if float(day_realized_pnl.get(day_key, 0.0)) <= max_daily_loss:
-            decisions.append(_base_decision(
-                row_dict,
-                "SKIPPED",
-                "Daily drawdown risk lock active",
-                "RISK",
-                realized_pnl_today=round(float(day_realized_pnl.get(day_key, 0.0)), 2),
-                max_daily_loss=round(float(max_daily_loss), 2),
-                buying_power_before=round(account.buying_power, 2),
-            ))
-            continue
-        if day_trade_counts.get(day_key, 0) >= int(config.max_trades_per_day):
-            decisions.append(_base_decision(row_dict, "SKIPPED", "Max trades/day reached", "RISK", max_trades_per_day=int(config.max_trades_per_day), buying_power_before=round(account.buying_power, 2)))
-            continue
-        if not config.allow_same_symbol_same_day and symbol in traded_symbols_by_day.get(day_key, set()):
-            decisions.append(_base_decision(row_dict, "SKIPPED", "Same symbol already traded that day", "RISK", buying_power_before=round(account.buying_power, 2)))
-            continue
+            day_start_equity.setdefault(day_key, float(account.equity))
+            max_daily_loss = -abs(float(day_start_equity[day_key]) * float(getattr(config, "max_daily_drawdown_pct", 5.0)) / 100.0)
 
-        trade, decision, new_daily_used = _simulate_single_trade(
-            row_dict,
-            clean_data,
-            config,
-            account,
-            day_capital_used.get(day_key, 0.0),
-            day_start_equity.get(day_key, float(account.equity)),
-            max(0, int(config.max_trades_per_day) - day_trade_counts.get(day_key, 0)),
-        )
-        if trade is None:
+            if ts.time() > getattr(config, "entry_cutoff_time", dtime(11, 0)):
+                decisions.append(_base_decision(
+                    row_dict,
+                    "SKIPPED",
+                    "Entry cutoff time passed",
+                    "RISK",
+                    entry_cutoff_time=str(getattr(config, "entry_cutoff_time", dtime(11, 0))),
+                    buying_power_before=round(account.buying_power, 2),
+                ))
+                continue
+            if day_consecutive_losses.get(day_key, 0) >= int(getattr(config, "max_consecutive_losses", 2)):
+                decisions.append(_base_decision(
+                    row_dict,
+                    "SKIPPED",
+                    "Consecutive loss risk lock active",
+                    "RISK",
+                    consecutive_losses=day_consecutive_losses.get(day_key, 0),
+                    max_consecutive_losses=int(getattr(config, "max_consecutive_losses", 2)),
+                    buying_power_before=round(account.buying_power, 2),
+                ))
+                continue
+            if float(day_realized_pnl.get(day_key, 0.0)) <= max_daily_loss:
+                decisions.append(_base_decision(
+                    row_dict,
+                    "SKIPPED",
+                    "Daily drawdown risk lock active",
+                    "RISK",
+                    realized_pnl_today=round(float(day_realized_pnl.get(day_key, 0.0)), 2),
+                    max_daily_loss=round(float(max_daily_loss), 2),
+                    buying_power_before=round(account.buying_power, 2),
+                ))
+                continue
+            if day_trade_counts.get(day_key, 0) >= int(config.max_trades_per_day):
+                decisions.append(_base_decision(row_dict, "SKIPPED", "Max trades/day reached", "RISK", max_trades_per_day=int(config.max_trades_per_day), buying_power_before=round(account.buying_power, 2)))
+                continue
+            if not config.allow_same_symbol_same_day and symbol in traded_symbols_by_day.get(day_key, set()):
+                decisions.append(_base_decision(row_dict, "SKIPPED", "Same symbol already traded that day", "RISK", buying_power_before=round(account.buying_power, 2)))
+                continue
+
+            trade, decision, new_daily_used = _simulate_single_trade(
+                row_dict,
+                clean_data,
+                config,
+                account,
+                day_capital_used.get(day_key, 0.0),
+                day_start_equity.get(day_key, float(account.equity)),
+                max(0, int(config.max_trades_per_day) - day_trade_counts.get(day_key, 0)),
+            )
+            if trade is None:
+                decisions.append(decision)
+                continue
+
+            trades.append(trade)
+            pending_positions.append((trade, decision))
+            day_trade_counts[day_key] = day_trade_counts.get(day_key, 0) + 1
+            day_capital_used[day_key] = new_daily_used
+            traded_symbols_by_day.setdefault(day_key, set()).add(symbol)
+            decision["trade_no"] = len(trades)
             decisions.append(decision)
-            continue
 
-        trades.append(trade)
-        day_trade_counts[day_key] = day_trade_counts.get(day_key, 0) + 1
-        day_capital_used[day_key] = new_daily_used
-        trade_pnl = float(trade.get("realized_pnl", 0.0) or 0.0)
-        day_realized_pnl[day_key] = round(float(day_realized_pnl.get(day_key, 0.0)) + trade_pnl, 2)
-        day_consecutive_losses[day_key] = day_consecutive_losses.get(day_key, 0) + 1 if trade_pnl < 0 else 0
-        traded_symbols_by_day.setdefault(day_key, set()).add(symbol)
-        decision["trade_no"] = len(trades)
-        decisions.append(decision)
+    settle_positions()
 
     trades_df = pd.DataFrame(trades)
     if not trades_df.empty:
         trades_df = trades_df.sort_values("entry_time").reset_index(drop=True)
         trades_df["trade_no"] = trades_df.index + 1
-        # Account equity is already recorded after each exit; keep cumulative P/L too.
-        trades_df["cumulative_pnl"] = pd.to_numeric(trades_df["realized_pnl"], errors="coerce").fillna(0.0).cumsum()
-        trades_df["equity"] = pd.to_numeric(trades_df["account_equity"], errors="coerce").fillna(float(config.starting_capital) + trades_df["cumulative_pnl"])
+        trades_df["equity"] = pd.to_numeric(trades_df["account_equity"], errors="coerce")
 
     decisions_df = pd.DataFrame(decisions)
     if not decisions_df.empty:
@@ -864,19 +945,23 @@ def summarize_trades(trades: pd.DataFrame, starting_capital: float = 1000.0) -> 
             "avg_loss": 0.0,
             "commissions": 0.0,
         }
-    pnl = pd.to_numeric(trades["realized_pnl"], errors="coerce").fillna(0.0)
+    chronological = trades.copy()
+    if "exit_time" in chronological.columns:
+        chronological["_exit_ts"] = pd.to_datetime(chronological["exit_time"], errors="coerce", utc=True)
+        chronological = chronological.sort_values(["_exit_ts", "symbol"] if "symbol" in chronological.columns else ["_exit_ts"])
+    pnl = pd.to_numeric(chronological["realized_pnl"], errors="coerce").fillna(0.0)
     wins = pnl[pnl > 0]
     losses = pnl[pnl < 0]
     net = float(pnl.sum())
-    if "equity" in trades.columns:
-        equity = pd.to_numeric(trades["equity"], errors="coerce").fillna(float(starting_capital) + pnl.cumsum())
+    if "equity" in chronological.columns:
+        equity = pd.to_numeric(chronological["equity"], errors="coerce").fillna(float(starting_capital) + pnl.cumsum())
     else:
         equity = float(starting_capital) + pnl.cumsum()
-    running_max = equity.cummax()
+    running_max = equity.cummax().clip(lower=float(starting_capital))
     dd = equity - running_max
     gross_profit = float(wins.sum()) if len(wins) else 0.0
     gross_loss = abs(float(losses.sum())) if len(losses) else 0.0
-    commissions = float(pd.to_numeric(trades.get("commissions", 0), errors="coerce").fillna(0).sum()) if hasattr(trades.get("commissions", 0), "sum") else 0.0
+    commissions = float(pd.to_numeric(chronological.get("commissions", 0), errors="coerce").fillna(0).sum()) if hasattr(chronological.get("commissions", 0), "sum") else 0.0
     return {
         "total_trades": int(len(trades)),
         "net_pnl": round(net, 2),

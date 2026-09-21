@@ -53,9 +53,10 @@ DEFAULT_WATCHLIST = [
     "SPY", "QQQ", "IWM",
     "NVDA", "AAPL", "MSFT", "META", "AMZN", "GOOGL",
     "TSLA", "AMD", "PLTR", "COIN", "MSTR",
-    "AVGO", "SMCI", "MU", "ARM", "TSM", "MRVL",
+    "MU", "TSM", "MRVL",
     "JPM", "GS", "BAC", "NFLX", "UBER", "XOM", "COST",
     "RBLX", "HOOD", "SOFI", "RKLB", "HIMS", "CRWD",
+    "SPCX", "NOK", "INTC", "ORCL",
 ]
 
 # Alias detection is deliberately watchlist-focused. This avoids false positives from common words.
@@ -72,10 +73,7 @@ COMPANY_ALIASES: dict[str, list[str]] = {
     "COIN": ["coinbase"],
     "MSTR": ["microstrategy", "michael saylor", "bitcoin treasury"],
     "TSM": ["taiwan semiconductor", "tsmc"],
-    "AVGO": ["broadcom"],
-    "SMCI": ["super micro", "supermicro"],
     "MU": ["micron"],
-    "ARM": ["arm holdings"],
     "MRVL": ["marvell"],
     "JPM": ["jpmorgan", "jp morgan", "jamie dimon"],
     "GS": ["goldman sachs"],
@@ -90,6 +88,10 @@ COMPANY_ALIASES: dict[str, list[str]] = {
     "RKLB": ["rocket lab"],
     "HIMS": ["hims", "hers health"],
     "CRWD": ["crowdstrike"],
+    "SPCX": ["spacex", "space exploration technologies", "starlink"],
+    "NOK": ["nokia"],
+    "INTC": ["intel"],
+    "ORCL": ["oracle", "larry ellison"],
 }
 
 CATEGORY_KEYWORDS: dict[str, list[str]] = {

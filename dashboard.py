@@ -965,6 +965,9 @@ def render_platform_settings():
         opening_cfg.setdefault("orb_minutes", 5)
         opening_cfg.setdefault("capital_pct", 50.0)
         opening_cfg.setdefault("scan_interval_seconds", 30)
+        opening_cfg.setdefault("min_score", 94.0)
+        opening_cfg.setdefault("min_rvol", 1.5)
+        opening_cfg.setdefault("stop_loss_pct", 5.0)
         opening_cfg["enabled"] = st.toggle(
             "Enable 09:35 opening ORB trade",
             value=bool(opening_cfg.get("enabled", False)),
@@ -976,7 +979,11 @@ def render_platform_settings():
         opening_detail = ""
         if opening_state.get("symbol"):
             opening_detail = f" | {opening_state.get('symbol')} {opening_state.get('signal') or ''}".rstrip()
-        st.caption(f"Opening ORB: {opening_status}{opening_detail} | 09:35-09:45 ET | score 90+ | all conditions | max 50% capital")
+        st.caption(
+            f"Opening ORB: {opening_status}{opening_detail} | 09:35-09:45 ET | "
+            f"5m ORB | score {float(opening_cfg['min_score']):g}+ | "
+            f"RVOL {float(opening_cfg['min_rvol']):g}+ | 5% option stop | max 50% capital"
+        )
         current_approval_mode = approval_mode_from_config(cfg)
         cfg["automation"]["approval_mode"] = st.selectbox(
             "Entry approval mode",
@@ -1100,6 +1107,11 @@ def render_platform_settings():
 
         account_size = max(float(r.get("account_size", 1000) or 1000), 1.0)
         r["max_trades_per_day"] = st.number_input("Max trades per day", value=int(r.get("max_trades_per_day", 2)), min_value=1, max_value=10, step=1, disabled=preset_locked)
+        r["allow_same_symbol_same_day"] = st.checkbox(
+            "Allow the live engine to trade the same ticker more than once per day",
+            value=bool(r.get("allow_same_symbol_same_day", False)),
+            help="When disabled, an automatic entry blocks that ticker from further automatic entries until the next market day, even after the position closes.",
+        )
         s["top_n_tickers"] = st.number_input("Trade only top N tickers", value=int(s.get("top_n_tickers", 2)), min_value=1, max_value=10, step=1, disabled=preset_locked)
         default_trade_pct = float(r.get("max_spend_per_trade_pct", 0) or 0)
         if default_trade_pct <= 0:
@@ -2242,12 +2254,13 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
     readonly = bool(cfg_snapshot.get("ib", {}).get("readonly", False))
     active_positions = read_active_positions()
 
-    st.markdown("### Bot-Managed Positions")
+    st.markdown("### Open Position Monitor")
     if not active_positions:
-        st.info("No bot-managed positions. Engine is waiting for a valid signal.")
+        st.info("No open positions are being monitored.")
         return
 
     for idx, position in enumerate(active_positions):
+        monitor_only = is_monitor_only_position(position)
         position_id = str(position.get("id") or f"{position.get('symbol')}_{idx}")
         estimated_cost = (
             float(_number_or_none(position.get("entry_price")) or 0)
@@ -2281,7 +2294,9 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
         else:
             checked_label = "Not checked"
         protection_status = str(position.get("protective_orders_status") or "Unknown")
-        close_disabled = not orders_unlocked or readonly
+        stop_display = "Disabled" if monitor_only else _fmt_money_cell(position.get("current_stop_price"))
+        take_profit_display = "Disabled" if monitor_only else _fmt_money_cell(position.get("take_profit_price"))
+        close_disabled = monitor_only or not orders_unlocked or readonly
 
         with st.container(key=f"bot-position-card-{pnl_tone}-{idx}"):
             row_cols = st.columns([2.0, 3.0, 2.6, 1.4])
@@ -2303,8 +2318,8 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Value</div><div style="font-weight:800;">{_fmt_money_cell(market_value)}</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">P/L</div><div style="color:{pnl_color};font-weight:800;">{_fmt_money_cell(unrealized_pnl)} ({_fmt_pct_cell(unrealized_pct)})</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Premium</div><div style="font-weight:800;">{_fmt_pct_cell(premium_change_pct)}</div></div>
-                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Stop</div><div style="font-weight:800;">{_fmt_money_cell(position.get("current_stop_price"))}</div></div>
-                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">TP</div><div style="font-weight:800;">{_fmt_money_cell(position.get("take_profit_price"))}</div></div>
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Stop</div><div style="font-weight:800;">{stop_display}</div></div>
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">TP</div><div style="font-weight:800;">{take_profit_display}</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Bid / Ask</div><div style="font-weight:800;">{_fmt_money_cell(position.get("current_bid"))} / {_fmt_money_cell(position.get("current_ask"))}</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Delta</div><div style="font-weight:800;">{_fmt_pct_cell((_number_or_none(position.get("current_delta")) or 0) * 100) if _number_or_none(position.get("current_delta")) is not None else "N/A"}</div></div>
                     </div>
@@ -2322,11 +2337,14 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
                 if market_source:
                     quote_label += f" via {market_source}"
                 st.caption(f"{quote_label} | Updated {checked_label}")
-                st.caption(
-                    f"Protection: {protection_status} | "
-                    f"BE {'on' if position.get('breakeven_active') else 'off'} | "
-                    f"Trail {'on' if position.get('trailing_active') else 'off'}"
-                )
+                if monitor_only:
+                    st.caption("Manual order | Monitor only | All exit controls disabled")
+                else:
+                    st.caption(
+                        f"Protection: {protection_status} | "
+                        f"BE {'on' if position.get('breakeven_active') else 'off'} | "
+                        f"Trail {'on' if position.get('trailing_active') else 'off'}"
+                    )
             with row_cols[3]:
                 if st.button(
                     "Close Position",
@@ -2335,7 +2353,10 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
                     icon=":material/close:",
                     use_container_width=True,
                     disabled=close_disabled,
-                    help="Submit a market sell order for this option position.",
+                    help=(
+                        "Manual-order positions must be closed directly in IBKR."
+                        if monitor_only else "Submit a market sell order for this option position."
+                    ),
                 ):
                     close_ib = None
                     try:
@@ -2387,7 +2408,9 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
                                 close_ib.disconnect()
                         except Exception:
                             pass
-                if close_disabled:
+                if monitor_only:
+                    st.caption("Close in IBKR; PulseTrade monitors this position only.")
+                elif close_disabled:
                     st.caption("Order safety gates required.")
 
 
@@ -2719,7 +2742,12 @@ def manual_option_chain_for_price(ib, symbol: str, stock, stock_price: float, dt
     return best[5], best[6]
 
 
-def load_manual_option_defaults(symbol: str, signal: str, dte_target: int) -> dict:
+def load_manual_option_defaults(
+    symbol: str,
+    signal: str,
+    dte_target: int,
+    requested_strike: float | None = None,
+) -> dict:
     ib = connect_ib(dashboard_ib_cfg(302, readonly=True))
     ib.RequestTimeout = 4
     try:
@@ -2736,16 +2764,31 @@ def load_manual_option_defaults(symbol: str, signal: str, dte_target: int) -> di
             raise ValueError(f"No option chain found for {symbol}.")
 
         right = "C" if signal == "CALL" else "P"
-        ranked_strikes = sorted(strikes, key=lambda value: abs(float(value) - float(stock_price)))
+        requested_strike = _number_or_none(requested_strike)
+        if requested_strike is not None and requested_strike > 0:
+            strike = min(strikes, key=lambda value: abs(float(value) - requested_strike))
+            if abs(float(strike) - requested_strike) > 0.0001:
+                nearby = sorted(strikes, key=lambda value: abs(float(value) - requested_strike))[:5]
+                nearby_text = ", ".join(f"{value:g}" for value in nearby)
+                raise ValueError(
+                    f"Strike {requested_strike:g} is not available for expiry {expiry}. "
+                    f"Nearest strikes: {nearby_text}."
+                )
+            candidate_strikes = [float(strike)]
+        else:
+            candidate_strikes = sorted(strikes, key=lambda value: abs(float(value) - float(stock_price)))[:48]
         candidate_contracts = [
             Option(symbol, expiry, float(candidate_strike), right, "SMART", currency="USD", multiplier="100")
-            for candidate_strike in ranked_strikes[:48]
+            for candidate_strike in candidate_strikes
         ]
         qualified_contracts = ib.qualifyContracts(*candidate_contracts)
-        contract = min(
-            qualified_contracts,
-            key=lambda qualified_contract: abs(float(getattr(qualified_contract, "strike", 0) or 0) - float(stock_price)),
-        ) if qualified_contracts else None
+        contract = (
+            min(
+                qualified_contracts,
+                key=lambda qualified_contract: abs(float(getattr(qualified_contract, "strike", 0) or 0) - float(stock_price)),
+            )
+            if qualified_contracts else None
+        )
         strike = float(getattr(contract, "strike", 0) or 0) if contract is not None else None
         if contract is None or strike is None:
             raise ValueError(f"No qualified {signal} option contract found near ${float(stock_price):.2f} for {symbol}.")
@@ -2768,14 +2811,38 @@ def load_manual_option_defaults(symbol: str, signal: str, dte_target: int) -> di
         elif price_source != "quote mid":
             quote_warning = f"Used {price_source}; live bid/ask midpoint was unavailable."
 
+        def clean_market_value(field: str, digits: int = 4) -> float | None:
+            value = _number_or_none(option_market.get(field))
+            if value is None or pd.isna(value):
+                return None
+            return round(float(value), digits)
+
+        delta = clean_market_value("Delta")
+        delta_rating = rate_option_delta(
+            delta,
+            signal,
+            load_config().get("option_filters", {}),
+        )
+
         return {
             "expiry": expiry,
             "strike": float(strike),
             "mid": round(float(mid), 2),
             "limit": round(float(mid), 2),
             "underlying": round(float(stock_price), 2),
-            "bid": None if pd.isna(option_market.get("Bid")) else round(float(option_market.get("Bid")), 2),
-            "ask": None if pd.isna(option_market.get("Ask")) else round(float(option_market.get("Ask")), 2),
+            "bid": clean_market_value("Bid", 2),
+            "ask": clean_market_value("Ask", 2),
+            "spread_pct": (
+                round(float(option_market.get("Spread %")) * 100, 2)
+                if clean_market_value("Spread %") is not None else None
+            ),
+            "delta": delta,
+            "gamma": clean_market_value("Gamma", 5),
+            "theta": clean_market_value("Theta", 4),
+            "vega": clean_market_value("Vega", 4),
+            "implied_vol": clean_market_value("Implied Vol", 4),
+            "greek_source": str(option_market.get("Greek Source") or ""),
+            "delta_rating": delta_rating,
             "warning": quote_warning,
         }
     finally:
@@ -2971,7 +3038,7 @@ def render_yahoo_backtester_tab(config: dict, default_symbols: list[str]):
     with c2:
         interval = st.selectbox("Candle interval", ["5m", "15m", "30m", "60m", "1d"], index=0, key="bt_interval")
     with c3:
-        max_symbols = st.number_input("Max symbols", min_value=1, max_value=20, value=min(5, max(1, len(default_symbols))), step=1, key="bt_max_symbols")
+        max_symbols = st.number_input("Max symbols", min_value=1, max_value=34, value=min(5, max(1, len(default_symbols))), step=1, key="bt_max_symbols")
     with c4:
         force_refresh = st.checkbox("Force Yahoo refresh", value=False, key="bt_force_refresh")
 
@@ -4510,20 +4577,45 @@ elif selected_page == "💼 Positions":
         st.session_state.setdefault("manual_order_limit", 0.0)
         st.session_state.setdefault("manual_order_mid", 0.0)
         st.session_state.setdefault("manual_order_underlying", None)
+        st.session_state.setdefault("manual_order_requested_strike", 0.0)
+        st.session_state.setdefault("manual_order_loaded_contract", None)
+        st.session_state.setdefault("manual_order_contract_details", None)
 
         m1, m2, m3, m4 = st.columns(4)
         manual_symbol = m1.text_input("Symbol", value="SPY", key="manual_order_symbol").strip().upper()
         manual_signal = m2.selectbox("Option side", ["CALL", "PUT"], key="manual_order_signal")
         manual_dte = m3.selectbox("Expiry target", [7, 14, 30, 45], format_func=lambda days: f"{days} DTE", key="manual_order_dte")
-        m4.markdown("<div style='height:1.72rem'></div>", unsafe_allow_html=True)
-        if m4.button("Load IBKR Defaults", use_container_width=True):
+        manual_requested_strike = m4.number_input(
+            "Strike",
+            min_value=0.0,
+            step=0.5,
+            key="manual_order_requested_strike",
+            help="Enter the exact strike, or leave 0 to select the nearest ATM strike.",
+        )
+        if st.button("Load IBKR Contract", icon=":material/search:", use_container_width=True):
+            st.session_state["manual_order_loaded_contract"] = None
+            st.session_state["manual_order_contract_details"] = None
             try:
-                defaults = load_manual_option_defaults(manual_symbol, manual_signal, int(manual_dte))
+                defaults = load_manual_option_defaults(
+                    manual_symbol,
+                    manual_signal,
+                    int(manual_dte),
+                    requested_strike=float(manual_requested_strike),
+                )
                 st.session_state["manual_order_expiry"] = defaults["expiry"]
                 st.session_state["manual_order_strike"] = defaults["strike"]
                 st.session_state["manual_order_mid"] = defaults["mid"]
                 st.session_state["manual_order_limit"] = defaults["limit"]
                 st.session_state["manual_order_underlying"] = defaults.get("underlying")
+                st.session_state["manual_order_loaded_contract"] = {
+                    "symbol": manual_symbol,
+                    "signal": manual_signal,
+                    "dte": int(manual_dte),
+                    "requested_strike": float(manual_requested_strike),
+                    "expiry": defaults["expiry"],
+                    "strike": defaults["strike"],
+                }
+                st.session_state["manual_order_contract_details"] = defaults
                 st.success(
                     f"Loaded {manual_symbol} {manual_signal}: "
                     f"{defaults['expiry']} {defaults['strike']:g} | mid ${defaults['mid']:.2f}"
@@ -4535,13 +4627,68 @@ elif selected_page == "💼 Positions":
 
         m5, m6, m7, m8 = st.columns(4)
         manual_expiry = m5.text_input("Resolved expiry", key="manual_order_expiry", disabled=True).strip()
-        manual_strike = m6.number_input("ATM strike", min_value=0.0, step=0.5, key="manual_order_strike")
+        manual_strike = m6.number_input("Resolved strike", min_value=0.0, step=0.5, key="manual_order_strike", disabled=True)
         manual_mid = m7.number_input("Estimated mid", min_value=0.0, step=0.05, key="manual_order_mid")
         manual_limit = m8.number_input("Limit price", min_value=0.0, step=0.05, key="manual_order_limit")
 
         m9, m10 = st.columns(2)
         manual_qty = m9.number_input("Quantity", value=1, min_value=1, step=1, key="manual_order_qty")
         manual_order_type = m10.selectbox("Order type", ["LIMIT", "MARKET"], key="manual_order_type")
+
+        loaded_contract = st.session_state.get("manual_order_loaded_contract")
+        loaded_matches_request = (
+            isinstance(loaded_contract, dict)
+            and loaded_contract.get("symbol") == manual_symbol
+            and loaded_contract.get("signal") == manual_signal
+            and int(loaded_contract.get("dte") or 0) == int(manual_dte)
+            and abs(float(loaded_contract.get("requested_strike") or 0) - float(manual_requested_strike)) < 0.0001
+        )
+        contract_details = st.session_state.get("manual_order_contract_details") if loaded_matches_request else None
+        if isinstance(contract_details, dict):
+            st.markdown("#### Contract Greeks")
+            delta_value = _number_or_none(contract_details.get("delta"))
+            gamma_value = _number_or_none(contract_details.get("gamma"))
+            theta_value = _number_or_none(contract_details.get("theta"))
+            vega_value = _number_or_none(contract_details.get("vega"))
+            iv_value = _number_or_none(contract_details.get("implied_vol"))
+            delta_rating = contract_details.get("delta_rating") if isinstance(contract_details.get("delta_rating"), dict) else {}
+            rating_label = str(delta_rating.get("label") or "Unavailable")
+            rating_score = _number_or_none(delta_rating.get("score"))
+            greek_values = [
+                ("Delta", "N/A" if delta_value is None else f"{delta_value:.4f}"),
+                ("Gamma", "N/A" if gamma_value is None else f"{gamma_value:.5f}"),
+                ("Theta", "N/A" if theta_value is None else f"{theta_value:.4f}"),
+                ("Vega", "N/A" if vega_value is None else f"{vega_value:.4f}"),
+                ("IV", "N/A" if iv_value is None else f"{iv_value * 100:.1f}%"),
+                ("Delta rating", rating_label if rating_score is None else f"{rating_label} {rating_score:.0f}/100"),
+            ]
+            greek_cells = "".join(
+                f'<div style="padding:.55rem .7rem;min-width:0;">'
+                f'<div style="color:#94a3b8;font-size:.78rem;font-weight:700;">{html.escape(label)}</div>'
+                f'<div style="font-size:1.02rem;font-weight:800;overflow-wrap:anywhere;">{html.escape(value)}</div>'
+                f'</div>'
+                for label, value in greek_values
+            )
+            st.markdown(
+                f'<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));'
+                f'border-top:1px solid rgba(148,163,184,.25);border-bottom:1px solid rgba(148,163,184,.25);'
+                f'margin-bottom:.65rem;">{greek_cells}</div>',
+                unsafe_allow_html=True,
+            )
+            rating_message = str(delta_rating.get("detail") or "IBKR did not return a live delta.")
+            if rating_label in {"Excellent", "Good"}:
+                st.success(rating_message)
+            else:
+                st.warning(rating_message)
+            bid_value = _number_or_none(contract_details.get("bid"))
+            ask_value = _number_or_none(contract_details.get("ask"))
+            spread_value = _number_or_none(contract_details.get("spread_pct"))
+            greek_source = str(contract_details.get("greek_source") or "unavailable")
+            st.caption(
+                f"Greeks source: {greek_source} | "
+                f"Bid / Ask: {_fmt_money_cell(bid_value)} / {_fmt_money_cell(ask_value)} | "
+                f"Spread: {_fmt_pct_cell(spread_value)}"
+            )
 
         def build_manual_order_payload() -> dict:
             option_label = f"{manual_symbol} {manual_expiry} {manual_strike:g} {manual_signal}"
@@ -4552,6 +4699,8 @@ elif selected_page == "💼 Positions":
                 "status": "pending",
                 "created_at": datetime.now(EASTERN).isoformat(),
                 "approval_mode": "Dashboard",
+                "source": MANUAL_ORDER_SOURCE,
+                "management_mode": POSITION_MANAGEMENT_MONITOR_ONLY,
                 "symbol": manual_symbol,
                 "signal": manual_signal,
                 "option": option_label,
@@ -4568,6 +4717,13 @@ elif selected_page == "💼 Positions":
                 "grade": "Manual",
                 "setup_quality": "Manual order",
                 "rank_score": 0,
+                "delta": (contract_details or {}).get("delta"),
+                "gamma": (contract_details or {}).get("gamma"),
+                "theta": (contract_details or {}).get("theta"),
+                "vega": (contract_details or {}).get("vega"),
+                "implied_vol": (contract_details or {}).get("implied_vol"),
+                "greek_source": (contract_details or {}).get("greek_source"),
+                "delta_rating": (contract_details or {}).get("delta_rating"),
                 "reasons": "Manual order entered and approved from Positions tab.",
                 "raw_signal": {"Symbol": manual_symbol, "Signal": manual_signal, "Price": underlying_price},
                 "option_data": {
@@ -4576,6 +4732,12 @@ elif selected_page == "💼 Positions":
                     "Strike": float(manual_strike),
                     "Type": manual_signal,
                     "Mid": mid_or_limit,
+                    "Delta": (contract_details or {}).get("delta"),
+                    "Gamma": (contract_details or {}).get("gamma"),
+                    "Theta": (contract_details or {}).get("theta"),
+                    "Vega": (contract_details or {}).get("vega"),
+                    "Implied Vol": (contract_details or {}).get("implied_vol"),
+                    "Greek Source": (contract_details or {}).get("greek_source"),
                 },
             }
 
@@ -4637,7 +4799,31 @@ elif selected_page == "💼 Positions":
             review_cols[1].metric("Side", order.get("signal", "N/A"))
             review_cols[2].metric("Order", order_type_label)
             review_cols[3].metric("Price", limit_label)
+            order_delta_rating = order.get("delta_rating") if isinstance(order.get("delta_rating"), dict) else {}
+            order_iv = _number_or_none(order.get("implied_vol"))
+            order_greek_values = [
+                ("Delta", "N/A" if _number_or_none(order.get("delta")) is None else f"{float(order.get('delta')):.4f}"),
+                ("Gamma", "N/A" if _number_or_none(order.get("gamma")) is None else f"{float(order.get('gamma')):.5f}"),
+                ("Theta", "N/A" if _number_or_none(order.get("theta")) is None else f"{float(order.get('theta')):.4f}"),
+                ("Vega", "N/A" if _number_or_none(order.get("vega")) is None else f"{float(order.get('vega')):.4f}"),
+                ("IV", "N/A" if order_iv is None else f"{order_iv * 100:.1f}%"),
+                ("Delta rating", str(order_delta_rating.get("label") or "Unavailable")),
+            ]
+            order_greek_cells = "".join(
+                f'<div style="padding:.4rem .5rem;min-width:0;">'
+                f'<div style="color:#64748b;font-size:.74rem;font-weight:700;">{html.escape(label)}</div>'
+                f'<div style="font-weight:800;overflow-wrap:anywhere;">{html.escape(value)}</div>'
+                f'</div>'
+                for label, value in order_greek_values
+            )
+            st.markdown(
+                f'<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));'
+                f'border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;margin:.6rem 0;">'
+                f'{order_greek_cells}</div>',
+                unsafe_allow_html=True,
+            )
             st.caption(f"Account mode: {order.get('account_mode', 'N/A')} | Expiry: {order.get('expiry', 'N/A')} | Strike: {order.get('strike', 'N/A')}")
+            st.info("Monitor only: PulseTrade will not place stop-loss/take-profit orders or close this position.")
             if not orders_unlocked:
                 st.warning("Order placement is locked by the current automation/safety settings.")
             confirm_cols = st.columns(2)
@@ -4660,7 +4846,9 @@ elif selected_page == "💼 Positions":
                 render_manual_order_confirmation(order)
 
         if st.button("Review Manual Order", use_container_width=True):
-            if not manual_symbol or not manual_expiry or manual_strike <= 0:
+            if not loaded_matches_request:
+                st.error("Load the selected IBKR contract after choosing the symbol, side, expiry target, and strike.")
+            elif not manual_symbol or not manual_expiry or manual_strike <= 0:
                 st.error("Enter symbol, expiry, and strike before reviewing the order.")
             elif manual_order_type == "LIMIT" and manual_limit <= 0:
                 st.error("Limit orders need a limit price greater than zero.")

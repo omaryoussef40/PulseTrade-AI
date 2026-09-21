@@ -29,6 +29,28 @@ EASTERN = ZoneInfo("America/New_York")
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 
 
+def interval_duration(interval: str) -> pd.Timedelta:
+    """Return the duration of a supported intraday bar interval."""
+    value = str(interval or "5m").strip().lower()
+    aliases = {
+        "1m": 1,
+        "2m": 2,
+        "5m": 5,
+        "15m": 15,
+        "30m": 30,
+        "60m": 60,
+        "90m": 90,
+        "1h": 60,
+    }
+    if value in aliases:
+        return pd.Timedelta(minutes=aliases[value])
+    if value.endswith("m") and value[:-1].isdigit():
+        return pd.Timedelta(minutes=int(value[:-1]))
+    if value.endswith("h") and value[:-1].isdigit():
+        return pd.Timedelta(hours=int(value[:-1]))
+    raise ValueError(f"Unsupported replay interval: {interval}")
+
+
 @dataclass(frozen=True)
 class ReplayConfig:
     interval: str = "5m"
@@ -76,6 +98,7 @@ class MarketReplayEngine:
 
     def __init__(self, data: dict[str, pd.DataFrame], config: ReplayConfig | None = None):
         self.config = config or ReplayConfig()
+        self.bar_duration = interval_duration(self.config.interval)
         self.data = self._prepare_data(data)
         self.timeline = self._build_timeline()
 
@@ -180,8 +203,12 @@ class MarketReplayEngine:
                 idx = idx.tz_convert(self.config.timezone)
             out.index = idx
             out.index.name = "Datetime"
-            out = out.between_time(self.config.market_open, self.config.market_close, inclusive="both")
+            # Provider bars are labeled by their start time. A 09:45 15-minute
+            # candle is not knowable until 10:00, so replay it at its close.
+            out = out.between_time(self.config.market_open, self.config.market_close, inclusive="left")
             out = out[~out.index.duplicated(keep="last")].sort_index()
+            out.index = out.index + self.bar_duration
+            out.index.name = "Datetime"
             if not out.empty:
                 prepared[clean_symbol] = out
         return prepared
@@ -205,9 +232,10 @@ class MarketReplayEngine:
         is_session_close = bool(timestamp == session.index.max()) if not session.empty else False
         minutes_from_open = self._minutes_from_open(timestamp)
         past_orb_window = minutes_from_open >= self.config.orb_minutes
+        first_completed_confirmation = int(self.config.orb_minutes + self.bar_duration.total_seconds() // 60)
         scanner_allowed = (
             bar_number >= self.config.min_session_bars
-            and minutes_from_open >= self.config.first_signal_minutes
+            and minutes_from_open >= max(self.config.first_signal_minutes, first_completed_confirmation)
             and not history.empty
         )
 

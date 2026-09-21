@@ -6,7 +6,11 @@ The dashboard imports only render_strategy_lab_tab(). All workflow logic lives i
 backtester.controller so Streamlit reruns do not own the state of the backtest.
 """
 
-from datetime import datetime
+import calendar
+import html
+from dataclasses import replace
+from datetime import date, datetime
+from pathlib import Path
 import time as _time
 
 import pandas as pd
@@ -31,6 +35,26 @@ except Exception:  # pragma: no cover
         return ["Yahoo"]
 from .controller import StrategyLabController, StrategyLabSettings
 from .metrics import daily_pnl, symbol_pnl, monthly_pnl
+from .orb_results import (
+    ORBResultsConfig,
+    add_option_outcomes,
+    save_orb_results,
+    scan_orb_sessions,
+    summarize_orb_results,
+)
+from .straddle_results import (
+    StraddleResultsConfig,
+    save_straddle_results,
+    scan_straddle_sessions,
+    simulate_straddles,
+    summarize_straddles,
+)
+
+
+def _queue_strategy_lab_run() -> None:
+    st.session_state["sl_run_requested"] = True
+    st.session_state["sl_run_force_refresh"] = bool(st.session_state.get("sl_force_refresh", False))
+    st.session_state["sl_force_refresh"] = False
 
 
 def _parse_symbols(text: str, max_symbols: int) -> list[str]:
@@ -44,9 +68,12 @@ def _parse_extra_symbols(text: str) -> list[str]:
 def _chart_equity(trades: pd.DataFrame):
     fig = go.Figure()
     if trades is not None and not trades.empty and "equity" in trades.columns:
+        chart_data = trades.copy()
+        chart_data["_exit_time"] = pd.to_datetime(chart_data.get("exit_time", chart_data.index), errors="coerce", utc=True)
+        chart_data = chart_data.sort_values("_exit_time")
         fig.add_trace(go.Scatter(
-            x=pd.to_datetime(trades.get("exit_time", trades.index), errors="coerce"),
-            y=pd.to_numeric(trades["equity"], errors="coerce"),
+            x=chart_data["_exit_time"],
+            y=pd.to_numeric(chart_data["equity"], errors="coerce"),
             mode="lines+markers",
             name="Equity",
         ))
@@ -103,7 +130,209 @@ def _render_dte_result(dte: int, comparison: pd.DataFrame, trades: pd.DataFrame)
     st.plotly_chart(fig, use_container_width=True)
 
 
-def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbols: list[str], selected_strategies: list[str], period: str, interval: str, max_symbols: int, force_refresh: bool, data_source: str, orb_minutes: int, first_signal_minutes: int, min_session_bars: int, visual_updates: bool, option_dte_values: list[int], premium_pct_ui: float, slippage_pct: float, allow_same_symbol: bool, risk_overrides: dict | None = None, gap_settings: dict | None = None) -> None:
+def _shift_calendar_month(month_anchor: date, months: int) -> date:
+    year = int(month_anchor.year) + ((int(month_anchor.month) - 1 + int(months)) // 12)
+    month = ((int(month_anchor.month) - 1 + int(months)) % 12) + 1
+    return month_anchor.replace(year=year, month=month, day=1)
+
+
+def _format_calendar_money(value: float) -> str:
+    amount = float(value or 0.0)
+    sign = "-" if amount < 0 else ""
+    return f"{sign}${abs(amount):,.2f}"
+
+
+def _calendar_trade_frame(trades: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(trades, pd.DataFrame) or trades.empty or "realized_pnl" not in trades.columns:
+        return pd.DataFrame()
+
+    timestamp_column = "exit_time" if "exit_time" in trades.columns else "entry_time" if "entry_time" in trades.columns else None
+    if timestamp_column is None:
+        return pd.DataFrame()
+
+    frame = trades.copy()
+    frame["calendar_timestamp"] = pd.to_datetime(frame[timestamp_column], errors="coerce", utc=True).dt.tz_convert("America/New_York")
+    frame["realized_pnl"] = pd.to_numeric(frame["realized_pnl"], errors="coerce").fillna(0.0)
+    frame = frame.dropna(subset=["calendar_timestamp"])
+    if frame.empty:
+        return frame
+    frame["calendar_date"] = frame["calendar_timestamp"].dt.date
+    return frame.sort_values(["calendar_timestamp", "symbol"] if "symbol" in frame.columns else ["calendar_timestamp"])
+
+
+def _calendar_trade_label(trade: pd.Series) -> str:
+    symbol = str(trade.get("symbol") or "").strip().upper()
+    signal = str(trade.get("signal") or trade.get("side") or "").strip().upper()
+    strike = pd.to_numeric(pd.Series([trade.get("option_strike")]), errors="coerce").iloc[0]
+    strike_label = f"{float(strike):g}" if pd.notna(strike) else ""
+    return " ".join(part for part in [symbol, signal, strike_label] if part).strip() or "Trade"
+
+
+def _render_backtest_pnl_calendar(trades: pd.DataFrame, meta: dict) -> None:
+    frame = _calendar_trade_frame(trades)
+    latest_result_date = None
+    if not frame.empty:
+        latest_result_date = frame["calendar_timestamp"].max().date()
+    if latest_result_date is None:
+        data_end = pd.to_datetime(meta.get("data_end"), errors="coerce", utc=True)
+        latest_result_date = data_end.tz_convert("America/New_York").date() if pd.notna(data_end) else datetime.now().date()
+
+    result_token = str(meta.get("completed_at") or meta.get("started_at") or "")
+    anchor_key = "sl_calendar_anchor"
+    token_key = "sl_calendar_result_token"
+    if st.session_state.get(token_key) != result_token:
+        st.session_state[anchor_key] = latest_result_date.replace(day=1)
+        st.session_state[token_key] = result_token
+
+    current = st.session_state.get(anchor_key, latest_result_date.replace(day=1))
+    if hasattr(current, "date") and not isinstance(current, date):
+        current = current.date()
+    current = current.replace(day=1)
+
+    nav_cols = st.columns(5)
+    with nav_cols[0]:
+        previous_year = st.button("Prev Year", key="sl_cal_prev_year", use_container_width=True)
+    with nav_cols[1]:
+        previous_month = st.button("Prev Month", key="sl_cal_prev_month", use_container_width=True)
+    with nav_cols[2]:
+        latest_month = st.button("Latest", key="sl_cal_latest", use_container_width=True)
+    with nav_cols[3]:
+        next_month = st.button("Next Month", key="sl_cal_next_month", use_container_width=True)
+    with nav_cols[4]:
+        next_year = st.button("Next Year", key="sl_cal_next_year", use_container_width=True)
+
+    if previous_year:
+        current = _shift_calendar_month(current, -12)
+    elif previous_month:
+        current = _shift_calendar_month(current, -1)
+    elif latest_month:
+        current = latest_result_date.replace(day=1)
+    elif next_month:
+        current = _shift_calendar_month(current, 1)
+    elif next_year:
+        current = _shift_calendar_month(current, 12)
+    st.session_state[anchor_key] = current
+
+    calendar_view = st.radio(
+        "Backtest monthly analytics view",
+        ["Calendar", "Trades"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="sl_monthly_analytics_view",
+    )
+
+    month_frame = frame[
+        (frame["calendar_timestamp"].dt.year == current.year)
+        & (frame["calendar_timestamp"].dt.month == current.month)
+    ].copy() if not frame.empty else pd.DataFrame()
+    day_stats: dict[date, dict] = {}
+    day_trades: dict[date, list[dict]] = {}
+    if not month_frame.empty:
+        grouped = month_frame.groupby("calendar_date").agg(pnl=("realized_pnl", "sum"), trades=("realized_pnl", "size"))
+        day_stats = grouped.to_dict("index")
+        for trade_day, trade_rows in month_frame.groupby("calendar_date", sort=True):
+            day_trades[trade_day] = [
+                {"label": _calendar_trade_label(row), "pnl": float(row.get("realized_pnl", 0.0) or 0.0)}
+                for _, row in trade_rows.iterrows()
+            ]
+
+    cells = []
+    today = datetime.now().date()
+    for week in calendar.Calendar(firstweekday=6).monthdatescalendar(current.year, current.month):
+        for day in week:
+            in_month = day.month == current.month
+            stats = day_stats.get(day, {"pnl": 0.0, "trades": 0})
+            pnl = float(stats.get("pnl", 0.0) or 0.0)
+            trade_count = int(stats.get("trades", 0) or 0)
+            tone = "sl-cal-empty"
+            if trade_count and pnl > 0:
+                tone = "sl-cal-win"
+            elif trade_count and pnl < 0:
+                tone = "sl-cal-loss"
+            elif trade_count:
+                tone = "sl-cal-flat"
+            muted = " sl-cal-muted" if not in_month else ""
+            today_class = " sl-cal-today" if day == today else ""
+
+            if calendar_view == "Trades" and trade_count:
+                lines = []
+                for trade in day_trades.get(day, [])[:5]:
+                    trade_pnl = float(trade["pnl"])
+                    trade_tone = "sl-cal-trade-win" if trade_pnl >= 0 else "sl-cal-trade-loss"
+                    safe_label = html.escape(str(trade["label"]), quote=True)
+                    lines.append(
+                        f"<div class='sl-cal-trade-line {trade_tone}'>"
+                        f"<span title='{safe_label}'>{safe_label}</span>"
+                        f"<strong>{html.escape(_format_calendar_money(trade_pnl))}</strong>"
+                        "</div>"
+                    )
+                extra_count = max(0, trade_count - 5)
+                more = f"<div class='sl-cal-more'>+{extra_count} more</div>" if extra_count else ""
+                content = f"<div class='sl-cal-trades'>{''.join(lines)}{more}</div>"
+            elif trade_count:
+                trade_word = "trade" if trade_count == 1 else "trades"
+                content = f"<strong>{html.escape(_format_calendar_money(pnl))}</strong><span>{trade_count} {trade_word}</span>"
+            else:
+                content = ""
+
+            cells.append(
+                f"<div class='sl-cal-cell {tone}{muted}{today_class}'>"
+                f"<div class='sl-cal-day'>{day.day if in_month else ''}</div>"
+                f"<div class='sl-cal-pnl'>{content}</div>"
+                "</div>"
+            )
+
+    month_pnl = float(month_frame["realized_pnl"].sum()) if not month_frame.empty else 0.0
+    month_trade_count = int(len(month_frame))
+    summary_tone = "sl-cal-summary-win" if month_pnl > 0 else "sl-cal-summary-loss" if month_pnl < 0 else ""
+    st.markdown(
+        f"""
+        <style>
+        .sl-cal-scroll {{ overflow-x: auto; margin: 0.75rem 0 1.25rem; }}
+        .sl-cal-wrap {{ min-width: 760px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; background: #fff; }}
+        .sl-cal-head {{ display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.85rem 1rem; border-bottom: 1px solid #e5e7eb; color: #111827; }}
+        .sl-cal-title {{ font-size: 1.35rem; font-weight: 700; }}
+        .sl-cal-summary {{ color: #4b5563; text-align: right; }}
+        .sl-cal-summary strong {{ margin-right: 0.5rem; color: #111827; }}
+        .sl-cal-summary-win {{ color: #047857 !important; }}
+        .sl-cal-summary-loss {{ color: #dc2626 !important; }}
+        .sl-cal-weekdays, .sl-cal-grid {{ display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; padding: 6px 1rem; }}
+        .sl-cal-weekdays div {{ border: 1px solid #e5e7eb; border-radius: 6px; padding: 0.55rem; text-align: center; font-weight: 700; color: #111827; }}
+        .sl-cal-grid {{ padding-bottom: 1rem; }}
+        .sl-cal-cell {{ min-height: 112px; border-radius: 6px; border: 1px solid #e5e7eb; background: #f3f4f6; padding: 0.55rem; }}
+        .sl-cal-day {{ min-height: 1.75rem; text-align: right; font-size: 0.95rem; color: #111827; }}
+        .sl-cal-pnl {{ margin-top: 0.45rem; text-align: center; color: #111827; }}
+        .sl-cal-pnl > strong {{ display: block; font-size: 1.15rem; }}
+        .sl-cal-pnl > span {{ color: #6b7280; font-size: 0.9rem; }}
+        .sl-cal-win {{ background: #dcfce7; border-color: #10b981; }}
+        .sl-cal-loss {{ background: #fee2e2; border-color: #ef4444; }}
+        .sl-cal-flat {{ background: #eef2ff; border-color: #6366f1; }}
+        .sl-cal-muted {{ background: #fff; }}
+        .sl-cal-today .sl-cal-day {{ display: flex; align-items: center; justify-content: center; margin-left: auto; width: 1.75rem; border-radius: 50%; background: #6554b8; color: #fff; }}
+        .sl-cal-trades {{ display: flex; flex-direction: column; gap: 0.25rem; }}
+        .sl-cal-trade-line {{ display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.3rem; align-items: center; padding: 0.2rem 0.25rem; border-radius: 4px; background: rgba(255,255,255,0.58); font-size: 0.76rem; line-height: 1.15; }}
+        .sl-cal-trade-line span {{ min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #111827; }}
+        .sl-cal-trade-line strong {{ white-space: nowrap; }}
+        .sl-cal-trade-win strong {{ color: #047857; }}
+        .sl-cal-trade-loss strong {{ color: #dc2626; }}
+        .sl-cal-more {{ padding-left: 0.25rem; text-align: left; color: #6b7280; font-size: 0.75rem; }}
+        </style>
+        <div class="sl-cal-scroll">
+            <div class="sl-cal-wrap">
+                <div class="sl-cal-head">
+                    <div class="sl-cal-title">{html.escape(current.strftime('%B %Y'))}</div>
+                    <div class="sl-cal-summary"><strong class="{summary_tone}">{html.escape(_format_calendar_money(month_pnl))}</strong>{month_trade_count} trade{"s" if month_trade_count != 1 else ""} across {len(day_stats)} day{"s" if len(day_stats) != 1 else ""}</div>
+                </div>
+                <div class="sl-cal-weekdays"><div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div></div>
+                <div class="sl-cal-grid">{''.join(cells)}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbols: list[str], selected_strategies: list[str], period: str, interval: str, max_symbols: int, force_refresh: bool, data_source: str, orb_minutes: int, first_signal_minutes: int, min_session_bars: int, require_break_retest: bool, retest_tolerance_pct: float, retest_max_minutes: int, use_staged_timeline: bool, visual_updates: bool, option_dte_values: list[int], premium_pct_ui: float, slippage_pct: float, allow_same_symbol: bool, risk_overrides: dict | None = None, gap_settings: dict | None = None) -> None:
     config.setdefault("strategy_lab", {})
     if "PMB" in {str(name).upper() for name in selected_strategies}:
         config["watchlist"] = list(selected_symbols)
@@ -118,6 +347,10 @@ def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbo
         "orb_minutes": int(orb_minutes),
         "first_signal_minutes": int(first_signal_minutes),
         "min_session_bars": int(min_session_bars),
+        "require_break_retest": bool(require_break_retest),
+        "retest_tolerance_pct": float(retest_tolerance_pct),
+        "retest_max_minutes": int(retest_max_minutes),
+        "use_staged_timeline": bool(use_staged_timeline),
         "visual_updates": bool(visual_updates),
         "option_dte_values": [int(v) for v in option_dte_values],
         "premium_pct_ui": float(premium_pct_ui),
@@ -164,7 +397,11 @@ def _apply_strategy_lab_to_engine(config: dict, settings: StrategyLabSettings, s
         "orb_minutes": int(settings.orb_minutes),
         "first_signal_minutes": int(settings.first_signal_minutes),
         "min_session_bars": int(settings.min_session_bars),
+        "require_break_retest": bool(settings.require_break_retest),
+        "retest_tolerance_pct": float(settings.retest_tolerance_pct),
+        "retest_max_minutes": int(settings.retest_max_minutes),
     })
+    config.setdefault("staged_trading_timeline", {})["enabled"] = bool(settings.use_staged_timeline)
     risk.update({
         "account_size": round(account_size, 2),
         "max_trades_per_day": int(settings.max_trades_per_day),
@@ -193,6 +430,7 @@ def _apply_strategy_lab_to_engine(config: dict, settings: StrategyLabSettings, s
         "Watchlist": len(selected_symbols),
         "Option DTE": option_dte,
         "ORB": int(settings.orb_minutes),
+        "Staged timeline": bool(settings.use_staged_timeline),
         "Max trades/day": int(settings.max_trades_per_day),
         "Max spend/trade": round(max_spend, 2),
         "Max daily capital": round(max_daily_capital, 2),
@@ -201,8 +439,573 @@ def _apply_strategy_lab_to_engine(config: dict, settings: StrategyLabSettings, s
     }
 
 
+def _render_orb_results_view(config: dict, default_symbols: list[str]) -> None:
+    orb_cfg = config.get("orb_results", {})
+    if not isinstance(orb_cfg, dict):
+        orb_cfg = {}
+
+    st.caption(
+        "15-minute ORB, followed by a 15-minute close confirmation. "
+        "The +20% result is measured on the selected option contract premium, not the stock price."
+    )
+    saved_period = str(orb_cfg.get("period", "90d"))
+    period_labels = {"1 month": "30d", "3 months": "90d", "6 months": "180d"}
+    saved_period_label = next((label for label, value in period_labels.items() if value == saved_period), "3 months")
+    saved_symbols = list(orb_cfg.get("symbols") or default_symbols or WATCHLIST[:30])
+    symbol_options = list(dict.fromkeys([*WATCHLIST, *saved_symbols]))
+
+    settings_cols = st.columns([1.1, 1, 1, 2.6])
+    with settings_cols[0]:
+        period_label = st.segmented_control(
+            "Lookback",
+            options=list(period_labels),
+            default=saved_period_label,
+            key="orbresults_period_label",
+        )
+    with settings_cols[1]:
+        option_dte = st.number_input(
+            "Option DTE",
+            min_value=0,
+            max_value=45,
+            value=int(orb_cfg.get("option_dte", 7)),
+            step=1,
+            key="orbresults_option_dte",
+        )
+    with settings_cols[2]:
+        contract_gain_pct = st.number_input(
+            "Contract target %",
+            min_value=1.0,
+            max_value=500.0,
+            value=float(orb_cfg.get("contract_gain_pct", 20.0)),
+            step=1.0,
+            key="orbresults_contract_gain_pct",
+        )
+    with settings_cols[3]:
+        symbols = st.multiselect(
+            "Tickers (maximum 30)",
+            options=symbol_options,
+            default=[symbol for symbol in saved_symbols if symbol in symbol_options][:30],
+            max_selections=30,
+            key="orbresults_symbols",
+        )
+
+    action_cols = st.columns([1, 1, 4])
+    with action_cols[0]:
+        run_clicked = st.button(
+            "Run ORB Results",
+            type="primary",
+            use_container_width=True,
+            disabled=not symbols,
+            key="orbresults_run",
+        )
+    with action_cols[1]:
+        force_refresh = st.checkbox(
+            "Refresh stock data",
+            value=False,
+            key="orbresults_force_refresh",
+        )
+
+    if run_clicked:
+        period = period_labels.get(str(period_label), "90d")
+        settings = ORBResultsConfig(
+            period=period,
+            orb_minutes=15,
+            confirmation_minutes=15,
+            option_dte=int(option_dte),
+            contract_gain_pct=float(contract_gain_pct),
+            interval="5m",
+        )
+        orb_cfg.update({
+            "period": period,
+            "symbols": list(symbols),
+            "option_dte": int(option_dte),
+            "contract_gain_pct": float(contract_gain_pct),
+        })
+        config["orb_results"] = orb_cfg
+        if save_config is not None:
+            save_config(config)
+
+        progress = st.progress(0.0)
+        status = st.empty()
+        provider = None
+        stock_data: dict[str, pd.DataFrame] = {}
+        stock_sources: list[dict] = []
+        stock_errors: list[dict] = []
+        started_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        try:
+            if create_market_data_provider is None:
+                raise RuntimeError("The IBKR market-data provider is unavailable")
+            provider = create_market_data_provider(
+                "IBKR",
+                config,
+                client_id_offset=203,
+                readonly_override=True,
+            )
+            for number, symbol in enumerate(symbols, start=1):
+                status.info(f"Loading 5-minute stock candles: {symbol} ({number}/{len(symbols)})")
+                try:
+                    bars = provider.load(
+                        symbol,
+                        period=period,
+                        interval="5m",
+                        regular_hours_only=True,
+                        force_refresh=bool(force_refresh),
+                    )
+                    if bars is None or bars.empty:
+                        raise RuntimeError("No 5-minute stock candles returned")
+                    stock_data[symbol] = bars
+                    source = provider.last_load_source(symbol) if hasattr(provider, "last_load_source") else "unknown"
+                    stock_sources.append({"symbol": symbol, "source": source, "bars": len(bars)})
+                except Exception as exc:
+                    stock_errors.append({"symbol": symbol, "stage": "STOCK_DATA", "error": str(exc)})
+                progress.progress(0.35 * number / max(len(symbols), 1))
+
+            sessions = scan_orb_sessions(stock_data, settings)
+            break_count = int(sessions["broke_orb"].fillna(False).sum()) if not sessions.empty else 0
+
+            def option_progress(number: int, total: int, row: dict) -> None:
+                status.info(
+                    f"Checking option premium: {row.get('symbol')} {row.get('direction')} "
+                    f"{row.get('session_date')} ({number}/{total})"
+                )
+                progress.progress(0.35 + 0.65 * number / max(total, 1))
+
+            if not sessions.empty and break_count:
+                sessions = add_option_outcomes(
+                    sessions,
+                    provider.historical_option_bars,
+                    config=settings,
+                    progress_callback=option_progress,
+                )
+            summary = summarize_orb_results(sessions, float(contract_gain_pct))
+            option_errors = []
+            if not sessions.empty and "option_status" in sessions.columns:
+                unavailable = sessions[sessions["option_status"].astype(str) == "UNAVAILABLE"]
+                option_errors = unavailable[["session_date", "symbol", "direction", "option_error"]].to_dict("records")
+            data_starts = [frame.index.min() for frame in stock_data.values() if not frame.empty]
+            data_ends = [frame.index.max() for frame in stock_data.values() if not frame.empty]
+            meta = {
+                "status": "COMPLETE" if stock_data else "FAILED_NO_STOCK_DATA",
+                "started_at": started_at,
+                "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "period": period,
+                "orb_minutes": 15,
+                "confirmation_minutes": 15,
+                "option_dte": int(option_dte),
+                "contract_gain_target_pct": float(contract_gain_pct),
+                "target_instrument": "OPTION_CONTRACT_PREMIUM",
+                "symbols_requested": list(symbols),
+                "symbols_loaded": sorted(stock_data),
+                "data_start": min(data_starts).isoformat() if data_starts else None,
+                "data_end": max(data_ends).isoformat() if data_ends else None,
+                "stock_errors": stock_errors,
+                "option_errors": option_errors,
+            }
+            export_dir = Path(__file__).resolve().parent / "exports"
+            save_orb_results(sessions, summary, meta, export_dir)
+            st.session_state["orbresults_last_result"] = {
+                "sessions": sessions,
+                "summary": summary,
+                "meta": meta,
+                "stock_sources": pd.DataFrame(stock_sources),
+                "stock_errors": pd.DataFrame(stock_errors),
+            }
+            progress.progress(1.0)
+            if stock_data:
+                status.success("ORB Results complete. Research exports were saved.")
+            else:
+                status.error("ORB Results could not load stock candles from IBKR.")
+        except Exception as exc:
+            status.error(f"ORB Results failed: {exc}")
+        finally:
+            if provider is not None and hasattr(provider, "disconnect"):
+                provider.disconnect()
+
+    result = st.session_state.get("orbresults_last_result")
+    if not isinstance(result, dict):
+        st.info("Run ORB Results to create the first historical report.")
+        return
+
+    sessions = result.get("sessions", pd.DataFrame())
+    summary = result.get("summary", pd.DataFrame())
+    meta = result.get("meta", {}) or {}
+    if not isinstance(summary, pd.DataFrame) or summary.empty:
+        st.warning("The last run found no complete 09:30-10:00 ticker sessions.")
+        return
+
+    overall = summary.iloc[0]
+    target_label = f"+{float(meta.get('contract_gain_target_pct', 20)):g}%"
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("Ticker Sessions", f"{int(overall.get('Sessions', 0)):,}")
+    metric_cols[1].metric("ORB Breaks", f"{int(overall.get('ORB Breaks', 0)):,}")
+    metric_cols[2].metric("Break Rate", f"{float(overall.get('ORB Break Rate %', 0)):,.1f}%")
+    metric_cols[3].metric(f"Contract {target_label} Rate", f"{float(overall.get(f'{target_label} Hit Rate %', 0)):,.1f}%")
+    metric_cols[4].metric("Option Coverage", f"{float(overall.get('Contract Coverage %', 0)):,.1f}%")
+    st.caption(
+        f"Candles: {meta.get('data_start', 'N/A')} to {meta.get('data_end', 'N/A')} | "
+        f"Completed: {meta.get('completed_at', 'N/A')} | Option hit rate excludes unavailable contracts."
+    )
+
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+    download_cols = st.columns([1, 1, 4])
+    with download_cols[0]:
+        st.download_button(
+            "Download summary",
+            summary.to_csv(index=False),
+            "orbresults_summary.csv",
+            "text/csv",
+            use_container_width=True,
+        )
+    with download_cols[1]:
+        st.download_button(
+            "Download details",
+            sessions.to_csv(index=False),
+            "orbresults_details.csv",
+            "text/csv",
+            use_container_width=True,
+        )
+
+    break_rows = sessions[sessions["broke_orb"].fillna(False).astype(bool)].copy() if isinstance(sessions, pd.DataFrame) and not sessions.empty else pd.DataFrame()
+    details_tab, coverage_tab, sessions_tab = st.tabs(["ORB Breaks", "Data Coverage", "All Sessions"])
+    with details_tab:
+        if break_rows.empty:
+            st.info("No confirmed ORB breaks were found.")
+        else:
+            detail_columns = [column for column in [
+                "session_date", "symbol", "direction", "orb_high", "orb_low", "orb_close",
+                "confirmation_close", "break_distance_pct", "option_expiry", "option_strike",
+                "option_local_symbol", "entry_premium", "max_premium", "max_contract_gain_pct",
+                "contract_target_hit", "target_hit_by_confirmation", "target_hit_time", "option_status",
+            ] if column in break_rows.columns]
+            st.dataframe(break_rows[detail_columns], use_container_width=True, hide_index=True)
+    with coverage_tab:
+        source_rows = result.get("stock_sources", pd.DataFrame())
+        if isinstance(source_rows, pd.DataFrame) and not source_rows.empty:
+            st.dataframe(source_rows, use_container_width=True, hide_index=True)
+        error_frames = []
+        stock_errors = result.get("stock_errors", pd.DataFrame())
+        if isinstance(stock_errors, pd.DataFrame) and not stock_errors.empty:
+            error_frames.append(stock_errors)
+        if not break_rows.empty and "option_status" in break_rows.columns:
+            option_errors = break_rows[break_rows["option_status"].astype(str) == "UNAVAILABLE"]
+            if not option_errors.empty:
+                error_frames.append(option_errors[["session_date", "symbol", "direction", "option_error"]])
+        if error_frames:
+            st.warning("Some market data was unavailable; use Option Coverage before interpreting the hit rate.")
+            for error_frame in error_frames:
+                st.dataframe(error_frame, use_container_width=True, hide_index=True)
+        else:
+            st.success("No data-coverage errors were recorded in the last run.")
+    with sessions_tab:
+        st.dataframe(sessions, use_container_width=True, hide_index=True)
+
+
+def _render_straddle_backtest_view(config: dict, default_symbols: list[str]) -> None:
+    saved = config.get("straddle_results", {})
+    if not isinstance(saved, dict):
+        saved = {}
+    period_labels = {"1 month": "30d", "3 months": "90d", "6 months": "180d"}
+    saved_period = str(saved.get("period", "30d"))
+    saved_period_label = next((label for label, value in period_labels.items() if value == saved_period), "1 month")
+    saved_symbols = list(saved.get("symbols") or default_symbols or WATCHLIST[:30])
+    symbol_options = list(dict.fromkeys([*WATCHLIST, *saved_symbols]))
+
+    st.caption(
+        "One matched ATM CALL + PUT pair at 09:30. At 10:00, the completed ORB confirmation "
+        "closes the opposing leg; combined returns include both premiums, slippage, and commissions."
+    )
+    setup_cols = st.columns([1.1, 0.8, 3.1])
+    with setup_cols[0]:
+        period_label = st.segmented_control(
+            "Lookback",
+            options=list(period_labels),
+            default=saved_period_label,
+            key="straddle_period_label",
+        )
+    with setup_cols[1]:
+        option_dte = st.number_input(
+            "Option DTE",
+            min_value=0,
+            max_value=45,
+            value=int(saved.get("option_dte", 7)),
+            step=1,
+            key="straddle_option_dte",
+        )
+    with setup_cols[2]:
+        symbols = st.multiselect(
+            "Tickers (maximum 30)",
+            options=symbol_options,
+            default=[symbol for symbol in saved_symbols if symbol in symbol_options][:30],
+            max_selections=30,
+            key="straddle_symbols",
+        )
+
+    rule_cols = st.columns(5)
+    with rule_cols[0]:
+        winner_stop = st.number_input(
+            "Winner stop %",
+            min_value=1.0,
+            max_value=100.0,
+            value=float(saved.get("winner_stop_loss_pct", 30.0)),
+            step=1.0,
+            key="straddle_winner_stop",
+        )
+    with rule_cols[1]:
+        winner_target = st.number_input(
+            "Winner target %",
+            min_value=1.0,
+            max_value=500.0,
+            value=float(saved.get("winner_target_pct", 100.0)),
+            step=5.0,
+            key="straddle_winner_target",
+        )
+    with rule_cols[2]:
+        trailing_trigger = st.number_input(
+            "Trail activation %",
+            min_value=1.0,
+            max_value=500.0,
+            value=float(saved.get("trailing_trigger_pct", 25.0)),
+            step=1.0,
+            key="straddle_trailing_trigger",
+        )
+    with rule_cols[3]:
+        trailing_stop = st.number_input(
+            "Trailing distance %",
+            min_value=1.0,
+            max_value=100.0,
+            value=float(saved.get("trailing_stop_pct", 10.0)),
+            step=1.0,
+            key="straddle_trailing_stop",
+        )
+    with rule_cols[4]:
+        slippage = st.number_input(
+            "Slippage per fill %",
+            min_value=0.0,
+            max_value=20.0,
+            value=float(saved.get("slippage_pct", 2.0)),
+            step=0.5,
+            key="straddle_slippage",
+        )
+
+    action_cols = st.columns([1, 1, 4])
+    with action_cols[0]:
+        run_clicked = st.button(
+            "Run Straddle Backtest",
+            type="primary",
+            use_container_width=True,
+            disabled=not symbols,
+            key="straddle_run",
+        )
+    with action_cols[1]:
+        force_refresh = st.checkbox("Refresh stock data", value=False, key="straddle_force_refresh")
+
+    if run_clicked:
+        period = period_labels.get(str(period_label), "30d")
+        settings = StraddleResultsConfig(
+            period=period,
+            option_dte=int(option_dte),
+            winner_stop_loss_pct=float(winner_stop),
+            winner_target_pct=float(winner_target),
+            trailing_trigger_pct=float(trailing_trigger),
+            trailing_stop_pct=float(trailing_stop),
+            slippage_pct=float(slippage),
+        )
+        saved.update({
+            "period": period,
+            "symbols": list(symbols),
+            "option_dte": int(option_dte),
+            "winner_stop_loss_pct": float(winner_stop),
+            "winner_target_pct": float(winner_target),
+            "trailing_trigger_pct": float(trailing_trigger),
+            "trailing_stop_pct": float(trailing_stop),
+            "slippage_pct": float(slippage),
+        })
+        config["straddle_results"] = saved
+        if save_config is not None:
+            save_config(config)
+
+        progress = st.progress(0.0)
+        status = st.empty()
+        provider = None
+        stock_data: dict[str, pd.DataFrame] = {}
+        stock_sources: list[dict] = []
+        stock_errors: list[dict] = []
+        started_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        try:
+            if create_market_data_provider is None:
+                raise RuntimeError("The IBKR market-data provider is unavailable")
+            provider = create_market_data_provider(
+                "IBKR",
+                config,
+                client_id_offset=204,
+                readonly_override=True,
+            )
+            for number, symbol in enumerate(symbols, start=1):
+                status.info(f"Loading 5-minute stock candles: {symbol} ({number}/{len(symbols)})")
+                try:
+                    bars = provider.load(
+                        symbol,
+                        period=period,
+                        interval="5m",
+                        regular_hours_only=True,
+                        force_refresh=bool(force_refresh),
+                    )
+                    if bars is None or bars.empty:
+                        raise RuntimeError("No 5-minute stock candles returned")
+                    stock_data[symbol] = bars
+                    source = provider.last_load_source(symbol) if hasattr(provider, "last_load_source") else "unknown"
+                    stock_sources.append({"symbol": symbol, "source": source, "bars": len(bars)})
+                except Exception as exc:
+                    stock_errors.append({"symbol": symbol, "stage": "STOCK_DATA", "error": str(exc)})
+                progress.progress(0.3 * number / max(len(symbols), 1))
+
+            sessions = scan_straddle_sessions(stock_data, settings)
+
+            def pair_provider(**kwargs):
+                call_info, call_bars = provider.historical_option_bars(
+                    symbol=kwargs["symbol"],
+                    signal="CALL",
+                    underlying_price=kwargs["underlying_price"],
+                    option_dte=kwargs["option_dte"],
+                    reference_time=kwargs["reference_time"],
+                )
+                put_info, put_bars = provider.historical_option_bars_for_contract(
+                    symbol=kwargs["symbol"],
+                    signal="PUT",
+                    expiry=str(call_info.get("expiry") or ""),
+                    strike=float(call_info.get("strike")),
+                    option_dte=kwargs["option_dte"],
+                    reference_time=kwargs["reference_time"],
+                )
+                return call_info, call_bars, put_info, put_bars
+
+            def pair_progress(number: int, total: int, row: dict) -> None:
+                status.info(f"Testing straddle: {row.get('symbol')} {row.get('session_date')} ({number}/{total})")
+                progress.progress(0.3 + 0.7 * number / max(total, 1))
+
+            results = simulate_straddles(sessions, pair_provider, settings, pair_progress)
+            summary = summarize_straddles(results)
+            unavailable = results[results["option_status"].astype(str) == "UNAVAILABLE"] if not results.empty else pd.DataFrame()
+            data_starts = [frame.index.min() for frame in stock_data.values() if not frame.empty]
+            data_ends = [frame.index.max() for frame in stock_data.values() if not frame.empty]
+            meta = {
+                "status": "COMPLETE" if stock_data else "FAILED_NO_STOCK_DATA",
+                "started_at": started_at,
+                "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "period": period,
+                "symbols_requested": list(symbols),
+                "symbols_loaded": sorted(stock_data),
+                "entry_time": "09:30 ET",
+                "confirmation_time": "10:00 ET",
+                "contracts_per_session": "1 CALL + 1 PUT",
+                "option_dte": int(option_dte),
+                "winner_stop_loss_pct": float(winner_stop),
+                "winner_target_pct": float(winner_target),
+                "trailing_trigger_pct": float(trailing_trigger),
+                "trailing_stop_pct": float(trailing_stop),
+                "slippage_pct_per_fill": float(slippage),
+                "commission_per_contract_per_order": float(settings.commission_per_contract),
+                "data_start": min(data_starts).isoformat() if data_starts else None,
+                "data_end": max(data_ends).isoformat() if data_ends else None,
+                "stock_errors": stock_errors,
+                "option_errors": unavailable[["session_date", "symbol", "option_error"]].to_dict("records") if not unavailable.empty else [],
+            }
+            export_dir = Path(__file__).resolve().parent / "exports"
+            save_straddle_results(results, summary, meta, export_dir)
+            st.session_state["straddle_last_result"] = {
+                "results": results,
+                "summary": summary,
+                "meta": meta,
+                "stock_sources": pd.DataFrame(stock_sources),
+                "stock_errors": pd.DataFrame(stock_errors),
+            }
+            progress.progress(1.0)
+            status.success("Straddle backtest complete. Research exports were saved.")
+        except Exception as exc:
+            status.error(f"Straddle backtest failed: {exc}")
+        finally:
+            if provider is not None and hasattr(provider, "disconnect"):
+                provider.disconnect()
+
+    result = st.session_state.get("straddle_last_result")
+    if not isinstance(result, dict):
+        st.info("Run the straddle backtest to create the first report.")
+        return
+    results = result.get("results", pd.DataFrame())
+    summary = result.get("summary", pd.DataFrame())
+    meta = result.get("meta", {}) or {}
+    if not isinstance(summary, pd.DataFrame) or summary.empty:
+        st.warning("The last run produced no complete straddle sessions.")
+        return
+
+    overall = summary.iloc[0]
+    metrics = st.columns(5)
+    metrics[0].metric("Completed Pairs", f"{int(overall.get('Completed Pairs', 0)):,}")
+    metrics[1].metric("Option Coverage", f"{float(overall.get('Option Coverage %', 0)):,.1f}%")
+    metrics[2].metric("Win Rate", f"{float(overall.get('Win Rate %', 0)):,.1f}%")
+    metrics[3].metric("Net P/L", f"${float(overall.get('Net P/L', 0)):,.2f}")
+    metrics[4].metric("Average Return", f"{float(overall.get('Average Return %', 0)):,.2f}%")
+    st.caption(
+        f"Candles: {meta.get('data_start', 'N/A')} to {meta.get('data_end', 'N/A')} | "
+        "P/L is per one CALL + one PUT pair."
+    )
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+    download_cols = st.columns([1, 1, 4])
+    with download_cols[0]:
+        st.download_button(
+            "Download summary", summary.to_csv(index=False), "straddle_results_summary.csv", "text/csv",
+            use_container_width=True,
+        )
+    with download_cols[1]:
+        st.download_button(
+            "Download trades", results.to_csv(index=False), "straddle_results_details.csv", "text/csv",
+            use_container_width=True,
+        )
+
+    trades_tab, coverage_tab = st.tabs(["Straddle Trades", "Data Coverage"])
+    with trades_tab:
+        columns = [column for column in [
+            "session_date", "symbol", "direction", "option_expiry", "option_strike",
+            "call_entry", "put_entry", "combined_entry_debit", "call_exit", "put_exit",
+            "winner_return_pct", "loser_return_pct", "realized_pnl", "combined_return_pct",
+            "max_combined_return_pct", "exit_time", "exit_reason", "option_status",
+        ] if column in results.columns]
+        st.dataframe(results[columns], use_container_width=True, hide_index=True)
+    with coverage_tab:
+        sources = result.get("stock_sources", pd.DataFrame())
+        if isinstance(sources, pd.DataFrame) and not sources.empty:
+            st.dataframe(sources, use_container_width=True, hide_index=True)
+        error_frames = []
+        stock_errors = result.get("stock_errors", pd.DataFrame())
+        if isinstance(stock_errors, pd.DataFrame) and not stock_errors.empty:
+            error_frames.append(stock_errors)
+        if isinstance(results, pd.DataFrame) and not results.empty:
+            option_errors = results[results["option_status"].astype(str) == "UNAVAILABLE"]
+            if not option_errors.empty:
+                error_frames.append(option_errors[["session_date", "symbol", "option_error"]])
+        if error_frames:
+            st.warning("Some sessions lack a complete matched option pair.")
+            for frame in error_frames:
+                st.dataframe(frame, use_container_width=True, hide_index=True)
+        else:
+            st.success("No data-coverage errors were recorded in the last run.")
+
+
 def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
     st.subheader("Research Lab")
+    research_view = st.segmented_control(
+        "Research module",
+        options=["Backtest", "ORB Results", "Straddle Backtest"],
+        default="Backtest",
+        key="strategy_lab_research_view",
+        label_visibility="collapsed",
+    )
+    if research_view == "ORB Results":
+        _render_orb_results_view(config, default_symbols)
+        return
+    if research_view == "Straddle Backtest":
+        _render_straddle_backtest_view(config, default_symbols)
+        return
     st.caption("Run selected strategies on historical candles and compare the results before paper/live trading.")
 
     strategy = config.get("strategy", {})
@@ -267,8 +1070,8 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
             interval_options = ["5m", "15m", "30m", "60m"]
             period = st.selectbox("Backtest Period", period_options, index=period_options.index(str(lab_cfg.get("period", "30d"))) if str(lab_cfg.get("period", "30d")) in period_options else 0, key="sl_period")
             interval = st.selectbox("Candle interval", interval_options, index=interval_options.index(str(lab_cfg.get("interval", "5m"))) if str(lab_cfg.get("interval", "5m")) in interval_options else 0, key="sl_interval")
-            max_symbols = st.number_input("Max symbols", min_value=1, max_value=20, value=current_max_symbols, step=1, key="sl_max_symbols")
-            force_refresh = st.checkbox("Force data refresh", value=bool(lab_cfg.get("force_refresh", False)), key="sl_force_refresh")
+            max_symbols = st.number_input("Max symbols", min_value=1, max_value=34, value=current_max_symbols, step=1, key="sl_max_symbols")
+            force_refresh = st.checkbox("Force data refresh (this run)", value=bool(lab_cfg.get("force_refresh", False)), key="sl_force_refresh")
             data_source = st.selectbox("Data source", source_options, index=default_source_index, key="sl_data_source")
 
     # Re-apply Max Symbols after Backtest Setup renders. If Max Symbols was changed,
@@ -306,10 +1109,41 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
 
     with setting_cols[3]:
         with st.expander("🔁 Scanner", expanded=False):
-            orb_minutes = st.number_input("ORB window minutes", min_value=5, max_value=90, value=int(lab_cfg.get("orb_minutes", strategy.get("orb_minutes", 15))), step=5, key="sl_orb")
-            first_signal_minutes = st.number_input("First scanner minute", min_value=5, max_value=120, value=int(lab_cfg.get("first_signal_minutes", strategy.get("first_signal_minutes", 20))), step=5, key="sl_first_signal")
-            min_session_bars = st.number_input("Minimum session bars", min_value=2, max_value=30, value=int(lab_cfg.get("min_session_bars", 7)), step=1, key="sl_min_bars")
+            use_staged_timeline = st.checkbox(
+                "Use live staged timeline",
+                value=bool(lab_cfg.get("use_staged_timeline", False)),
+                key="sl_staged_timeline",
+            )
+            orb_minutes = st.number_input("ORB window minutes", min_value=5, max_value=90, value=int(lab_cfg.get("orb_minutes", strategy.get("orb_minutes", 15))), step=5, disabled=use_staged_timeline, key="sl_orb")
+            first_signal_minutes = st.number_input("First scanner minute", min_value=5, max_value=120, value=int(lab_cfg.get("first_signal_minutes", strategy.get("first_signal_minutes", 20))), step=5, disabled=use_staged_timeline, key="sl_first_signal")
+            min_session_bars = st.number_input("Minimum session bars", min_value=2, max_value=30, value=int(lab_cfg.get("min_session_bars", 7)), step=1, disabled=use_staged_timeline, key="sl_min_bars")
+            require_break_retest = st.checkbox(
+                "Require break and retest",
+                value=bool(lab_cfg.get("require_break_retest", False)),
+                disabled=use_staged_timeline,
+                key="sl_require_retest",
+            )
+            retest_tolerance_pct = st.number_input(
+                "Retest tolerance around trigger %",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(lab_cfg.get("retest_tolerance_pct", strategy.get("retest_tolerance_pct", 0.10))),
+                step=0.05,
+                disabled=not require_break_retest or use_staged_timeline,
+                key="sl_retest_tolerance",
+            )
+            retest_max_minutes = st.number_input(
+                "Maximum minutes from breakout to retest",
+                min_value=5,
+                max_value=120,
+                value=int(lab_cfg.get("retest_max_minutes", strategy.get("retest_max_minutes", 45))),
+                step=5,
+                disabled=not require_break_retest or use_staged_timeline,
+                key="sl_retest_max_minutes",
+            )
             visual_updates = st.checkbox("Show live replay progress", value=bool(lab_cfg.get("visual_updates", True)), key="sl_visual")
+            if use_staged_timeline and interval != "5m":
+                st.warning("Live staged timeline requires 5-minute candles.")
 
     with setting_cols[4]:
         with st.expander("💰 Options", expanded=False):
@@ -419,6 +1253,10 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         orb_minutes=int(orb_minutes),
         first_signal_minutes=int(first_signal_minutes),
         min_session_bars=int(min_session_bars),
+        require_break_retest=bool(require_break_retest),
+        retest_tolerance_pct=float(retest_tolerance_pct),
+        retest_max_minutes=int(retest_max_minutes),
+        use_staged_timeline=bool(use_staged_timeline),
         min_score=float(strategy.get("min_score", 70)),
         min_confidence=float(strategy.get("min_confidence", 75)),
         min_rvol=float(strategy.get("min_rvol", 1.5)),
@@ -494,6 +1332,10 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         orb_minutes,
         first_signal_minutes,
         min_session_bars,
+        require_break_retest,
+        retest_tolerance_pct,
+        retest_max_minutes,
+        use_staged_timeline,
         visual_updates,
         list(option_dte_values),
         premium_pct_ui,
@@ -553,7 +1395,16 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
     action_col, apply_col = st.columns([2, 1])
     research_only_selection = any(name != "PMB" for name in selected_strategies)
     with action_col:
-        run_clicked = st.button("Run Backtest", use_container_width=True, key="sl_run")
+        button_clicked = st.button(
+            "Run Backtest",
+            use_container_width=True,
+            key="sl_run",
+            on_click=_queue_strategy_lab_run,
+        )
+        run_clicked = bool(st.session_state.pop("sl_run_requested", button_clicked))
+        run_force_refresh = st.session_state.pop("sl_run_force_refresh", None)
+        if run_clicked and run_force_refresh is not None:
+            settings = replace(settings, force_refresh=bool(run_force_refresh))
     with apply_col:
         apply_confirmed = st.checkbox("Confirm apply", key="sl_apply_confirm")
         apply_clicked = st.button("Apply to Trading Engine", use_container_width=True, key="sl_apply_to_engine", disabled=(not apply_confirmed or research_only_selection))
@@ -653,7 +1504,15 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         symbol_label = ", ".join(base_symbols[:20]) if base_symbols else "Yahoo-generated GAP universe"
         if len(base_symbols) > 20:
             symbol_label += f" + {len(base_symbols) - 20} more"
-        st.caption(f"Completed: {meta.get('completed_at', 'N/A')} | Source: {source_label} | Symbols: {symbol_label} | Period: {meta.get('period', 'N/A')} | Interval: {meta.get('interval', 'N/A')}")
+        data_start = meta.get("data_start")
+        data_end = meta.get("data_end")
+        if (not data_start or not data_end) and isinstance(replay, pd.DataFrame) and not replay.empty and "timestamp" in replay.columns:
+            replay_timestamps = pd.to_datetime(replay["timestamp"], errors="coerce").dropna()
+            if not replay_timestamps.empty:
+                data_start = replay_timestamps.min().isoformat()
+                data_end = replay_timestamps.max().isoformat()
+        data_range = f" | Candles: {data_start} to {data_end}" if data_start and data_end else ""
+        st.caption(f"Completed: {meta.get('completed_at', 'N/A')} | Source: {source_label} | Symbols: {symbol_label} | Period: {meta.get('period', 'N/A')} | Interval: {meta.get('interval', 'N/A')}{data_range}")
         m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
         m1.metric("Replay Events", f"{len(replay):,}")
         m2.metric("Signals", f"{len(signals):,}" if isinstance(signals, pd.DataFrame) else "0")
@@ -662,6 +1521,10 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         m5.metric("Net P/L", f"${float(metrics.get('net_pnl', 0)):,.2f}")
         m6.metric("Win Rate", f"{float(metrics.get('win_rate', 0)):,.1f}%")
         m7.metric("Profit Factor", metrics.get("profit_factor", 0))
+
+        if str(meta.get("status", "")).upper().startswith("COMPLETE"):
+            st.markdown("### Backtest P/L Calendar")
+            _render_backtest_pnl_calendar(trades, meta)
 
         if isinstance(errors, pd.DataFrame) and not errors.empty:
             with st.expander(f"Data errors ({len(errors):,})", expanded=False):

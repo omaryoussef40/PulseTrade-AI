@@ -1,18 +1,6 @@
 {
-  "session_date": "2026-09-02",
-  "status": "COMPLETE",
-  "updated_at": "2026-09-02T09:40:31.732868-04:00",
-  "symbol": "PLTR",
-  "signal": "PUT",
-  "score": 90.0,
-  "rank_score": 67.66,
-  "option": "PLTR 20260911 175 PUT",
-  "con_id": 907090003,
-  "position_id": "PLTR-20260911-175.0-PUT-20260902093830",
-  "broker_order_id": 5476,
-  "opened_at": "2026-09-02T09:38:30.623446-04:00",
-  "order_submitted_at": "2026-09-02T09:38:30.623478-04:00",
-  "spend_limit": 3429.71,
-  "estimated_cost": 2975.0,
-  "completed_at": "2026-09-02T09:40:31.732868-04:00"
+  "session_date": "2026-09-19",
+  "status": "WINDOW_EXPIRED",
+  "updated_at": "2026-09-19T11:15:05.086761-04:00",
+  "completed_at": "2026-09-19T11:15:05.086761-04:00"
 }

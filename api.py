@@ -215,6 +215,8 @@ def map_position(position: dict[str, Any]) -> dict[str, Any]:
         "breakeven_active": bool(position.get("breakeven_active", False)),
         "trailing_active": bool(position.get("trailing_active", False)),
         "protective_orders_status": first_present(position, "protective_orders_status", default=""),
+        "management_mode": first_present(position, "management_mode", default="automated"),
+        "software_control_enabled": position.get("software_control_enabled", True) is not False,
     }
 
 
@@ -268,6 +270,7 @@ def public_config_summary(config: dict[str, Any]) -> dict[str, Any]:
         "risk": {
             "account_size": risk.get("account_size"),
             "max_trades_per_day": risk.get("max_trades_per_day"),
+            "allow_same_symbol_same_day": bool(risk.get("allow_same_symbol_same_day", False)),
             "max_spend_per_trade": risk.get("max_spend_per_trade"),
             "max_daily_capital": risk.get("max_daily_capital"),
         },

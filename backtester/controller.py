@@ -11,7 +11,7 @@ single orchestration layer for:
 - durable export/reload of results
 """
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from datetime import datetime, time as dtime
 from pathlib import Path
 from typing import Any
@@ -55,6 +55,10 @@ class StrategyLabSettings:
     orb_minutes: int = 15
     first_signal_minutes: int = 20
     min_session_bars: int = 7
+    require_break_retest: bool = False
+    retest_tolerance_pct: float = 0.10
+    retest_max_minutes: int = 45
+    use_staged_timeline: bool = False
     min_score: float = 70.0
     min_confidence: float = 75.0
     min_rvol: float = 1.5
@@ -176,7 +180,8 @@ def _select_live_style_signals(raw_signals: list[dict[str, Any]], settings: Stra
 
     for _, group in df.groupby(group_cols, dropna=False, sort=True):
         strategy_name = str(group["strategy"].iloc[0]).upper() if "strategy" in group.columns and not group.empty else "PMB"
-        max_selected = max(1, int(settings.gap_max_trades_per_day if strategy_name == "GAP" else settings.top_n_tickers or 1))
+        opening_stage = "timeline_stage" in group.columns and bool((group["timeline_stage"].astype(str) == "opening_orb_5m").all())
+        max_selected = 1 if opening_stage else max(1, int(settings.gap_max_trades_per_day if strategy_name == "GAP" else settings.top_n_tickers or 1))
         ranked = group.copy().sort_values(
             ["rank_score", "score", "rvol", "option_score"],
             ascending=[False, False, False, False],
@@ -283,11 +288,67 @@ def _scan_strategy_replay(strategy_name: str, symbol: str, history: pd.DataFrame
             use_rvol_score=bool(settings.use_rvol_score),
             min_score=float(settings.min_score),
             orb_minutes=int(settings.orb_minutes),
+            min_session_bars=int(settings.min_session_bars),
+            require_retest=bool(settings.require_break_retest),
+            retest_tolerance_pct=float(settings.retest_tolerance_pct),
+            retest_max_minutes=int(settings.retest_max_minutes),
         )
         if result:
             result["Strategy"] = "PMB"
         return result
     return None
+
+
+def _staged_replay_settings(timestamp: pd.Timestamp, settings: StrategyLabSettings) -> tuple[str, StrategyLabSettings | None]:
+    """Return the live-style PMB stage and its effective replay settings."""
+    clock = timestamp.time()
+    if clock < dtime(9, 35):
+        return "before_opening_orb", None
+    if clock < dtime(9, 45):
+        return "opening_orb_5m", replace(
+            settings,
+            orb_minutes=5,
+            first_signal_minutes=10,
+            min_session_bars=2,
+            min_score=94.0,
+            min_rvol=1.5,
+            use_rvol_filter=True,
+            require_break_retest=False,
+        )
+    if clock < dtime(11, 30):
+        return "orb_15m", replace(
+            settings,
+            orb_minutes=15,
+            first_signal_minutes=20,
+            min_session_bars=4,
+            require_break_retest=False,
+        )
+    if clock <= dtime(13, 30):
+        return "break_retest_15m", replace(
+            settings,
+            orb_minutes=15,
+            first_signal_minutes=20,
+            min_session_bars=4,
+            require_break_retest=True,
+        )
+    return "after_retest_window", None
+
+
+def _staged_event_scanner_allowed(event, stage: str) -> bool:
+    if stage == "opening_orb_5m":
+        return event.bar_number >= 2 and event.timestamp.time() >= dtime(9, 40)
+    if stage in {"orb_15m", "break_retest_15m"}:
+        return event.bar_number >= 4 and event.timestamp.time() >= dtime(9, 50)
+    return False
+
+
+def _opening_stage_directional_passes(result: dict) -> bool:
+    signal = str(result.get("Signal") or "").upper()
+    required = {
+        "CALL": ("ORB Up", "PDH Break", "Above VWAP", "EMA Bullish"),
+        "PUT": ("ORB Down", "PDL Break", "Below VWAP", "EMA Bearish"),
+    }.get(signal)
+    return bool(required and all(result.get(key) is True for key in required))
 
 
 class StrategyLabController:
@@ -392,7 +453,7 @@ class StrategyLabController:
                     idx,
                     total_symbols,
                     {
-                        "stage": "Loading IBKR candles" if str(settings.data_source).upper() == "IBKR" else "Loading candles",
+                        "stage": "Checking candle cache",
                         "symbol": symbol,
                         "timestamp": "",
                     },
@@ -410,6 +471,21 @@ class StrategyLabController:
                     errors.append({"symbol": symbol, "error": f"{self.provider_name} returned no candles for {settings.period} {settings.interval}. Check IBKR/TWS connection, historical data permissions, and the selected port."})
                 else:
                     data[symbol] = df
+                    if progress_callback:
+                        source_getter = getattr(self.client, "last_load_source", None)
+                        load_source = source_getter(symbol) if callable(source_getter) else "unknown"
+                        stage = {
+                            "cache": "Loaded cached candles",
+                            "derived_cache": "Built candles from cached 5-minute data",
+                            "download": "Downloaded and cached candles",
+                            "cache_fallback": "Loaded cached candles after refresh failed",
+                        }.get(str(load_source), "Loaded candles")
+                        progress_callback(
+                            idx,
+                            total_symbols,
+                            {"stage": stage, "symbol": symbol, "timestamp": ""},
+                            0,
+                        )
             except Exception as exc:
                 message = str(exc).strip() or repr(exc)
                 errors.append({"symbol": symbol, "error": message})
@@ -449,6 +525,8 @@ class StrategyLabController:
         return scan_gap_sessions(data, config=_gap_scan_config(settings), catalyst_lookup=catalyst_lookup)
 
     def replay_and_scan(self, data: dict[str, pd.DataFrame], settings: StrategyLabSettings, progress_callback=None, gap_scanner: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        if settings.use_staged_timeline and str(settings.interval).lower() != "5m":
+            raise ValueError("Live staged timeline requires 5-minute candles.")
         replay_config = ReplayConfig(
             interval=settings.interval,
             orb_minutes=int(settings.orb_minutes),
@@ -466,6 +544,13 @@ class StrategyLabController:
         entry_cutoff_time = dtime(int(settings.entry_cutoff_hour), int(settings.entry_cutoff_minute))
 
         for idx, event in enumerate(events, start=1):
+            timeline_stage = "fixed"
+            event_settings = settings
+            scanner_allowed = bool(event.scanner_allowed and event.timestamp.time() < entry_cutoff_time)
+            if settings.use_staged_timeline:
+                timeline_stage, staged_settings = _staged_replay_settings(event.timestamp, settings)
+                event_settings = staged_settings or settings
+                scanner_allowed = staged_settings is not None and _staged_event_scanner_allowed(event, timeline_stage)
             row = {
                 "#": idx,
                 "symbol": event.symbol,
@@ -473,15 +558,16 @@ class StrategyLabController:
                 "session_date": event.session_date,
                 "bar_number": event.bar_number,
                 "close": round(event.close, 2),
-                "scanner_allowed": event.scanner_allowed,
+                "scanner_allowed": scanner_allowed,
+                "timeline_stage": timeline_stage,
                 "new_session": event.is_new_session,
                 "session_close": event.is_session_close,
                 "strategies": ", ".join(selected_strategies),
             }
 
-            if event.scanner_allowed and event.timestamp.time() < entry_cutoff_time:
+            if scanner_allowed:
                 for strategy_name in [name for name in selected_strategies if name != "GAP"]:
-                    scan_result = _scan_strategy_replay(strategy_name, event.symbol, event.history, settings)
+                    scan_result = _scan_strategy_replay(strategy_name, event.symbol, event.history, event_settings)
                     clean_scan = clean_signal_row(scan_result)
                     if not clean_scan:
                         continue
@@ -498,14 +584,16 @@ class StrategyLabController:
                     })
                     qualifies = is_top_candidate_replay(
                         clean_scan,
-                        settings.min_score,
-                        settings.min_confidence,
-                        settings.min_rvol,
-                        settings.min_atr,
-                        settings.use_rvol_filter,
-                        settings.use_sr_filter,
-                        settings.min_sr_room_pct,
+                        event_settings.min_score,
+                        event_settings.min_confidence,
+                        event_settings.min_rvol,
+                        event_settings.min_atr,
+                        event_settings.use_rvol_filter,
+                        event_settings.use_sr_filter,
+                        event_settings.min_sr_room_pct,
                     )
+                    if timeline_stage == "opening_orb_5m":
+                        qualifies = bool(qualifies and _opening_stage_directional_passes(clean_scan))
                     if qualifies:
                         raw_signal_rows.append({
                             "strategy": strategy_name,
@@ -522,6 +610,8 @@ class StrategyLabController:
                             "atr_pct": clean_scan.get("ATR %"),
                             "rank_score": _rank_score_replay(clean_scan, settings.use_rvol_ranking),
                             "option_score": 0.0,
+                            "timeline_stage": timeline_stage,
+                            "stop_loss_pct": 5.0 if timeline_stage == "opening_orb_5m" else float(settings.stop_loss_pct),
                             "vwap": clean_scan.get("VWAP"),
                             "orb_high": clean_scan.get("ORB High"),
                             "orb_low": clean_scan.get("ORB Low"),
@@ -593,7 +683,11 @@ class StrategyLabController:
                     breakeven_trigger_pct=float(settings.breakeven_trigger_pct),
                     trailing_trigger_pct=float(settings.trailing_trigger_pct),
                     trailing_stop_pct=float(settings.trailing_stop_pct),
-                    entry_cutoff_time=dtime(int(settings.entry_cutoff_hour), int(settings.entry_cutoff_minute)),
+                    entry_cutoff_time=(
+                        dtime(13, 30)
+                        if settings.use_staged_timeline
+                        else dtime(int(settings.entry_cutoff_hour), int(settings.entry_cutoff_minute))
+                    ),
                     force_exit_enabled=bool(settings.force_exit_enabled),
                     force_exit_time=dtime(int(settings.force_exit_hour), int(settings.force_exit_minute)),
                     max_consecutive_losses=int(settings.max_consecutive_losses),
@@ -773,8 +867,11 @@ class StrategyLabController:
         trades, metrics, decisions, comparison = self.simulate(signals, simulation_data, settings, gap_data=gap_data)
         result_data = dict(base_data)
         result_data.update(gap_data)
+        populated_frames = [df for df in result_data.values() if isinstance(df, pd.DataFrame) and not df.empty]
+        data_start = min(df.index.min() for df in populated_frames).isoformat() if populated_frames else None
+        data_end = max(df.index.max() for df in populated_frames).isoformat() if populated_frames else None
         meta = {
-            "version": "v0.10.2-ibkr-gap-data",
+            "version": "v0.10.3-close-time-replay",
             "started_at": started_at,
             "completed_at": datetime.now().isoformat(timespec="seconds"),
             "status": "COMPLETE_WITH_DATA_ERRORS" if not errors.empty else "COMPLETE",
@@ -790,7 +887,10 @@ class StrategyLabController:
             "data_errors": int(len(errors)),
             "provider": self.provider_name,
             "candles": int(sum(len(df) for df in result_data.values())),
+            "data_start": data_start,
+            "data_end": data_end,
             "replay_events": int(len(replay)),
+            "bar_timestamp_semantics": "completed_at_close",
             "gap_scanner_rows": int(len(gap_scanner)),
             "gap_qualified": int((gap_scanner.get("status", pd.Series(dtype=str)).astype(str) == "QUALIFIED").sum()) if not gap_scanner.empty else 0,
             "signals": int(len(signals)),
@@ -847,4 +947,7 @@ class StrategyLabController:
                     out[key] = {}
             except Exception:
                 out[key] = {}
+        if str(out.get("meta", {}).get("status", "")).upper() == "NO_DATA":
+            for key in ["replay", "gap_universe", "gap_scanner", "signals", "trades", "decisions", "comparison", "sessions"]:
+                out[key] = pd.DataFrame()
         return out

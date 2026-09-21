@@ -1,0 +1,9 @@
+{
+  "symbol": "AVGO",
+  "option_dte": 7,
+  "expiry": "20260918",
+  "strike": 345.0,
+  "right": "P",
+  "localSymbol": "AVGO  260918P00345000",
+  "conId": 914576449
+}

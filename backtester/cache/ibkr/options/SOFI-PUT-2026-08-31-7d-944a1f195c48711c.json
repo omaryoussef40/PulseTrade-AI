@@ -1,0 +1,9 @@
+{
+  "symbol": "SOFI",
+  "option_dte": 7,
+  "expiry": "20260911",
+  "strike": 17.5,
+  "right": "P",
+  "localSymbol": "SOFI  260911P00017500",
+  "conId": 906646925
+}

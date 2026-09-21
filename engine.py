@@ -23,9 +23,12 @@ from backtester.controller import StrategyLabController, StrategyLabSettings
 from bot_core import (
     EASTERN,
     IBConfig,
+    POSITION_MANAGEMENT_AUTOMATED,
+    POSITION_MANAGEMENT_MONITOR_ONLY,
     TelegramConfig,
     add_active_position_from_entry,
     app_log,
+    assert_position_exit_allowed,
     calculate_contract_quantity,
     clean_for_table,
     connect_ib,
@@ -33,7 +36,9 @@ from bot_core import (
     get_open_position_deployed,
     get_today_loss_stats,
     get_today_trade_stats,
+    get_today_traded_symbols,
     ib_port_from_config,
+    is_manual_order_metadata,
     is_market_open_now,
     is_top_candidate,
     load_config,
@@ -121,7 +126,7 @@ def backtester_cache_warmup_symbols(cfg: dict) -> list[str]:
     automation = cfg.get("automation", {}) if isinstance(cfg.get("automation", {}), dict) else {}
     lab_cfg = cfg.get("strategy_lab", {}) if isinstance(cfg.get("strategy_lab", {}), dict) else {}
     dyn_cfg = dynamic_config(cfg)
-    max_symbols = max(1, int(automation.get("backtester_cache_warmup_max_symbols", 30) or 30))
+    max_symbols = max(1, int(automation.get("backtester_cache_warmup_max_symbols", 34) or 34))
     symbols = normalize_symbols(
         list(cfg.get("watchlist", []) or [])
         + list(lab_cfg.get("symbols", []) or [])
@@ -150,11 +155,17 @@ def build_backtester_cache_warmup_settings(cfg: dict, symbols: list[str]) -> Str
     return StrategyLabSettings(
         symbols=symbols,
         period=str(automation.get("backtester_cache_warmup_period", "60d") or "60d"),
-        interval=str(lab_cfg.get("interval", automation.get("backtester_cache_warmup_interval", "5m")) or "5m"),
-        force_refresh=bool(automation.get("backtester_cache_warmup_force_refresh", False)),
+        interval=str(automation.get("backtester_cache_warmup_interval", "5m") or "5m"),
+        # Interactive backtests trust the persistent cache. The scheduled run is
+        # the one place that intentionally refreshes it with the latest session.
+        force_refresh=bool(automation.get("backtester_cache_warmup_force_refresh", True)),
         orb_minutes=int(lab_cfg.get("orb_minutes", strategy.get("orb_minutes", 15))),
         first_signal_minutes=int(lab_cfg.get("first_signal_minutes", strategy.get("first_signal_minutes", 20))),
         min_session_bars=int(lab_cfg.get("min_session_bars", strategy.get("min_session_bars", 7))),
+        require_break_retest=bool(lab_cfg.get("require_break_retest", strategy.get("require_break_retest", False))),
+        retest_tolerance_pct=float(lab_cfg.get("retest_tolerance_pct", strategy.get("retest_tolerance_pct", 0.10))),
+        retest_max_minutes=int(lab_cfg.get("retest_max_minutes", strategy.get("retest_max_minutes", 45))),
+        use_staged_timeline=bool(lab_cfg.get("use_staged_timeline", False)),
         min_score=float(lab_cfg.get("min_score", strategy.get("min_score", 70))),
         min_confidence=float(lab_cfg.get("min_confidence", strategy.get("min_confidence", 70))),
         min_rvol=float(lab_cfg.get("min_rvol", strategy.get("min_rvol", 1.5))),
@@ -244,9 +255,8 @@ def run_backtester_cache_warmup_if_due() -> None:
         provider = create_market_data_provider("IBKR", cfg, client_id_offset=260, readonly_override=True)
         controller = StrategyLabController(data_provider=provider)
         settings = build_backtester_cache_warmup_settings(cfg, symbols)
-        result = controller.run(settings, save=False)
-        meta = result.get("meta", {}) if isinstance(result, dict) else {}
-        errors = result.get("errors", pd.DataFrame()) if isinstance(result, dict) else pd.DataFrame()
+        data, errors = controller.load_data(settings)
+        candle_count = int(sum(len(frame) for frame in data.values()))
         state = {
             "date": today_key,
             "status": "COMPLETE",
@@ -254,14 +264,15 @@ def run_backtester_cache_warmup_if_due() -> None:
             "symbols": symbols,
             "period": settings.period,
             "interval": settings.interval,
-            "option_dte_values": list(settings.option_dte_values),
-            "candles": int(meta.get("candles", 0) or 0),
-            "signals": int(meta.get("signals", 0) or 0),
-            "decisions": int(meta.get("decisions", 0) or 0),
-            "data_errors": int(len(errors)) if isinstance(errors, pd.DataFrame) else int(meta.get("data_errors", 0) or 0),
+            "candles": candle_count,
+            "symbols_loaded": len(data),
+            "data_errors": int(len(errors)) if isinstance(errors, pd.DataFrame) else 0,
         }
         write_backtester_cache_warmup_state(state)
-        app_log(f"Backtester IBKR cache warmup complete | candles={state['candles']} | signals={state['signals']} | decisions={state['decisions']} | errors={state['data_errors']}")
+        app_log(
+            f"Backtester IBKR stock-cache refresh complete | candles={state['candles']} | "
+            f"symbols={state['symbols_loaded']} | errors={state['data_errors']}"
+        )
     except Exception as exc:
         write_backtester_cache_warmup_state({
             "date": today_key,
@@ -1197,6 +1208,13 @@ def update_pending_approval(order_id: str, **updates) -> dict | None:
 
 
 def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: int = 60) -> str:
+    management_mode = str(order.get("management_mode") or "").strip().lower()
+    if not management_mode:
+        management_mode = (
+            POSITION_MANAGEMENT_MONITOR_ONLY
+            if is_manual_order_metadata(order) else POSITION_MANAGEMENT_AUTOMATED
+        )
+    monitor_only = management_mode == POSITION_MANAGEMENT_MONITOR_ONLY
     if str(order.get("source") or "").lower() == OPENING_ORB_SOURCE:
         approval_cfg = load_config()
         approval_now = datetime.now(EASTERN)
@@ -1207,14 +1225,31 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
             or str(approval_state.get("status") or "").upper() != "PENDING_APPROVAL"
         ):
             raise RuntimeError("The 09:35-09:45 ET opening ORB approval window is closed.")
+    if str(order.get("action") or "BUY").upper() == "SELL":
+        assert_position_exit_allowed(order)
     contract = reconstruct_option_contract(order)
     qualified = ib.qualifyContracts(contract)
     if qualified:
         contract = qualified[0]
+    elif monitor_only:
+        raise ValueError(
+            f"IBKR could not resolve {order.get('symbol')} {order.get('expiry')} "
+            f"{order.get('strike')} {order.get('signal')}. Reload the selected contract and try again."
+        )
     qty = int(order.get("quantity") or 0)
     order_type = str(order.get("order_type") or "LIMIT")
     limit_price = float(order.get("limit_price") or order.get("mid") or 0) if order_type == "LIMIT" else None
     action = str(order.get("action") or "BUY").upper()
+    if action == "BUY" and not monitor_only:
+        approval_cfg = load_config()
+        approval_risk = approval_cfg.get("risk", {})
+        symbol = str(order.get("symbol") or "").strip().upper()
+        if (
+            symbol
+            and not bool(approval_risk.get("allow_same_symbol_same_day", False))
+            and symbol in get_today_traded_symbols()
+        ):
+            raise RuntimeError(f"{symbol} was already traded today; repeat ticker entries are disabled.")
     trade = place_option_order(ib, contract, action, qty, order_type, limit_price, ib_cfg.account, max_wait_seconds=max_wait_seconds)
     fallback_entry_price = float(limit_price if limit_price else order.get("mid") or order.get("entry_price") or 0)
     fill = trade_fill_details(trade, qty, fallback_entry_price)
@@ -1299,8 +1334,20 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
         "grade": order.get("grade"),
         "setup_quality": order.get("setup_quality"),
         "rank_score": order.get("rank_score"),
+        "delta": order.get("delta"),
+        "gamma": order.get("gamma"),
+        "theta": order.get("theta"),
+        "vega": order.get("vega"),
+        "implied_vol": order.get("implied_vol"),
+        "greek_source": order.get("greek_source"),
         "reasons": order.get("reasons"),
         "source": order.get("source"),
+        "expiry": order.get("expiry"),
+        "strike": order.get("strike"),
+        "management_mode": management_mode,
+        "broker_order_ids": str(getattr(getattr(trade, "order", None), "orderId", "") or ""),
+        "broker_perm_ids": str(getattr(getattr(trade, "order", None), "permId", "") or ""),
+        "broker_client_ids": str(getattr(getattr(trade, "order", None), "clientId", "") or ""),
     })
     approval_label = str(order.get("approval_mode") or "Order").strip() or "Order"
     save_trade_replay(
@@ -1317,6 +1364,10 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
     if filled_qty > 0:
         cfg = load_config()
         risk = cfg.get("risk", {})
+        entry_source = str(order.get("source") or "").lower()
+        opening_cfg = opening_orb_trade_config(cfg) if entry_source == OPENING_ORB_SOURCE else {}
+        stop_loss_pct = float(opening_cfg.get("stop_loss_pct", risk.get("stop_loss_pct", 20.0)))
+        trailing_from_entry = False if entry_source == OPENING_ORB_SOURCE else bool(risk.get("trailing_from_entry", True))
         take_profit_pct = float(risk.get("take_profit_pct", 30.0))
         active_position = add_active_position_from_entry(
             row,
@@ -1326,12 +1377,13 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
             status,
             ib=ib,
             account=ib_cfg.account,
-            stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
+            stop_loss_pct=stop_loss_pct,
             take_profit_pct=take_profit_pct,
             trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
-            trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
+            trailing_from_entry=trailing_from_entry,
             fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
             entry_source=str(order.get("source") or "") or None,
+            management_mode=management_mode,
         )
     if str(order.get("source") or "").lower() == OPENING_ORB_SOURCE:
         broker_order_id = getattr(getattr(trade, "order", None), "orderId", None)
@@ -1484,8 +1536,12 @@ def run_opening_orb_trade_cycle(
     candidates: list[dict] = []
     scan_display_rows: list[dict] = []
     opening_strategy = dict(strategy)
-    opening_min_score = float(strategy.get("min_score", 90.0))
+    opening_min_score = float(opening_cfg.get("min_score", 94.0))
+    opening_min_rvol = float(opening_cfg.get("min_rvol", 1.5))
+    opening_stop_loss_pct = float(opening_cfg.get("stop_loss_pct", 5.0))
     opening_strategy["min_score"] = opening_min_score
+    opening_strategy["min_rvol"] = opening_min_rvol
+    opening_strategy["use_rvol_filter"] = True
     orb_minutes = int(opening_cfg.get("orb_minutes", 5))
     opening_requires_retest = bool(strategy.get("require_break_retest", False))
     if bool(staged_trading_timeline_config(cfg).get("enabled", False)):
@@ -1530,9 +1586,9 @@ def run_opening_orb_trade_cycle(
                 result,
                 opening_min_score,
                 float(strategy.get("min_confidence", 70.0)),
-                float(strategy.get("min_rvol", 1.5)),
+                opening_min_rvol,
                 float(strategy.get("min_atr", 0.3)),
-                bool(strategy.get("use_rvol_filter", False)),
+                True,
                 bool(strategy.get("use_sr_filter", True)),
                 float(strategy.get("min_sr_room_pct", 0.75)),
             )
@@ -1821,10 +1877,10 @@ def run_opening_orb_trade_cycle(
                     trade_status,
                     ib=ib,
                     account=ib_cfg.account,
-                    stop_loss_pct=float(risk.get("stop_loss_pct", 20.0)),
+                    stop_loss_pct=opening_stop_loss_pct,
                     take_profit_pct=float(risk.get("take_profit_pct", 30.0)),
                     trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
-                    trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
+                    trailing_from_entry=False,
                     fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
                     entry_source=OPENING_ORB_SOURCE,
                 )
@@ -2264,6 +2320,8 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
     remaining_trades = max(0, int(risk.get("max_trades_per_day", 2)) - current_trade_count)
     remaining_capital = max(0.0, max_daily_capital - current_deployed)
     reserve_capital = bool(risk.get("reserve_capital_for_remaining_trades", True))
+    allow_same_symbol_same_day = bool(risk.get("allow_same_symbol_same_day", False))
+    traded_symbols_today = set() if allow_same_symbol_same_day else get_today_traded_symbols()
     active_symbols = {p.get("symbol") for p in read_active_positions() if p.get("symbol")}
     try:
         active_symbols |= broker_open_option_symbols(ib, account=ib_cfg.account)
@@ -2326,6 +2384,29 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
                 row=row,
                 decision="SKIP_ACTIVE_POSITION",
                 reason="active option position already exists",
+                remaining_capital=remaining_capital,
+                remaining_trades=remaining_trades,
+                max_spend_per_trade=max_spend_per_trade,
+                max_daily_capital=max_daily_capital,
+            )
+            continue
+        if symbol in traded_symbols_today:
+            app_log(f"{symbol}: skipped because ticker was already traded today")
+            scan_display_rows.append(scan_candidate_display_row(
+                row,
+                scan_id=scan_id,
+                approval_mode=approval_mode,
+                tradable=False,
+                trade_status="Blocked",
+                block_reason="Ticker was already traded today; repeat ticker entries are disabled.",
+                remaining_capital=remaining_capital,
+                remaining_trades=remaining_trades,
+            ))
+            log_engine_decision(
+                symbol=symbol,
+                row=row,
+                decision="SKIP_SYMBOL_TRADED_TODAY",
+                reason="ticker was already traded today and repeat ticker entries are disabled",
                 remaining_capital=remaining_capital,
                 remaining_trades=remaining_trades,
                 max_spend_per_trade=max_spend_per_trade,
@@ -2862,6 +2943,9 @@ def run_broker_sync_cycle() -> None:
         ]
         if material_events:
             app_log(f"IBKR live position monitor updated positions | events={len(material_events)}")
+            for event in material_events:
+                if event.get("Action") != "MONITOR_ONLY":
+                    app_log(f"Position event | {json.dumps(event, default=str)}")
             close_alerts = notify_position_close_events(
                 TelegramConfig(
                     bot_token=cfg.get("telegram", {}).get("bot_token", ""),

@@ -1,0 +1,9 @@
+{
+  "symbol": "NVDA",
+  "option_dte": 7,
+  "expiry": "20260916",
+  "strike": 225.0,
+  "right": "P",
+  "localSymbol": "NVDA  260916P00225000",
+  "conId": 919549189
+}

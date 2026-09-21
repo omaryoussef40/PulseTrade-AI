@@ -27,6 +27,10 @@ def scan_dataframe(
     timezone: ZoneInfo = EASTERN,
     strategy_name: str = "pmb",
     orb_minutes: int = 15,
+    min_session_bars: int = 7,
+    require_retest: bool = False,
+    retest_tolerance_pct: float = 0.10,
+    retest_max_minutes: int = 45,
 ) -> dict | None:
     if _scan_dataframe is None:
         return None
@@ -39,6 +43,10 @@ def scan_dataframe(
         min_score=min_score,
         timezone=timezone,
         orb_minutes=int(orb_minutes),
+        min_session_bars=int(min_session_bars),
+        require_retest=bool(require_retest),
+        retest_tolerance_pct=float(retest_tolerance_pct),
+        retest_max_minutes=int(retest_max_minutes),
     )
 
 
@@ -50,6 +58,10 @@ def scan_replay_history(
     min_score: float = MIN_SCORE,
     strategy_name: str = "pmb",
     orb_minutes: int = 15,
+    min_session_bars: int = 7,
+    require_retest: bool = False,
+    retest_tolerance_pct: float = 0.10,
+    retest_max_minutes: int = 45,
 ) -> dict | None:
     return scan_dataframe(
         symbol=symbol,
@@ -59,6 +71,10 @@ def scan_replay_history(
         min_score=min_score,
         strategy_name=strategy_name,
         orb_minutes=int(orb_minutes),
+        min_session_bars=int(min_session_bars),
+        require_retest=bool(require_retest),
+        retest_tolerance_pct=float(retest_tolerance_pct),
+        retest_max_minutes=int(retest_max_minutes),
     )
 
 

@@ -172,7 +172,7 @@ class OpeningOrbSelectionTests(unittest.TestCase):
             def now(cls, tz=None):
                 return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
 
-        def scan_result(symbol: str, score: float) -> dict:
+        def scan_result(symbol: str, score: float, rvol: float = 2.0) -> dict:
             return {
                 "Symbol": symbol,
                 "Signal": "CALL",
@@ -180,7 +180,7 @@ class OpeningOrbSelectionTests(unittest.TestCase):
                 "Grade": "C",
                 "Setup Quality": "Opening ORB",
                 "Price": 100.0,
-                "RVOL": 1.0,
+                "RVOL": rvol,
                 "ATR %": 1.0,
                 "ORB High": 99.5,
                 "ORB Low": 98.5,
@@ -198,7 +198,8 @@ class OpeningOrbSelectionTests(unittest.TestCase):
             }
 
         results = {
-            "LOW": scan_result("LOW", 92.0),
+            "LOW": scan_result("LOW", 99.0, rvol=1.0),
+            "BELOW_SCORE": scan_result("BELOW_SCORE", 93.0),
             "HIGH": scan_result("HIGH", 96.0),
         }
         option_contract = Mock(conId=12345)
@@ -246,13 +247,24 @@ class OpeningOrbSelectionTests(unittest.TestCase):
             with (
                 patch("engine.datetime", FixedDatetime),
                 patch("engine.OPENING_ORB_TRADE_STATE_FILE", state_file),
-                patch("engine.combined_watchlist", return_value=["LOW", "HIGH"]),
+                patch("engine.combined_watchlist", return_value=["LOW", "BELOW_SCORE", "HIGH"]),
                 patch("engine.get_today_trade_stats", return_value=(0, 0.0)),
                 patch("engine.get_open_position_deployed", return_value=0.0),
                 patch("engine.read_active_positions", return_value=[]),
                 patch("engine.scan_symbol_ib", side_effect=lambda _ib, symbol, *_args, **_kwargs: results[symbol]) as scan_symbol,
                 patch("engine.is_top_candidate", wraps=is_top_candidate) as candidate_filter,
                 patch("engine.recommend_option_ib", return_value=option) as recommend_option,
+                patch("engine.place_option_order", return_value=Mock()),
+                patch("engine.trade_fill_details", return_value={
+                    "status": "Filled",
+                    "filled_qty": 1,
+                    "remaining_qty": 0,
+                    "avg_fill_price": 1.0,
+                    "raw_status": "Filled",
+                }),
+                patch("engine.add_active_position_from_entry", return_value={"id": "opening-position"}) as add_position,
+                patch("engine.log_trade"),
+                patch("engine.save_trade_replay"),
                 patch("engine.write_current_scan_candidates"),
                 patch("engine.write_health"),
                 patch("engine.log_engine_decision"),
@@ -261,7 +273,7 @@ class OpeningOrbSelectionTests(unittest.TestCase):
                     ib=Mock(),
                     ib_cfg=Mock(account="DU123"),
                     cfg=cfg,
-                    can_trade=False,
+                    can_trade=True,
                     account_size=10_000.0,
                     liquidity_available=8_000.0,
                     max_daily_capital=9_500.0,
@@ -275,7 +287,11 @@ class OpeningOrbSelectionTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs["require_retest"] is False for call in scan_symbol.call_args_list))
         self.assertTrue(all(call.kwargs["intraday_bar_size"] == "1 min" for call in scan_symbol.call_args_list))
         self.assertTrue(all(call.kwargs["analysis_bar_minutes"] == 5 for call in scan_symbol.call_args_list))
-        self.assertTrue(all(call.args[1] == 90.0 for call in candidate_filter.call_args_list))
+        self.assertTrue(all(call.args[1] == 94.0 for call in candidate_filter.call_args_list))
+        self.assertTrue(all(call.args[3] == 1.5 for call in candidate_filter.call_args_list))
+        self.assertTrue(all(call.args[5] is True for call in candidate_filter.call_args_list))
+        self.assertEqual(add_position.call_args.kwargs["stop_loss_pct"], 5.0)
+        self.assertFalse(add_position.call_args.kwargs["trailing_from_entry"])
 
 
 if __name__ == "__main__":

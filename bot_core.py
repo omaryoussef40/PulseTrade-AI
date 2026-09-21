@@ -67,10 +67,11 @@ WATCHLIST = [
     "SPY", "QQQ", "IWM",
     "NVDA", "AAPL", "MSFT", "META", "AMZN", "GOOGL",
     "TSLA", "AMD", "PLTR", "COIN", "MSTR",
-    "AVGO", "SMCI", "MU", "ARM", "TSM", "MRVL",
+    "MU", "TSM", "MRVL",
     "JPM", "GS", "BAC",
     "NFLX", "UBER", "XOM", "COST",
-    "RBLX", "HOOD", "SOFI", "RKLB", "HIMS", "CRWD"
+    "RBLX", "HOOD", "SOFI", "RKLB", "HIMS", "CRWD",
+    "SPCX", "NOK", "INTC", "ORCL"
 ]
 
 MIN_SCORE = 70
@@ -105,6 +106,9 @@ DEFAULT_USE_RVOL_SCORE = False
 DEFAULT_USE_RVOL_RANKING = False
 DEFAULT_MIN_ATR_UI = 0.3
 DEFAULT_ORDER_TYPE = "LIMIT"
+MANUAL_ORDER_SOURCE = "manual_order"
+POSITION_MANAGEMENT_AUTOMATED = "automated"
+POSITION_MANAGEMENT_MONITOR_ONLY = "monitor_only"
 TRADE_LOG_FILE = os.path.join(EXPORT_DIR, "trade_log.csv")
 ALERT_LOG_FILE = os.path.join(EXPORT_DIR, "alert_log.csv")
 ACTIVE_POSITIONS_FILE = os.path.join(EXPORT_DIR, "active_positions.json")
@@ -809,6 +813,71 @@ def option_filters_from_config(config: dict | None = None) -> dict:
     return filters
 
 
+def rate_option_delta(delta, signal: str, filters: dict | None = None) -> dict:
+    """Rate a live option delta against the configured strategy range and target."""
+    filters = option_filters_from_config({"option_filters": filters or {}})
+    min_delta = float(filters.get("min_abs_delta", 0.45))
+    target_delta = float(filters.get("target_abs_delta", 0.55))
+    max_delta = float(filters.get("max_abs_delta", 0.80))
+    live_delta = _finite_number(delta)
+    if live_delta is None:
+        return {
+            "label": "Unavailable",
+            "score": None,
+            "detail": "IBKR did not return a live delta.",
+            "target": target_delta,
+            "minimum": min_delta,
+            "maximum": max_delta,
+        }
+
+    expected_sign = 1 if str(signal or "").upper() == "CALL" else -1
+    if live_delta * expected_sign <= 0:
+        return {
+            "label": "Weak",
+            "score": 0,
+            "detail": f"Delta sign does not match the selected {str(signal or '').upper()} side.",
+            "delta": round(live_delta, 4),
+            "target": target_delta,
+            "minimum": min_delta,
+            "maximum": max_delta,
+        }
+
+    abs_delta = abs(live_delta)
+    if abs_delta < target_delta:
+        target_span = max(target_delta - min_delta, 0.01)
+    else:
+        target_span = max(max_delta - target_delta, 0.01)
+    target_distance = abs(abs_delta - target_delta)
+
+    if min_delta <= abs_delta <= max_delta:
+        score = round(max(80.0, 100.0 - 20.0 * (target_distance / target_span)))
+        detail = (
+            f"Within the strategy range {min_delta:.2f}-{max_delta:.2f}; "
+            f"target is {target_delta:.2f}."
+        )
+    else:
+        nearest_boundary = min_delta if abs_delta < min_delta else max_delta
+        outside_distance = abs(abs_delta - nearest_boundary)
+        score = round(max(0.0, 80.0 - 80.0 * (outside_distance / 0.15)))
+        direction = "below" if abs_delta < min_delta else "above"
+        detail = (
+            f"Outside the strategy range {min_delta:.2f}-{max_delta:.2f}; "
+            f"|delta| is {direction} the allowed range."
+        )
+
+    label = "Excellent" if score >= 90 else "Good" if score >= 75 else "Fair" if score >= 50 else "Weak"
+    return {
+        "label": label,
+        "score": int(score),
+        "detail": detail,
+        "delta": round(live_delta, 4),
+        "absolute_delta": round(abs_delta, 4),
+        "target": target_delta,
+        "minimum": min_delta,
+        "maximum": max_delta,
+    }
+
+
 def _option_quality_score(option: dict, filters: dict) -> tuple[int, str]:
     score = 0
     notes = []
@@ -1102,6 +1171,39 @@ def get_today_trade_stats() -> tuple[int, float]:
         return 0, 0.0
 
 
+def get_today_traded_symbols() -> set[str]:
+    """Return tickers with a successful or working entry logged today in ET."""
+    if not os.path.exists(TRADE_LOG_FILE):
+        return set()
+    try:
+        df = pd.read_csv(TRADE_LOG_FILE)
+        if df.empty or "timestamp" not in df.columns or "symbol" not in df.columns:
+            return set()
+        timestamps = _parse_timestamps_utc(df["timestamp"])
+        valid = timestamps.notna()
+        if not valid.any():
+            return set()
+        df = df.loc[valid].copy()
+        df["_timestamp"] = timestamps.loc[valid]
+        today_et = datetime.now(EASTERN).date()
+        df = df[df["_timestamp"].dt.tz_convert(EASTERN).dt.date == today_et]
+        if "event" in df.columns:
+            df = df[df["event"].fillna("").astype(str).str.upper() == "ENTRY"]
+        if "status" in df.columns:
+            accepted_statuses = {"filled", "partiallyfilled", "submitted", "presubmitted"}
+            df = df[df["status"].fillna("").astype(str).str.lower().isin(accepted_statuses)]
+        if not df.empty:
+            manual_entries = df.apply(lambda row: is_manual_order_metadata(row.to_dict()), axis=1)
+            df = df[~manual_entries]
+        return {
+            str(symbol).strip().upper()
+            for symbol in df["symbol"].dropna()
+            if str(symbol).strip()
+        }
+    except Exception:
+        return set()
+
+
 def get_open_position_deployed() -> float:
     """Return capital currently deployed in locally tracked open option positions."""
     deployed = 0.0
@@ -1175,6 +1277,15 @@ def place_option_order(
     account: str | None = None,
     max_wait_seconds: int = 60,
 ):
+    if str(action).upper() == "SELL":
+        position = {
+            "con_id": getattr(option_contract, "conId", None),
+            "symbol": getattr(option_contract, "symbol", ""),
+            "expiry": getattr(option_contract, "lastTradeDateOrContractMonth", ""),
+            "strike": getattr(option_contract, "strike", None),
+            "signal": "CALL" if getattr(option_contract, "right", "") == "C" else "PUT",
+        }
+        assert_position_exit_allowed(position)
     if quantity <= 0:
         raise ValueError("Quantity must be greater than zero")
 
@@ -1377,6 +1488,18 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
     fills = ib.reqExecutions(filt)
     if not fills:
         return 0, f"No IBKR executions found for {target_date}."
+    try:
+        ib.sleep(3.0)
+        refreshed = {
+            str(getattr(getattr(fill, "execution", None), "execId", "") or ""): fill
+            for fill in (ib.fills() or [])
+        }
+        fills = [
+            refreshed.get(str(getattr(getattr(fill, "execution", None), "execId", "") or ""), fill)
+            for fill in fills
+        ]
+    except Exception:
+        pass
 
     grouped: dict[tuple, dict] = {}
     for fill in fills:
@@ -1440,10 +1563,20 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             "broker_client_ids": [],
             "broker_order_refs": [],
             "broker_liquidation_flags": [],
+            "commission": 0.0,
+            "broker_realized_pnl": None,
         })
         row["quantity"] += shares
         row["value"] += shares * price
         row["exec_ids"].append(str(getattr(execution, "execId", "")))
+        commission_report = getattr(fill, "commissionReport", None)
+        commission = _number_or_none(getattr(commission_report, "commission", None))
+        broker_realized = _number_or_none(getattr(commission_report, "realizedPNL", None))
+        if commission is not None and abs(commission) < 1e100:
+            row["commission"] -= abs(float(commission))
+            if event == "EXIT" and broker_realized is not None and abs(broker_realized) < 1e100:
+                current_realized = row.get("broker_realized_pnl")
+                row["broker_realized_pnl"] = float(current_realized or 0.0) + float(broker_realized)
         for source_attr, target_key in [
             ("orderId", "broker_order_ids"),
             ("permId", "broker_perm_ids"),
@@ -1465,6 +1598,8 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
 
     path = _Path(TRADE_LOG_FILE)
     existing = pd.read_csv(path) if path.exists() else pd.DataFrame()
+    if not existing.empty:
+        existing = existing.astype("object")
 
     def _contract_lookup_key(value) -> str:
         numeric = _number_or_none(value)
@@ -1493,7 +1628,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             entries["_entry_ts"] = pd.NaT
         entries["_contract_key"] = entries.apply(lambda row: _contract_lookup_key(row.get("con_id") or row.get("option")), axis=1)
         if "filled_quantity" in entries.columns:
-            qty_source = entries["filled_quantity"]
+            qty_source = entries["filled_quantity"].combine_first(entries.get("quantity"))
         elif "quantity" in entries.columns:
             qty_source = entries["quantity"]
         else:
@@ -1505,8 +1640,11 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
         for contract_key, contract_entries in entries.groupby("_contract_key", sort=False):
             if not contract_key:
                 continue
-            best_rank = contract_entries["_source_rank"].min()
-            ranked_entries = contract_entries[contract_entries["_source_rank"].eq(best_rank)].copy()
+            source_choices = []
+            for source_rank, source_entries in contract_entries.groupby("_source_rank", sort=True):
+                source_choices.append((float(source_entries["_qty_num"].sum()), float(source_rank), source_entries))
+            _, _, ranked_entries = sorted(source_choices, key=lambda choice: (-choice[0], choice[1]))[0]
+            ranked_entries = ranked_entries.copy()
             if "_entry_ts" in ranked_entries.columns:
                 ranked_entries = ranked_entries.sort_values("_entry_ts")
             qty = ranked_entries["_qty_num"]
@@ -1539,7 +1677,8 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             "entry_price": round(avg_price, 4) if item["event"] == "ENTRY" else None,
             "exit_price": round(avg_price, 4) if item["event"] == "EXIT" else None,
             "limit_price": round(avg_price, 4) if item["event"] == "ENTRY" else None,
-            "realized_pnl": 0.0,
+            "realized_pnl": round(float(item["broker_realized_pnl"]), 2) if item["event"] == "EXIT" and item.get("broker_realized_pnl") is not None else 0.0,
+            "commission": round(float(item.get("commission") or 0.0), 6),
             "status": "Filled",
             "broker_status": "Execution",
             "exec_ids": ",".join(item["exec_ids"]),
@@ -1563,7 +1702,8 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             else:
                 multiplier = 100.0 if str(row.get("sec_type", "")).upper() in {"OPT", "FOP"} else 1.0
             row["entry_price"] = round(float(entry_price), 4)
-            row["realized_pnl"] = round((float(row["exit_price"]) - float(entry_price)) * float(row["quantity"]) * float(multiplier), 2)
+            if row.get("broker_realized_pnl") is None:
+                row["realized_pnl"] = round((float(row["exit_price"]) - float(entry_price)) * float(row["quantity"]) * float(multiplier), 2)
 
     existing_ids = set(existing.get("external_id", pd.Series(dtype=str)).dropna().astype(str).tolist()) if not existing.empty else set()
     existing_trade_keys = set()
@@ -1584,6 +1724,14 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
 
     for row in rows:
         if row["external_id"] in existing_ids:
+            matching = existing.index[existing["external_id"].fillna("").astype(str).eq(str(row["external_id"]))]
+            if len(matching):
+                row_values = {k: v for k, v in row.items() if k not in {"value", "broker_realized_pnl"} and v is not None}
+                for column, value in row_values.items():
+                    if column not in existing.columns:
+                        existing[column] = None
+                    existing.loc[matching, column] = value
+                imported += 1
             continue
         row_contract = str(row.get("con_id", "") or row.get("option", "") or "")
         row_price = row.get("entry_price") if row["event"] == "ENTRY" else row.get("exit_price")
@@ -1596,7 +1744,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
         )
         if trade_key in existing_trade_keys:
             continue
-        new_rows.append({k: v for k, v in row.items() if k != "value"})
+        new_rows.append({k: v for k, v in row.items() if k not in {"value", "broker_realized_pnl"}})
         imported += 1
         existing_ids.add(row["external_id"])
         existing_trade_keys.add(trade_key)
@@ -1639,6 +1787,98 @@ def _number_or_none(value) -> float | None:
         return float(str(value).replace(",", ""))
     except Exception:
         return None
+
+
+def is_manual_order_metadata(value: dict | None) -> bool:
+    """Identify positions or log rows originating from the manual-order tab."""
+    value = value or {}
+    mode = str(value.get("management_mode") or "").strip().lower()
+    if mode == POSITION_MANAGEMENT_MONITOR_ONLY:
+        return True
+    sources = {
+        str(value.get("source") or "").strip().lower(),
+        str(value.get("entry_source") or "").strip().lower(),
+    }
+    if MANUAL_ORDER_SOURCE in sources:
+        return True
+    return (
+        str(value.get("score") or "").strip().upper() == "MANUAL"
+        and str(value.get("setup_quality") or "").strip().lower() == "manual order"
+    )
+
+
+def is_monitor_only_position(position: dict | None) -> bool:
+    position = position or {}
+    if position.get("software_control_enabled") is False:
+        return True
+    if is_manual_order_metadata(position):
+        return True
+    lookup = _trade_log_entry_lookup()
+    history = [lookup[key] for key in _position_history_keys(position) if key in lookup]
+    if any(is_manual_order_metadata(row) for row in history):
+        return True
+    # Unknown/external holdings are not permission to automate an exit.
+    for row in [position] + history:
+        if str(row.get("management_mode") or "").lower() == POSITION_MANAGEMENT_AUTOMATED:
+            return False
+        if str(row.get("entry_source") or row.get("source") or "").lower() in {"scanner", "opening_orb"}:
+            return False
+        score = _number_or_none(row.get("score"))
+        if score is not None and math.isfinite(score):
+            return False
+    return True
+
+
+def _position_history_keys(position: dict) -> list[str]:
+    keys = []
+    con_id = _number_or_none(position.get("con_id"))
+    if con_id is not None and math.isfinite(con_id) and con_id > 0:
+        keys.append(f"conid:{int(con_id)}")
+    symbol = str(position.get("symbol") or "").upper()
+    expiry = str(position.get("expiry") or "").removesuffix(".0")
+    strike = _number_or_none(position.get("strike"))
+    right = {"CALL": "C", "PUT": "P", "C": "C", "P": "P"}.get(str(position.get("signal") or "").upper())
+    if symbol and expiry and strike is not None and math.isfinite(strike) and right:
+        keys.append(f"opt:{symbol}:{expiry}:{strike:g}:{right}")
+    if position.get("option"):
+        keys.append(f"label:{position['option']}")
+    return keys
+
+
+def assert_position_exit_allowed(position: dict) -> None:
+    # Check both persisted provenance and live local records at the final order boundary.
+    keys = set(_position_history_keys(position))
+    manual = is_monitor_only_position(position)
+    for existing in read_active_positions():
+        if keys.intersection(_position_history_keys(existing)) and is_monitor_only_position(existing):
+            manual = True
+    if manual:
+        raise ValueError("Manual position is monitor only; PulseTrade exits are prohibited")
+
+
+def disable_manual_position_exits(ib: IB, pos: dict) -> list[dict]:
+    pos.update(management_mode=POSITION_MANAGEMENT_MONITOR_ONLY, software_control_enabled=False,
+               current_stop_price=None, take_profit_price=None, breakeven_active=False,
+               trailing_active=False, trailing_from_entry=False)
+    events = []
+    # Tracked IDs alone are insufficient: earlier code could adopt user-created orders.
+    for trade in _open_sell_trades_for_position(ib, pos):
+        order = trade.order
+        if not str(getattr(order, "ocaGroup", "") or "").startswith("PulseProtect-"):
+            continue
+        if pos.get("account") and getattr(order, "account", None) != pos["account"]:
+            continue
+        try:
+            ib.cancelOrder(order)
+            events.append({"Symbol": pos.get("symbol"), "Action": "CANCEL_MANUAL_POSITION_PROTECTION",
+                           "Order ID": _order_id(order)})
+        except Exception as exc:
+            events.append({"Symbol": pos.get("symbol"), "Action": "CANCEL_PROTECTION_FAILED", "Status": str(exc)})
+    pos["protective_orders_status"] = (
+        "Monitor only - broker cancellation requires verification" if events
+        else "Monitor only - no PulseTrade exit orders"
+    )
+    return events
 
 
 def _position_age_seconds(pos: dict, now_et: datetime) -> float | None:
@@ -1887,22 +2127,13 @@ def _trade_log_entry_lookup() -> dict[str, dict]:
 
     lookup: dict[str, dict] = {}
     for _, row in df.iterrows():
-        con_id = row.get("con_id")
-        if pd.notna(con_id) and str(con_id).strip():
-            try:
-                lookup[f"conid:{int(float(con_id))}"] = row.to_dict()
-            except Exception:
-                pass
-        symbol = str(row.get("symbol", "") or "").upper()
-        expiry = str(row.get("expiry", "") or "")
-        strike = str(row.get("strike", "") or "")
-        signal = str(row.get("signal", "") or "").upper()
-        right = "C" if signal == "CALL" else "P" if signal == "PUT" else ""
-        if symbol and expiry and strike and right:
-            lookup[f"opt:{symbol}:{expiry}:{strike}:{right}"] = row.to_dict()
-        option = str(row.get("option", "") or "")
-        if option:
-            lookup[f"label:{option}"] = row.to_dict()
+        record = row.to_dict()
+        for key in _position_history_keys(record):
+            # Broker imports must never erase evidence of a manual entry.
+            previous = lookup.get(key, {})
+            if is_manual_order_metadata(previous) and not is_manual_order_metadata(record):
+                continue
+            lookup[key] = record
     return lookup
 
 
@@ -1952,7 +2183,13 @@ def sync_active_positions_from_broker(
         if key in local_keys or f"label:{option}" in local_keys:
             continue
 
-        log_row = entry_lookup.get(key) or entry_lookup.get(f"label:{option}") or {}
+        broker_signal = broker_pos.get("signal") or ""
+        right = "C" if broker_signal == "CALL" else "P" if broker_signal == "PUT" else ""
+        contract_key = (
+            f"opt:{str(broker_pos.get('symbol') or '').upper()}:{broker_pos.get('expiry')}:{float(broker_pos.get('strike') or 0):g}:{right}"
+            if right else ""
+        )
+        log_row = entry_lookup.get(key) or entry_lookup.get(contract_key) or entry_lookup.get(f"label:{option}") or {}
         entry_price = _number_or_none(log_row.get("entry_price")) if log_row else None
         if entry_price is None:
             entry_price = _number_or_none(log_row.get("limit_price")) if log_row else None
@@ -1964,6 +2201,7 @@ def sync_active_positions_from_broker(
 
         symbol = broker_pos.get("symbol") or str(log_row.get("symbol", "") or "").upper()
         signal = broker_pos.get("signal") or str(log_row.get("signal", "") or "").upper()
+        monitor_only = not log_row or is_monitor_only_position(log_row)
         position_id = f"{symbol}-{broker_pos.get('expiry')}-{broker_pos.get('strike')}-{signal}-{datetime.now(EASTERN).strftime('%Y%m%d%H%M%S')}"
         initial_stop_pct = float(trailing_stop_pct) if trailing_from_entry and float(trailing_stop_pct or 0) > 0 else float(stop_loss_pct)
         position = {
@@ -1977,19 +2215,22 @@ def sync_active_positions_from_broker(
             "quantity": broker_pos.get("quantity"),
             "entry_price": round(float(entry_price), 2),
             "underlying_entry_price": _number_or_none(log_row.get("price")) if log_row is not None else None,
-            "current_stop_price": round(float(entry_price) * (1 - initial_stop_pct / 100), 2),
-            "take_profit_price": round(float(entry_price) * (1 + float(take_profit_pct) / 100), 2),
+            "current_stop_price": None if monitor_only else round(float(entry_price) * (1 - initial_stop_pct / 100), 2),
+            "take_profit_price": None if monitor_only else round(float(entry_price) * (1 + float(take_profit_pct) / 100), 2),
             "take_profit_pct": round(float(take_profit_pct), 4),
             "highest_price": round(float(entry_price), 2),
             "breakeven_active": False,
-            "trailing_active": bool(trailing_from_entry),
-            "trailing_from_entry": bool(trailing_from_entry),
+            "trailing_active": False if monitor_only else bool(trailing_from_entry),
+            "trailing_from_entry": False if monitor_only else bool(trailing_from_entry),
             "entry_time": datetime.now(EASTERN).isoformat(),
             "entry_status": "Filled via IBKR sync",
             "source": "IBKR_POSITION_SYNC",
             "entry_source": log_row.get("source") if log_row is not None else None,
+            "management_mode": POSITION_MANAGEMENT_MONITOR_ONLY if monitor_only else POSITION_MANAGEMENT_AUTOMATED,
+            "software_control_enabled": not monitor_only,
+            "protective_orders_status": "Monitor only - no PulseTrade exit orders" if monitor_only else "Not checked",
         }
-        if submit_protection:
+        if submit_protection and not monitor_only:
             protection_events = ensure_protective_orders(
                 ib,
                 position,
@@ -2005,7 +2246,10 @@ def sync_active_positions_from_broker(
             "Symbol": symbol,
             "Option": option,
             "Action": "ADDED",
-            "Reason": "Open IBKR position missing from local active positions",
+            "Reason": (
+                "Manual-order position restored for monitoring only"
+                if monitor_only else "Open IBKR position missing from local active positions"
+            ),
         })
         added.extend(protection_events)
 
@@ -2163,7 +2407,7 @@ def _open_sell_trades_for_position(ib: IB, pos: dict) -> list:
             same_contract = bool(con_id and int(float(getattr(contract, "conId", 0) or 0)) == int(float(con_id)))
         except Exception:
             same_contract = False
-        if same_contract:
+        if same_contract or _position_matches_broker_position(pos, trade):
             matches.append(trade)
     return matches
 
@@ -2177,6 +2421,11 @@ def ensure_protective_orders(
     fixed_take_profit_enabled: bool = True,
 ) -> list[dict]:
     """Create missing broker-side fixed SL/TP OCA orders for an open option position."""
+    if is_monitor_only_position(pos):
+        if account:
+            pos["account"] = account
+        return disable_manual_position_exits(ib, pos)
+
     qty = int(abs(float(pos.get("quantity", 0) or 0)))
     entry_price = float(pos.get("entry_price", 0) or 0)
     if qty <= 0 or entry_price <= 0:
@@ -2768,6 +3017,7 @@ def submit_exit_order(
     account: str | None = None,
     use_market: bool = True,
 ):
+    assert_position_exit_allowed(pos)
     contract = reconstruct_option_contract(pos)
     try:
         qualified = ib.qualifyContracts(contract)
@@ -2837,6 +3087,7 @@ def add_active_position_from_entry(
     trailing_from_entry: bool = False,
     fixed_take_profit_enabled: bool = True,
     entry_source: str | None = None,
+    management_mode: str | None = None,
 ):
     if not is_filled_order_status(trade_status):
         return None
@@ -2844,6 +3095,10 @@ def add_active_position_from_entry(
     contract = option_full["Contract"]
     positions = read_active_positions()
     position_id = f"{row['Symbol']}-{option_full['Expiry']}-{option_full['Strike']}-{option_full['Type']}-{datetime.now(EASTERN).strftime('%Y%m%d%H%M%S')}"
+    monitor_only = (
+        str(management_mode or "").strip().lower() == POSITION_MANAGEMENT_MONITOR_ONLY
+        or str(entry_source or "").strip().lower() == MANUAL_ORDER_SOURCE
+    )
     initial_stop_pct = float(trailing_stop_pct) if trailing_from_entry and float(trailing_stop_pct or 0) > 0 else float(stop_loss_pct)
     underlying_entry_price = _number_or_none(row.get("Price") or row.get("price"))
     if underlying_entry_price is None and ib is not None:
@@ -2859,18 +3114,21 @@ def add_active_position_from_entry(
         "quantity": int(qty),
         "entry_price": round(float(entry_price), 2),
         "underlying_entry_price": underlying_entry_price,
-        "current_stop_price": round(float(entry_price) * (1 - initial_stop_pct / 100), 2),
-        "take_profit_price": round(float(entry_price) * (1 + float(take_profit_pct) / 100), 2),
+        "current_stop_price": None if monitor_only else round(float(entry_price) * (1 - initial_stop_pct / 100), 2),
+        "take_profit_price": None if monitor_only else round(float(entry_price) * (1 + float(take_profit_pct) / 100), 2),
         "take_profit_pct": round(float(take_profit_pct), 4),
         "highest_price": round(float(entry_price), 2),
         "breakeven_active": False,
-        "trailing_active": bool(trailing_from_entry),
-        "trailing_from_entry": bool(trailing_from_entry),
+        "trailing_active": False if monitor_only else bool(trailing_from_entry),
+        "trailing_from_entry": False if monitor_only else bool(trailing_from_entry),
         "entry_time": datetime.now(EASTERN).isoformat(),
         "entry_status": trade_status,
         "entry_source": entry_source,
+        "management_mode": POSITION_MANAGEMENT_MONITOR_ONLY if monitor_only else POSITION_MANAGEMENT_AUTOMATED,
+        "software_control_enabled": not monitor_only,
+        "protective_orders_status": "Monitor only - no PulseTrade exit orders" if monitor_only else "Not checked",
     }
-    if ib is not None:
+    if ib is not None and not monitor_only:
         ensure_protective_orders(
             ib,
             position,
@@ -2919,12 +3177,23 @@ def manage_open_positions(
 
     for pos in positions:
         try:
+            monitor_only = is_monitor_only_position(pos)
+            if monitor_only:
+                if account:
+                    pos["account"] = account
+                if allow_live_orders:
+                    events.extend(disable_manual_position_exits(ib, pos))
+                else:
+                    pos.update(management_mode=POSITION_MANAGEMENT_MONITOR_ONLY,
+                               software_control_enabled=False, current_stop_price=None,
+                               take_profit_price=None, breakeven_active=False,
+                               trailing_active=False, trailing_from_entry=False)
             contract = reconstruct_option_contract(pos)
             qualified = ib.qualifyContracts(contract)
             if qualified:
                 contract = qualified[0]
                 pos["con_id"] = getattr(contract, "conId", pos.get("con_id"))
-            if allow_live_orders:
+            if allow_live_orders and not monitor_only:
                 protection_events = ensure_protective_orders(
                     ib,
                     pos,
@@ -2948,6 +3217,19 @@ def manage_open_positions(
 
             entry_price = float(pos["entry_price"])
             pnl_pct = ((current_price - entry_price) / entry_price) * 100
+            if monitor_only:
+                still_active.append(pos)
+                events.append({
+                    "Symbol": pos.get("symbol"),
+                    "Option": pos.get("option"),
+                    "Action": "MONITOR_ONLY",
+                    "Reason": "Manual order; PulseTrade exit controls disabled",
+                    "Entry": entry_price,
+                    "Current": round(current_price, 2),
+                    "P/L %": round(pnl_pct, 1),
+                })
+                continue
+
             highest = max(float(pos.get("highest_price", entry_price)), current_price)
             pos["highest_price"] = round(highest, 2)
 
@@ -3303,9 +3585,9 @@ def default_config() -> dict:
         "telegram": {"bot_token": "", "chat_id": "", "send_alerts": False},
         "automation": {"enabled": False, "place_orders": False, "confirm_order_risk": False, "approval_mode": "Dashboard", "require_trade_approval": False, "live_confirm_text": "", "scan_interval_seconds": 300, "align_scans_to_interval": True, "first_scan_hour": 9, "first_scan_minute": 50, "live_sync_interval_seconds": 15, "market_timezone": "America/New_York", "scan_only_market_hours": True},
         "staged_trading_timeline": {"enabled": False, "opening_start_hour": 9, "opening_start_minute": 35, "opening_end_hour": 9, "opening_end_minute": 45, "midday_end_hour": 11, "midday_end_minute": 30, "retest_end_hour": 13, "retest_end_minute": 30, "opening_scan_interval_seconds": 60, "orb_scan_interval_seconds": 300, "retest_scan_interval_seconds": 300},
-        "opening_orb_trade": {"enabled": False, "start_hour": 9, "start_minute": 35, "end_hour": 9, "end_minute": 45, "orb_minutes": 5, "capital_pct": 50.0, "scan_interval_seconds": 30},
+        "opening_orb_trade": {"enabled": False, "start_hour": 9, "start_minute": 35, "end_hour": 9, "end_minute": 45, "orb_minutes": 5, "capital_pct": 50.0, "scan_interval_seconds": 30, "min_score": 94.0, "min_rvol": 1.5, "stop_loss_pct": 5.0},
         "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "use_sr_filter": True, "min_sr_room_pct": 0.75, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7, "require_break_retest": False, "retest_tolerance_pct": 0.10, "retest_max_minutes": 45},
-        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "recycle_capital_after_exit": False, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 14, "entry_cutoff_minute": 30, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_from_entry": True, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "use_take_profit_with_trailing": False, "force_exit_enabled": True, "require_eod_exit_approval": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
+        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "allow_same_symbol_same_day": False, "recycle_capital_after_exit": False, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 14, "entry_cutoff_minute": 30, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_from_entry": True, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "use_take_profit_with_trailing": False, "force_exit_enabled": True, "require_eod_exit_approval": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},
         "option_filters": dict(DEFAULT_OPTION_FILTERS),
         "watchlist": WATCHLIST,
