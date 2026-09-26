@@ -60,6 +60,21 @@ class LovableTradeSyncTests(unittest.TestCase):
         self.assertEqual(trades[0]["entry_time"], "2026-09-01T13:52:01.000000Z")
         self.assertEqual(trades[0]["exit_time"], "2026-09-01T14:12:21.000000Z")
 
+    def test_today_close_includes_overnight_entry_without_reusing_old_close(self):
+        common = dict(symbol="NVDA", signal="CALL", quantity=1, filled_quantity=1,
+                      con_id=123, source="IBKR_EXECUTION", multiplier=100)
+        rows = pd.DataFrame([
+            dict(common, timestamp="2026-09-10T10:00:00-04:00", event="ENTRY", entry_price=7, external_id="OLD-BUY"),
+            dict(common, timestamp="2026-09-10T11:00:00-04:00", event="EXIT", exit_price=8, external_id="OLD-SELL"),
+            dict(common, timestamp="2026-09-11T11:57:12-04:00", event="ENTRY", entry_price=8.1, external_id="BUY"),
+            dict(common, timestamp="2026-09-21T11:03:02-04:00", event="EXIT", exit_price=9.69, external_id="SELL"),
+        ])
+        trades = closed_trade_payloads(rows, date(2026, 9, 21))
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["external_id"], "CLOSED-SELL")
+        self.assertEqual(trades[0]["entry_price"], 8.1)
+        self.assertEqual(trades[0]["entry_time"], "2026-09-11T15:57:12.000000Z")
+
     def test_posts_idempotent_payload_with_both_supported_headers(self):
         session = FakeSession()
         store = LovableTradeStore("https://thedesk.dev/api/public/ibkr/trades", "secret", session=session)

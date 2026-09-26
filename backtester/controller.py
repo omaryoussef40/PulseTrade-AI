@@ -58,6 +58,7 @@ class StrategyLabSettings:
     require_break_retest: bool = False
     retest_tolerance_pct: float = 0.10
     retest_max_minutes: int = 45
+    breakout_follow_through: dict | None = None
     use_staged_timeline: bool = False
     min_score: float = 70.0
     min_confidence: float = 75.0
@@ -292,6 +293,7 @@ def _scan_strategy_replay(strategy_name: str, symbol: str, history: pd.DataFrame
             require_retest=bool(settings.require_break_retest),
             retest_tolerance_pct=float(settings.retest_tolerance_pct),
             retest_max_minutes=int(settings.retest_max_minutes),
+            breakout_follow_through=settings.breakout_follow_through,
         )
         if result:
             result["Strategy"] = "PMB"
@@ -581,6 +583,8 @@ class StrategyLabController:
                         "grade": clean_scan.get("Grade"),
                         "rvol": clean_scan.get("RVOL"),
                         "atr_pct": clean_scan.get("ATR %"),
+                        "breakout_volume_ratio": clean_scan.get("Breakout Volume Ratio"),
+                        "breakout_follow_through": clean_scan.get("Breakout Follow-through Confirmed"),
                     })
                     qualifies = is_top_candidate_replay(
                         clean_scan,
@@ -622,6 +626,8 @@ class StrategyLabController:
                             "room_check": clean_scan.get("Room Check"),
                             "score_components": clean_scan.get("Score Components"),
                             "reasons": clean_scan.get("Reasons"),
+                            "breakout_volume_ratio": clean_scan.get("Breakout Volume Ratio"),
+                            "breakout_follow_through": clean_scan.get("Breakout Follow-through Confirmed"),
                         })
             replay_rows.append(row)
             if progress_callback and (idx == 1 or idx == total_events or idx % max(1, total_events // 100) == 0):

@@ -1,0 +1,9 @@
+{
+  "symbol": "MSTR",
+  "option_dte": 7,
+  "expiry": "20260925",
+  "strike": 138.0,
+  "right": "P",
+  "localSymbol": "MSTR  260925P00138000",
+  "conId": 914693725
+}

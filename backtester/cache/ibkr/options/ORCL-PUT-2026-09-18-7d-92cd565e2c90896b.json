@@ -1,0 +1,9 @@
+{
+  "symbol": "ORCL",
+  "option_dte": 7,
+  "expiry": "20260925",
+  "strike": 146.0,
+  "right": "P",
+  "localSymbol": "ORCL  260925P00146000",
+  "conId": 908808621
+}

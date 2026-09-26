@@ -1,0 +1,9 @@
+{
+  "symbol": "GS",
+  "option_dte": 7,
+  "expiry": "20260925",
+  "strike": 1005.0,
+  "right": "P",
+  "localSymbol": "GS    260925P01005000",
+  "conId": 908770886
+}

@@ -23,6 +23,12 @@ MIDDAY_VOLUME_RATIO = 0.40
 DEFAULT_RETEST_TOLERANCE_PCT = 0.10
 DEFAULT_RETEST_MAX_MINUTES = 45
 DEFAULT_BREAKOUT_BUFFER_PCT = 0.05
+DEFAULT_BREAKOUT_FOLLOW_THROUGH = {
+    "enabled": False,
+    "min_breakout_volume_ratio": 2.0,
+    "min_volume_sessions": 3,
+    "require_extension": True,
+}
 
 
 def _normalize_ohlcv(df: pd.DataFrame | None, timezone: ZoneInfo = EASTERN) -> pd.DataFrame:
@@ -282,6 +288,90 @@ def calculate_rvol(intraday: pd.DataFrame, today_date) -> float:
     return today_volume / (sum(previous_volumes) / len(previous_volumes)) if previous_volumes else 0.0
 
 
+def evaluate_breakout_follow_through(
+    intraday: pd.DataFrame,
+    today_data: pd.DataFrame,
+    *,
+    direction: str,
+    orb_high: float,
+    orb_low: float,
+    orb_bars: int,
+    config: dict | None = None,
+) -> dict:
+    """Confirm the first ORB break with its volume and the immediately next bar.
+
+    The scanner only approves the one bar immediately after a qualifying break.
+    This prevents it from treating an already-old move as fresh continuation.
+    """
+    cfg = {**DEFAULT_BREAKOUT_FOLLOW_THROUGH, **(config or {})}
+    direction = str(direction or "").upper()
+    result = {
+        "required": bool(cfg["enabled"]),
+        "confirmed": not bool(cfg["enabled"]),
+        "breakout_time": None,
+        "breakout_volume": None,
+        "volume_baseline": None,
+        "volume_ratio": None,
+        "follow_through_time": None,
+        "reason": "Breakout volume/follow-through filter disabled",
+    }
+    if not cfg["enabled"]:
+        return result
+    if direction not in {"CALL", "PUT"} or today_data is None or today_data.empty:
+        result["reason"] = "No directional session data for breakout confirmation"
+        return result
+
+    is_call = direction == "CALL"
+    level = float(orb_high if is_call else orb_low)
+    post_orb = today_data.iloc[max(1, int(orb_bars)):]
+    crossed = post_orb[post_orb["Close"] > level] if is_call else post_orb[post_orb["Close"] < level]
+    if crossed.empty:
+        result["reason"] = "Waiting for the first close beyond the opening range"
+        return result
+
+    breakout_time = crossed.index[0]
+    breakout = crossed.iloc[0]
+    result["breakout_time"] = breakout_time
+    result["breakout_volume"] = float(breakout["Volume"])
+    historical_slot = intraday[(intraday.index.date < breakout_time.date()) & (intraday.index.time == breakout_time.time())]
+    historical_volume = pd.to_numeric(historical_slot["Volume"], errors="coerce").dropna()
+    historical_volume = historical_volume[historical_volume > 0].tail(20)
+    required_sessions = max(1, int(cfg["min_volume_sessions"]))
+    if len(historical_volume) < required_sessions:
+        result["reason"] = f"Breakout volume baseline unavailable ({len(historical_volume)} < {required_sessions} sessions)"
+        return result
+    baseline = float(historical_volume.median())
+    result["volume_baseline"] = baseline
+    result["volume_ratio"] = float(breakout["Volume"]) / baseline if baseline > 0 else None
+    if result["volume_ratio"] is None or result["volume_ratio"] < float(cfg["min_breakout_volume_ratio"]):
+        result["reason"] = (
+            f"Breakout volume too weak ({result['volume_ratio'] or 0:.2f}x < "
+            f"{float(cfg['min_breakout_volume_ratio']):.2f}x baseline)"
+        )
+        return result
+
+    next_bars = today_data[today_data.index > breakout_time]
+    if next_bars.empty:
+        result["reason"] = "Breakout volume passed; waiting for the next candle"
+        return result
+    follow = next_bars.iloc[0]
+    result["follow_through_time"] = next_bars.index[0]
+    if today_data.index[-1] != next_bars.index[0]:
+        result["reason"] = "Follow-through confirmation is stale"
+        return result
+
+    held_level = float(follow["Close"]) > level if is_call else float(follow["Close"]) < level
+    extended = float(follow["High"]) > float(breakout["High"]) if is_call else float(follow["Low"]) < float(breakout["Low"])
+    if not held_level:
+        result["reason"] = "Follow-through candle closed back inside the opening range"
+    elif bool(cfg["require_extension"]) and not extended:
+        result["reason"] = "Follow-through candle did not extend the breakout"
+    else:
+        result["confirmed"] = True
+        result["reason"] = "Breakout volume and immediate follow-through confirmed"
+    return result
+
+
 def calculate_support_resistance(daily: pd.DataFrame, current_price: float, lookback: int = 30, pivot_window: int = 2) -> dict:
     empty = {"Nearest Support": None, "Support Distance %": None, "Nearest Resistance": None, "Resistance Distance %": None}
     if daily is None or daily.empty or current_price <= 0:
@@ -414,6 +504,7 @@ def scan_dataframe(
     retest_tolerance_pct: float = DEFAULT_RETEST_TOLERANCE_PCT,
     retest_max_minutes: int = DEFAULT_RETEST_MAX_MINUTES,
     analysis_bar_minutes: int | None = None,
+    breakout_follow_through: dict | None = None,
 ) -> dict | None:
     symbol = str(symbol).strip().upper()
     retest_intraday = _normalize_ohlcv(intraday, timezone=timezone)
@@ -541,6 +632,26 @@ def scan_dataframe(
             reasons = list(reasons) + [str(retest_result.get("reason") or "Break-and-retest not confirmed")]
             components = list(components) + ["Break-and-retest required: not confirmed"]
 
+    follow_through = evaluate_breakout_follow_through(
+        intraday,
+        today_data,
+        direction=signal if signal in {"CALL", "PUT"} else ("CALL" if call_score >= put_score else "PUT"),
+        orb_high=orb_high,
+        orb_low=orb_low,
+        orb_bars=orb_bars,
+        config=breakout_follow_through,
+    )
+    if signal in {"CALL", "PUT"} and bool(follow_through.get("required")):
+        if bool(follow_through.get("confirmed")):
+            reasons = list(reasons) + [str(follow_through["reason"])]
+            components = list(components) + [
+                f"Breakout volume {float(follow_through['volume_ratio']):.2f}x baseline; immediate follow-through passed"
+            ]
+        else:
+            signal = "WAIT"
+            reasons = list(reasons) + [str(follow_through.get("reason") or "Breakout follow-through not confirmed")]
+            components = list(components) + ["Breakout volume/follow-through required: not confirmed"]
+
     opening_exhaustion_block = False
 
     midday_volume_block = False
@@ -613,6 +724,13 @@ def scan_dataframe(
         "Retest Time": retest_result.get("retest_time").strftime("%Y-%m-%d %H:%M %Z") if hasattr(retest_result.get("retest_time"), "strftime") else None,
         "Retest Minutes After Breakout": round(float(retest_result["elapsed_minutes"]), 1) if retest_result.get("elapsed_minutes") is not None else None,
         "Retest Reason": retest_result.get("reason"),
+        "Breakout Follow-through Required": bool(follow_through.get("required")),
+        "Breakout Follow-through Confirmed": bool(follow_through.get("confirmed")),
+        "Breakout Follow-through Reason": follow_through.get("reason"),
+        "Breakout Volume": round(float(follow_through["breakout_volume"]), 2) if follow_through.get("breakout_volume") is not None else None,
+        "Breakout Volume Baseline": round(float(follow_through["volume_baseline"]), 2) if follow_through.get("volume_baseline") is not None else None,
+        "Breakout Volume Ratio": round(float(follow_through["volume_ratio"]), 2) if follow_through.get("volume_ratio") is not None else None,
+        "Breakout Follow-through Time": follow_through.get("follow_through_time").strftime("%Y-%m-%d %H:%M %Z") if hasattr(follow_through.get("follow_through_time"), "strftime") else None,
         "PDH Break": pdh_break,
         "PDL Break": pdl_break,
         "Above VWAP": above_vwap,
@@ -624,8 +742,8 @@ def scan_dataframe(
     }
 
 
-def scan_replay_history(symbol: str, history: pd.DataFrame, daily: pd.DataFrame | None = None, use_rvol_score: bool = False, min_score: float = MIN_SCORE, orb_minutes: int = DEFAULT_ORB_MINUTES) -> dict | None:
-    return scan_dataframe(symbol=symbol, intraday=history, daily=daily, use_rvol_score=use_rvol_score, min_score=min_score, orb_minutes=orb_minutes)
+def scan_replay_history(symbol: str, history: pd.DataFrame, daily: pd.DataFrame | None = None, use_rvol_score: bool = False, min_score: float = MIN_SCORE, orb_minutes: int = DEFAULT_ORB_MINUTES, breakout_follow_through: dict | None = None, **kwargs) -> dict | None:
+    return scan_dataframe(symbol=symbol, intraday=history, daily=daily, use_rvol_score=use_rvol_score, min_score=min_score, orb_minutes=orb_minutes, breakout_follow_through=breakout_follow_through, **kwargs)
 
 
 def clean_signal_row(result: dict | None) -> dict | None:

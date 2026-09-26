@@ -505,6 +505,7 @@ def scan_symbol_ib(
     intraday_duration: str = "5 D",
     intraday_bar_size: str = "5 mins",
     analysis_bar_minutes: int | None = None,
+    breakout_follow_through: dict | None = None,
 ) -> dict | None:
     """Run the active scanner strategy on IBKR historical bars.
 
@@ -546,6 +547,7 @@ def scan_symbol_ib(
             retest_tolerance_pct=float(retest_tolerance_pct),
             retest_max_minutes=int(retest_max_minutes),
             analysis_bar_minutes=analysis_bar_minutes,
+            breakout_follow_through=breakout_follow_through,
         )
         session_date = _result_session_date(result)
         if session_date and session_date != datetime.now(EASTERN).date():
@@ -566,6 +568,7 @@ def scan_symbol_ib(
         retest_tolerance_pct=float(retest_tolerance_pct),
         retest_max_minutes=int(retest_max_minutes),
         analysis_bar_minutes=analysis_bar_minutes,
+        breakout_follow_through=breakout_follow_through,
     )
     session_date = _result_session_date(result)
     if session_date and session_date != datetime.now(EASTERN).date():

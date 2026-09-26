@@ -1,0 +1,9 @@
+{
+  "symbol": "META",
+  "option_dte": 7,
+  "expiry": "20260925",
+  "strike": 677.5,
+  "right": "C",
+  "localSymbol": "META  260925C00677500",
+  "conId": 922467861
+}

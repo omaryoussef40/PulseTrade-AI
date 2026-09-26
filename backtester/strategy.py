@@ -31,6 +31,7 @@ def scan_dataframe(
     require_retest: bool = False,
     retest_tolerance_pct: float = 0.10,
     retest_max_minutes: int = 45,
+    breakout_follow_through: dict | None = None,
 ) -> dict | None:
     if _scan_dataframe is None:
         return None
@@ -47,6 +48,7 @@ def scan_dataframe(
         require_retest=bool(require_retest),
         retest_tolerance_pct=float(retest_tolerance_pct),
         retest_max_minutes=int(retest_max_minutes),
+        breakout_follow_through=breakout_follow_through,
     )
 
 
@@ -62,6 +64,7 @@ def scan_replay_history(
     require_retest: bool = False,
     retest_tolerance_pct: float = 0.10,
     retest_max_minutes: int = 45,
+    breakout_follow_through: dict | None = None,
 ) -> dict | None:
     return scan_dataframe(
         symbol=symbol,
@@ -75,6 +78,7 @@ def scan_replay_history(
         require_retest=bool(require_retest),
         retest_tolerance_pct=float(retest_tolerance_pct),
         retest_max_minutes=int(retest_max_minutes),
+        breakout_follow_through=breakout_follow_through,
     )
 
 

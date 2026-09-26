@@ -1256,6 +1256,7 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         require_break_retest=bool(require_break_retest),
         retest_tolerance_pct=float(retest_tolerance_pct),
         retest_max_minutes=int(retest_max_minutes),
+        breakout_follow_through=dict(strategy.get("breakout_follow_through") or {}),
         use_staged_timeline=bool(use_staged_timeline),
         min_score=float(strategy.get("min_score", 70)),
         min_confidence=float(strategy.get("min_confidence", 75)),

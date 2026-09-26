@@ -62,7 +62,7 @@ def closed_trade_payloads(
     df["_et_date"] = df["_timestamp"].dt.tz_convert("America/New_York").dt.date
     source = df.get("source", pd.Series("", index=df.index)).fillna("").astype(str).str.upper()
     event = df["event"].fillna("").astype(str).str.upper()
-    df = df[(df["_et_date"] == trade_date) & source.eq("IBKR_EXECUTION") & event.isin(["ENTRY", "EXIT"])].copy()
+    df = df[(df["_et_date"] <= trade_date) & source.eq("IBKR_EXECUTION") & event.isin(["ENTRY", "EXIT"])].copy()
     wanted = {str(symbol).strip().upper() for symbol in symbols or [] if str(symbol).strip()}
     if wanted:
         symbols_series = df.get("symbol", pd.Series("", index=df.index)).fillna("").astype(str).str.upper()
@@ -95,6 +95,9 @@ def closed_trade_payloads(
         entry_index = candidates.sort_values("_timestamp").index[-1]
         used_entries.add(int(entry_index))
         entry_row = entries.loc[entry_index]
+        # Consume earlier closes too, so an already closed entry cannot be reused.
+        if exit_row["_et_date"] != trade_date:
+            continue
 
         entry_price = _number(entry_row.get("entry_price")) or _number(entry_row.get("limit_price"))
         exit_price = _number(exit_row.get("exit_price"))

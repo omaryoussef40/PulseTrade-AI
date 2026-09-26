@@ -1,0 +1,9 @@
+{
+  "symbol": "QQQ",
+  "option_dte": 7,
+  "expiry": "20260930",
+  "strike": 745.0,
+  "right": "P",
+  "localSymbol": "QQQ   260930P00745000",
+  "conId": 819202674
+}

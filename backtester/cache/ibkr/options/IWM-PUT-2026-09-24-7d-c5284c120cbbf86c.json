@@ -1,0 +1,9 @@
+{
+  "symbol": "IWM",
+  "option_dte": 7,
+  "expiry": "20261001",
+  "strike": 281.0,
+  "right": "P",
+  "localSymbol": "IWM   261001P00281000",
+  "conId": 925223984
+}

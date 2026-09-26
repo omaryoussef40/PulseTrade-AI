@@ -1,0 +1,9 @@
+{
+  "symbol": "CRWD",
+  "option_dte": 7,
+  "expiry": "20260925",
+  "strike": 207.5,
+  "right": "C",
+  "localSymbol": "CRWD  260925C00207500",
+  "conId": 922362521
+}

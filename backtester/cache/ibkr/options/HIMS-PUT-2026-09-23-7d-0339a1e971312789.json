@@ -1,0 +1,9 @@
+{
+  "symbol": "HIMS",
+  "option_dte": 7,
+  "expiry": "20261002",
+  "strike": 30.5,
+  "right": "P",
+  "localSymbol": "HIMS  261002P00030500",
+  "conId": 923542355
+}

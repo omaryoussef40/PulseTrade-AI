@@ -165,6 +165,7 @@ def build_backtester_cache_warmup_settings(cfg: dict, symbols: list[str]) -> Str
         require_break_retest=bool(lab_cfg.get("require_break_retest", strategy.get("require_break_retest", False))),
         retest_tolerance_pct=float(lab_cfg.get("retest_tolerance_pct", strategy.get("retest_tolerance_pct", 0.10))),
         retest_max_minutes=int(lab_cfg.get("retest_max_minutes", strategy.get("retest_max_minutes", 45))),
+        breakout_follow_through=dict(strategy.get("breakout_follow_through") or {}),
         use_staged_timeline=bool(lab_cfg.get("use_staged_timeline", False)),
         min_score=float(lab_cfg.get("min_score", strategy.get("min_score", 70))),
         min_confidence=float(lab_cfg.get("min_confidence", strategy.get("min_confidence", 70))),
@@ -1562,6 +1563,7 @@ def run_opening_orb_trade_cycle(
                 intraday_duration="2 D",
                 intraday_bar_size="1 min",
                 analysis_bar_minutes=5,
+                breakout_follow_through=dict(strategy.get("breakout_follow_through") or {}),
             )
             if not result:
                 log_engine_decision(
@@ -2200,6 +2202,7 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
                 retest_max_minutes=int(strategy.get("retest_max_minutes", 45)),
                 intraday_bar_size="5 mins",
                 analysis_bar_minutes=5,
+                breakout_follow_through=dict(strategy.get("breakout_follow_through") or {}),
             )
             if not result:
                 log_engine_decision(symbol=symbol, decision="SCAN_NO_RESULT", reason="IBKR scan returned no PMB result")

@@ -1,0 +1,9 @@
+{
+  "symbol": "MRVL",
+  "option_dte": 7,
+  "expiry": "20260925",
+  "strike": 217.5,
+  "right": "C",
+  "localSymbol": "MRVL  260925C00217500",
+  "conId": 922452841
+}

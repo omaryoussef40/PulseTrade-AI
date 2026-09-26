@@ -1,0 +1,9 @@
+{
+  "symbol": "COIN",
+  "option_dte": 7,
+  "expiry": "20260925",
+  "strike": 187.5,
+  "right": "C",
+  "localSymbol": "COIN  260925C00187500",
+  "conId": 917706456
+}
