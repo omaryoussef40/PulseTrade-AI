@@ -83,7 +83,7 @@
     }
   },
   "risk": {
-    "account_size": 1256.73,
+    "account_size": 4644.63,
     "use_ibkr_buying_power": true,
     "max_trades_per_day": 3,
     "allow_same_symbol_same_day": false,
@@ -91,8 +91,8 @@
     "reserve_capital_for_remaining_trades": true,
     "max_spend_per_trade_pct": 65.0,
     "max_daily_capital_pct": 95.0,
-    "max_spend_per_trade": 816.87,
-    "max_daily_capital": 1193.89,
+    "max_spend_per_trade": 3019.01,
+    "max_daily_capital": 4412.4,
     "max_contracts": 20,
     "entry_cutoff_hour": 13,
     "entry_cutoff_minute": 0,

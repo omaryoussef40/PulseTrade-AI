@@ -7,7 +7,7 @@ quality directly using Score + Grade. Confidence is still returned only as a
 compatibility/debug field so older engine/dashboard code does not break.
 """
 
-from datetime import time as dtime, timedelta
+from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
@@ -81,6 +81,21 @@ def _resample_ohlcv(df: pd.DataFrame, minutes: int) -> pd.DataFrame:
         "Volume": "sum",
     })
     return out.dropna(subset=["Open", "High", "Low", "Close"])
+
+
+def completed_bars(df: pd.DataFrame, duration: pd.Timedelta, as_of: datetime) -> pd.DataFrame:
+    """Keep start-labeled bars whose closing time has been reached."""
+    if df.empty:
+        return df.copy()
+    if duration <= pd.Timedelta(0):
+        raise ValueError("Candle duration must be positive")
+    cutoff = pd.Timestamp(as_of)
+    index = pd.DatetimeIndex(df.index)
+    if index.tz is None:
+        index = index.tz_localize(EASTERN)
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.tz_localize(EASTERN)
+    return df.loc[index + duration <= cutoff].copy()
 
 
 def detect_break_and_retest(
@@ -505,10 +520,15 @@ def scan_dataframe(
     retest_max_minutes: int = DEFAULT_RETEST_MAX_MINUTES,
     analysis_bar_minutes: int | None = None,
     breakout_follow_through: dict | None = None,
+    completed_as_of: datetime | None = None,
 ) -> dict | None:
     symbol = str(symbol).strip().upper()
     retest_intraday = _normalize_ohlcv(intraday, timezone=timezone)
     intraday = _resample_ohlcv(retest_intraday, int(analysis_bar_minutes)) if analysis_bar_minutes else retest_intraday.copy()
+    # Live source bars are filtered before this call, but their resampled
+    # analysis bucket can still be developing. Replay already gates by close.
+    if completed_as_of is not None and analysis_bar_minutes:
+        intraday = completed_bars(intraday, pd.Timedelta(minutes=int(analysis_bar_minutes)), completed_as_of)
     daily = _normalize_ohlcv(daily, timezone=timezone) if daily is not None else pd.DataFrame(columns=REQUIRED_COLUMNS)
     if intraday.empty or len(intraday) < 50:
         return None

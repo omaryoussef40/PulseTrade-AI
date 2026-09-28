@@ -514,7 +514,14 @@ def scan_symbol_ib(
     parity. Confidence is returned only as a compatibility/debug field and is
     not used as a live trade blocker.
     """
+    # Freeze the cutoff before requesting data so a request crossing a candle
+    # boundary cannot admit a candle that was incomplete when the scan began.
+    completed_as_of = datetime.now(EASTERN)
+    from strategies.pmb.strategy import completed_bars
+
+    source_duration = pd.Timedelta(intraday_bar_size.replace("mins", "min").replace("secs", "s"))
     intraday = fetch_ib_intraday(ib, symbol, duration=intraday_duration, bar_size=intraday_bar_size)
+    intraday = completed_bars(intraday, source_duration, completed_as_of)
     daily = fetch_ib_daily(ib, symbol)
 
     if intraday.empty or len(intraday) < 50:
@@ -548,6 +555,7 @@ def scan_symbol_ib(
             retest_max_minutes=int(retest_max_minutes),
             analysis_bar_minutes=analysis_bar_minutes,
             breakout_follow_through=breakout_follow_through,
+            completed_as_of=completed_as_of,
         )
         session_date = _result_session_date(result)
         if session_date and session_date != datetime.now(EASTERN).date():
@@ -569,6 +577,7 @@ def scan_symbol_ib(
         retest_max_minutes=int(retest_max_minutes),
         analysis_bar_minutes=analysis_bar_minutes,
         breakout_follow_through=breakout_follow_through,
+        completed_as_of=completed_as_of,
     )
     session_date = _result_session_date(result)
     if session_date and session_date != datetime.now(EASTERN).date():

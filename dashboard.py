@@ -3808,7 +3808,9 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
                     require_retest=bool(scan_cfg["strategy"].get("require_break_retest", False)),
                     retest_tolerance_pct=float(scan_cfg["strategy"].get("retest_tolerance_pct", 0.10)),
                     retest_max_minutes=int(scan_cfg["strategy"].get("retest_max_minutes", 45)),
-                    analysis_bar_minutes=5,
+                    intraday_bar_size="15 mins",
+                    analysis_bar_minutes=15,
+                    breakout_follow_through=dict(scan_cfg["strategy"].get("breakout_follow_through") or {}),
                 )
                 if result:
                     rows.append(clean_for_table(result))
@@ -3857,14 +3859,16 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
                     "message": f"Pricing options for {symbol} ({j + 1}/{len(priced_candidates)})",
                 })
                 try:
-                    option = recommend_option_ib(
-                        ib,
-                        symbol,
-                        row["Signal"],
-                        float(row["Price"]),
-                        int(scan_cfg["strategy"].get("option_dte", 7)),
-                        scan_cfg.get("option_filters", {}),
-                    )
+                    from modules.scanner_option_worker import lookup_option
+                    option = lookup_option({
+                        "ib": {"host": scan_ib_cfg.host, "port": scan_ib_cfg.port,
+                               "client_id": scan_ib_cfg.client_id + 1,
+                               "account": scan_ib_cfg.account},
+                        "symbol": symbol, "signal": row["Signal"],
+                        "price": float(row["Price"]),
+                        "dte": int(scan_cfg["strategy"].get("option_dte", 7)),
+                        "filters": scan_cfg.get("option_filters", {}),
+                    })
                     if option:
                         option_clean = {k: v for k, v in option.items() if k != "Contract"}
                         option_rows.append({"Symbol": symbol, "Signal": row["Signal"], "Score": row["Score"], "Confidence": row["Confidence"], **option_clean})
@@ -3914,8 +3918,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
 def run_ibkr_scanner_ui(scan_cfg: dict, scan_symbols: list[str]):
     status = read_scanner_job_status()
     if status.get("status") == "running":
-        st.info(f"Scanner is already running: {status.get('completed', 0)} / {status.get('total', len(scan_symbols))} symbols.")
-        st_autorefresh(interval=2_000, key="scanner_job_refresh")
+        # The results panel below renders progress and owns the refresh timer.
         return
     threading.Thread(target=run_ibkr_scanner_job, args=(json.loads(json.dumps(scan_cfg, default=str)), list(scan_symbols), "manual"), daemon=True, name="ibkr-scanner-job").start()
     st.success("Scanner started in the background. You can switch tabs and come back for results.")
@@ -4286,7 +4289,10 @@ elif selected_page == "📈 Scanner & Breakdown":
 
         stock_df, option_df, scanner_job_status = load_saved_scanner_results()
         if scanner_job_status.get("status") == "running":
-            st.info(f"Scanner running in background: {scanner_job_status.get('completed', 0)} / {scanner_job_status.get('total', len(symbols))} symbols.")
+            completed = scanner_job_status.get("completed", 0)
+            total = scanner_job_status.get("total", len(symbols))
+            message = scanner_job_status.get("message") or "Scanner running"
+            st.info(f"{message} · Stocks scanned: {completed} / {total}.")
             st_autorefresh(interval=2_000, key="scanner_job_refresh_display")
         elif scanner_job_status.get("status") == "error":
             st.error(f"Scanner failed: {scanner_job_status.get('message', 'Unknown error')}")
