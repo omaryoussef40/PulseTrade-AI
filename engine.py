@@ -2200,8 +2200,8 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
                 require_retest=bool(strategy.get("require_break_retest", False)),
                 retest_tolerance_pct=float(strategy.get("retest_tolerance_pct", 0.10)),
                 retest_max_minutes=int(strategy.get("retest_max_minutes", 45)),
-                intraday_bar_size="5 mins",
-                analysis_bar_minutes=5,
+                intraday_bar_size="15 mins",
+                analysis_bar_minutes=15,
                 breakout_follow_through=dict(strategy.get("breakout_follow_through") or {}),
             )
             if not result:

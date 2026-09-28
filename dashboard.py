@@ -1225,6 +1225,36 @@ def render_platform_settings():
             max_value=120,
             step=5,
         )
+        st.markdown("#### Breakout Confirmation")
+        breakout_confirmation = s.setdefault("breakout_follow_through", {})
+        breakout_confirmation["enabled"] = st.checkbox(
+            "Require breakout volume and immediate follow-through",
+            value=bool(breakout_confirmation.get("enabled", False)),
+            help="The breakout candle must have unusual volume for that time of day. The next candle must hold beyond the opening range and extend the move.",
+        )
+        breakout_confirmation["min_breakout_volume_ratio"] = st.number_input(
+            "Minimum breakout-candle volume vs. same-time baseline",
+            value=float(breakout_confirmation.get("min_breakout_volume_ratio", 2.0)),
+            min_value=0.5,
+            max_value=10.0,
+            step=0.25,
+            disabled=not breakout_confirmation["enabled"],
+        )
+        breakout_confirmation["min_volume_sessions"] = st.number_input(
+            "Minimum prior sessions for volume baseline",
+            value=int(breakout_confirmation.get("min_volume_sessions", 3)),
+            min_value=1,
+            max_value=20,
+            step=1,
+            disabled=not breakout_confirmation["enabled"],
+        )
+        breakout_confirmation["require_extension"] = st.checkbox(
+            "Require the next candle to extend the breakout",
+            value=bool(breakout_confirmation.get("require_extension", True)),
+            disabled=not breakout_confirmation["enabled"],
+        )
+        if breakout_confirmation["enabled"]:
+            st.caption("Only the candle immediately after the first opening-range break can confirm. Later moves are rejected as stale.")
         if not s["use_rvol_filter"]:
             st.caption("RVOL is informational only and will not block trades.")
         if s["use_sr_filter"]:
