@@ -1,0 +1,11 @@
+{
+  "symbol": "MARA",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 10.0,
+  "right": "P",
+  "localSymbol": "MARA  261023P00010000",
+  "conId": 920237407,
+  "tradingClass": "MARA",
+  "multiplier": "100"
+}

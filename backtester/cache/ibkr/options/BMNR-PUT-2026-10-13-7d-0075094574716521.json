@@ -1,0 +1,11 @@
+{
+  "symbol": "BMNR",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 23.5,
+  "right": "P",
+  "localSymbol": "BMNR  261023P00023500",
+  "conId": 920174335,
+  "tradingClass": "BMNR",
+  "multiplier": "100"
+}

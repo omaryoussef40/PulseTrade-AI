@@ -1,0 +1,11 @@
+{
+  "symbol": "GME",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 26.5,
+  "right": "P",
+  "localSymbol": "GME   261023P00026500",
+  "conId": 931229786,
+  "tradingClass": "GME",
+  "multiplier": "100"
+}

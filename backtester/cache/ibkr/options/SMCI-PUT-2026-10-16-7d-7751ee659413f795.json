@@ -1,0 +1,11 @@
+{
+  "symbol": "SMCI",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 32.5,
+  "right": "P",
+  "localSymbol": "SMCI  261023P00032500",
+  "conId": 934447893,
+  "tradingClass": "SMCI",
+  "multiplier": "100"
+}

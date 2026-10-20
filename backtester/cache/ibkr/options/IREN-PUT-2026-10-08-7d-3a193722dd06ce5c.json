@@ -1,0 +1,11 @@
+{
+  "symbol": "IREN",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 36.5,
+  "right": "P",
+  "localSymbol": "IREN  261023P00036500",
+  "conId": 931231112,
+  "tradingClass": "IREN",
+  "multiplier": "100"
+}

@@ -1,0 +1,11 @@
+{
+  "symbol": "SNDK",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 1480.0,
+  "right": "P",
+  "localSymbol": "SNDK  261023P01480000",
+  "conId": 920263794,
+  "tradingClass": "SNDK",
+  "multiplier": "100"
+}

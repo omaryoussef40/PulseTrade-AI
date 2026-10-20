@@ -1,0 +1,11 @@
+{
+  "symbol": "CRWV",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 60.0,
+  "right": "P",
+  "localSymbol": "CRWV  261023P00060000",
+  "conId": 920608525,
+  "tradingClass": "CRWV",
+  "multiplier": "100"
+}
