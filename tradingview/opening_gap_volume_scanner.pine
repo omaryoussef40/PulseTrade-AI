@@ -1,0 +1,57 @@
+//@version=6
+indicator("Opening Gap + First 15m Volume — PDH / PDL", overlay = false)
+
+// Pine Screener: select 1D. The script reads the regular-session 15m
+// intrabars internally, retaining a full 20-session baseline on daily bars.
+float minRatio = input.float(1.5, "Minimum opening volume ratio", minval = 0.1, step = 0.1)
+int lookback = input.int(20, "Previous sessions for volume average", minval = 1, maxval = 60)
+bool todayOnly = input.bool(true, "Only show today's matches (New York date)")
+
+if timeframe.period != "1D"
+    runtime.error("Select the 1D timeframe in Pine Screener or on the chart. This script reads 15-minute opening candles internally.")
+
+string regularTicker = ticker.new(syminfo.prefix, syminfo.ticker, session.regular)
+[opens, volumes, starts, ends] = request.security_lower_tf(regularTicker, "15", [open, volume, time, time_close])
+[pdh, pdl] = request.security(regularTicker, "1D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+
+// No carry-forward variables: each daily bar starts with an empty result.
+// Missing 09:30 data (e.g. a halt) never substitutes a later candle.
+float openingPrice = na
+float openingVolume = na
+if array.size(starts) > 0
+    int firstStart = array.get(starts, 0)
+    int firstEnd = array.get(ends, 0)
+    bool correctSlot = hour(firstStart, "America/New_York") == 9 and minute(firstStart, "America/New_York") == 30
+    bool fullQuarterHour = firstEnd - firstStart == 15 * 60 * 1000
+    bool completed = firstEnd <= timenow
+    if correctSlot and fullQuarterHour and completed
+        openingPrice := array.get(opens, 0)
+        openingVolume := array.get(volumes, 0)
+
+// Exclude today's volume. Require every one of the previous N sessions;
+// ta.sma alone skips missing values and could silently use older sessions.
+float baseline = ta.sma(openingVolume[1], lookback)
+float validSessions = math.sum(not na(openingVolume[1]) ? 1.0 : 0.0, lookback)
+bool historyReady = validSessions == lookback and not na(baseline) and baseline > 0
+float volumeRatio = historyReady and not na(openingVolume) ? openingVolume / baseline : na
+bool currentDate = year(time, "America/New_York") == year(timenow, "America/New_York") and month(time, "America/New_York") == month(timenow, "America/New_York") and dayofmonth(time, "America/New_York") == dayofmonth(timenow, "America/New_York")
+bool eligibleDate = not todayOnly or currentDate
+bool ready = eligibleDate and historyReady and not na(openingVolume) and not na(pdh) and not na(pdl)
+bool highVolume = ready and volumeRatio >= minRatio
+bool abovePDH = highVolume and openingPrice > pdh
+bool belowPDL = highVolume and openingPrice < pdl
+
+// Filter Above PDH = 1 for the bullish screen, Below PDL = 1 for bearish.
+// Matches stay visible throughout that session, even if price later reverses.
+plot(abovePDH ? 1 : 0, "Above PDH match", color = color.lime)
+plot(belowPDL ? 1 : 0, "Below PDL match", color = color.red)
+plot(volumeRatio, "Opening volume ratio", color = color.blue)
+plot(openingVolume, "First 15m shares", color = color.gray)
+plot(baseline, "Prior opening volume average", color = color.gray)
+plot(openingPrice, "09:30 open", color = color.white)
+plot(pdh, "Previous day high", color = color.green)
+plot(pdl, "Previous day low", color = color.maroon)
+plot(ready ? 1 : 0, "Data ready", color = color.orange)
+plot(validSessions, "Valid prior sessions", color = color.gray)
+alertcondition(abovePDH, "Opened above PDH with high volume", "Open above PDH; completed first 15m volume meets the configured ratio.")
+alertcondition(belowPDL, "Opened below PDL with high volume", "Open below PDL; completed first 15m volume meets the configured ratio.")

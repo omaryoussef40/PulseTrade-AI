@@ -34,6 +34,14 @@ from .gap_universe import YahooGapUniverseConfig, YahooGapUniverseScanner
 
 from strategies.gap.news import HistoricalCatalystLookup
 from strategies.gap.strategy import GapScanConfig, scan_gap_sessions
+from strategies.pmb.candles import (
+    NORMAL_ANALYSIS_MINUTES,
+    OPENING_ANALYSIS_MINUTES,
+    candle_minutes,
+    confirmation_minutes,
+    follow_through_enabled,
+    prepare_replay_inputs,
+)
 
 try:
     from bot_core import opportunity_rank_score, setup_room_check
@@ -273,7 +281,7 @@ def _gap_signal_rows(scanner: pd.DataFrame) -> list[dict[str, Any]]:
     return rows
 
 
-def _scan_strategy_replay(strategy_name: str, symbol: str, history: pd.DataFrame, settings: StrategyLabSettings) -> dict | None:
+def _scan_strategy_replay(strategy_name: str, symbol: str, history: pd.DataFrame, settings: StrategyLabSettings, *, opening_stage: bool = False) -> dict | None:
     """Run one strategy against replay history.
 
     PMB is evaluated candle-by-candle here. GAP is evaluated separately from
@@ -282,9 +290,24 @@ def _scan_strategy_replay(strategy_name: str, symbol: str, history: pd.DataFrame
     """
     strategy_name = str(strategy_name).strip().upper()
     if strategy_name == "PMB":
+        analysis_minutes = OPENING_ANALYSIS_MINUTES if opening_stage else NORMAL_ANALYSIS_MINUTES
+        live_history, confirmation_source = prepare_replay_inputs(
+            history, settings.interval, analysis_minutes, keep_source_bars=opening_stage
+        )
+        if not history.empty:
+            if live_history.empty:
+                return None
+            latest_close = live_history.index[-1].floor(f"{analysis_minutes}min") + pd.Timedelta(minutes=analysis_minutes)
+            lag_minutes = (history.index[-1] - latest_close).total_seconds() / 60.0
+            faster_confirmation = follow_through_enabled(settings.breakout_follow_through) and confirmation_minutes(settings.breakout_follow_through, analysis_minutes) < analysis_minutes
+            if lag_minutes != 0 and not (faster_confirmation and lag_minutes == confirmation_minutes(settings.breakout_follow_through, analysis_minutes)):
+                return None
+            current_bins = live_history.index[live_history.index.date == history.index[-1].date()].floor(f"{analysis_minutes}min")
+            if len(current_bins.unique()) < int(settings.min_session_bars):
+                return None
         result = scan_replay_history(
             symbol=symbol,
-            history=history,
+            history=live_history,
             daily=None,
             use_rvol_score=bool(settings.use_rvol_score),
             min_score=float(settings.min_score),
@@ -294,6 +317,10 @@ def _scan_strategy_replay(strategy_name: str, symbol: str, history: pd.DataFrame
             retest_tolerance_pct=float(settings.retest_tolerance_pct),
             retest_max_minutes=int(settings.retest_max_minutes),
             breakout_follow_through=settings.breakout_follow_through,
+            analysis_bar_minutes=analysis_minutes,
+            confirmation_intraday=confirmation_source if "confirmation_minutes" in (settings.breakout_follow_through or {}) else None,
+            confirmation_source_minutes=candle_minutes(settings.interval),
+            as_of=history.index[-1] if not history.empty else None,
         )
         if result:
             result["Strategy"] = "PMB"
@@ -322,7 +349,6 @@ def _staged_replay_settings(timestamp: pd.Timestamp, settings: StrategyLabSettin
             settings,
             orb_minutes=15,
             first_signal_minutes=20,
-            min_session_bars=4,
             require_break_retest=False,
         )
     if clock <= dtime(13, 30):
@@ -330,7 +356,6 @@ def _staged_replay_settings(timestamp: pd.Timestamp, settings: StrategyLabSettin
             settings,
             orb_minutes=15,
             first_signal_minutes=20,
-            min_session_bars=4,
             require_break_retest=True,
         )
     return "after_retest_window", None
@@ -340,7 +365,7 @@ def _staged_event_scanner_allowed(event, stage: str) -> bool:
     if stage == "opening_orb_5m":
         return event.bar_number >= 2 and event.timestamp.time() >= dtime(9, 40)
     if stage in {"orb_15m", "break_retest_15m"}:
-        return event.bar_number >= 4 and event.timestamp.time() >= dtime(9, 50)
+        return event.timestamp.time() >= dtime(10, 0)
     return False
 
 
@@ -445,6 +470,11 @@ class StrategyLabController:
     def load_data(self, settings: StrategyLabSettings, progress_callback=None) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
         data: dict[str, pd.DataFrame] = {}
         errors = []
+        # The live normal scanner requests prior sessions for indicator warmup.
+        # Keep that context outside the selected period's tradable events.
+        load_period = settings.period
+        if "PMB" in _normalize_strategy_names(settings.selected_strategies) and str(settings.period).endswith("d"):
+            load_period = f"{int(str(settings.period)[:-1]) + 7}d"
         total_symbols = max(len(settings.symbols), 1)
         for idx, raw_symbol in enumerate(settings.symbols, start=1):
             symbol = str(raw_symbol).strip().upper()
@@ -464,7 +494,7 @@ class StrategyLabController:
             try:
                 df = self.client.load(
                     symbol=symbol,
-                    period=settings.period,
+                    period=load_period,
                     interval=settings.interval,
                     regular_hours_only=True,
                     force_refresh=settings.force_refresh,
@@ -527,8 +557,16 @@ class StrategyLabController:
         return scan_gap_sessions(data, config=_gap_scan_config(settings), catalyst_lookup=catalyst_lookup)
 
     def replay_and_scan(self, data: dict[str, pd.DataFrame], settings: StrategyLabSettings, progress_callback=None, gap_scanner: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        if settings.use_staged_timeline and str(settings.interval).lower() != "5m":
-            raise ValueError("Live staged timeline requires 5-minute candles.")
+        selected_symbols = {str(symbol).strip().upper() for symbol in settings.symbols}
+        data = {symbol: frame for symbol, frame in data.items() if str(symbol).strip().upper() in selected_symbols}
+        if "PMB" in _normalize_strategy_names(settings.selected_strategies):
+            source_minutes = candle_minutes(settings.interval)
+            if source_minutes > NORMAL_ANALYSIS_MINUTES or NORMAL_ANALYSIS_MINUTES % source_minutes:
+                raise ValueError("PMB live candle logic requires 1-, 5-, or 15-minute historical candles.")
+            if follow_through_enabled(settings.breakout_follow_through) and confirmation_minutes(settings.breakout_follow_through) == 5 and source_minutes > 5:
+                raise ValueError("5-minute confirmation requires 1- or 5-minute historical candles.")
+            if settings.use_staged_timeline and source_minutes != 1:
+                raise ValueError("Live staged timeline requires 1-minute historical candles for the opening scanner.")
         replay_config = ReplayConfig(
             interval=settings.interval,
             orb_minutes=int(settings.orb_minutes),
@@ -538,6 +576,12 @@ class StrategyLabController:
         engine = MarketReplayEngine(data, config=replay_config)
         sessions_df = engine.sessions()
         events = list(engine.events(only_scanner_allowed=False))
+        if events and "PMB" in _normalize_strategy_names(settings.selected_strategies) and str(settings.period).endswith("d"):
+            period_start = events[-1].timestamp - pd.Timedelta(days=int(str(settings.period)[:-1]))
+            events = [event for event in events if event.timestamp >= period_start]
+            # Session reports describe the evaluated period, not baseline history.
+            if not sessions_df.empty:
+                sessions_df = sessions_df[sessions_df["session_date"] >= period_start.date()].reset_index(drop=True)
         total_events = max(len(events), 1)
         selected_strategies = _normalize_strategy_names(settings.selected_strategies)
 
@@ -553,6 +597,10 @@ class StrategyLabController:
                 timeline_stage, staged_settings = _staged_replay_settings(event.timestamp, settings)
                 event_settings = staged_settings or settings
                 scanner_allowed = staged_settings is not None and _staged_event_scanner_allowed(event, timeline_stage)
+            if "PMB" in selected_strategies:
+                analysis_minutes = OPENING_ANALYSIS_MINUTES if timeline_stage == "opening_orb_5m" else NORMAL_ANALYSIS_MINUTES
+                evaluation_minutes = min(analysis_minutes, confirmation_minutes(event_settings.breakout_follow_through, analysis_minutes)) if follow_through_enabled(event_settings.breakout_follow_through) else analysis_minutes
+                scanner_allowed = bool(scanner_allowed and event.timestamp.minute % evaluation_minutes == 0)
             row = {
                 "#": idx,
                 "symbol": event.symbol,
@@ -569,7 +617,7 @@ class StrategyLabController:
 
             if scanner_allowed:
                 for strategy_name in [name for name in selected_strategies if name != "GAP"]:
-                    scan_result = _scan_strategy_replay(strategy_name, event.symbol, event.history, event_settings)
+                    scan_result = _scan_strategy_replay(strategy_name, event.symbol, event.history, event_settings, opening_stage=(timeline_stage == "opening_orb_5m"))
                     clean_scan = clean_signal_row(scan_result)
                     if not clean_scan:
                         continue
@@ -585,6 +633,12 @@ class StrategyLabController:
                         "atr_pct": clean_scan.get("ATR %"),
                         "breakout_volume_ratio": clean_scan.get("Breakout Volume Ratio"),
                         "breakout_follow_through": clean_scan.get("Breakout Follow-through Confirmed"),
+                        "breakout_volume_required": clean_scan.get("Breakout Volume Required"),
+                        "breakout_volume_confirmed": clean_scan.get("Breakout Volume Confirmed"),
+                        "breakout_follow_through_required": clean_scan.get("Breakout Follow-through Required"),
+                        "breakout_confirmation_reason": clean_scan.get("Breakout Follow-through Reason"),
+                        "confirmation_candle_minutes": clean_scan.get("Confirmation Candle Minutes"),
+                        "confirmation_closed_at": clean_scan.get("Confirmation Closed At"),
                     })
                     qualifies = is_top_candidate_replay(
                         clean_scan,
@@ -628,6 +682,12 @@ class StrategyLabController:
                             "reasons": clean_scan.get("Reasons"),
                             "breakout_volume_ratio": clean_scan.get("Breakout Volume Ratio"),
                             "breakout_follow_through": clean_scan.get("Breakout Follow-through Confirmed"),
+                            "breakout_volume_required": clean_scan.get("Breakout Volume Required"),
+                            "breakout_volume_confirmed": clean_scan.get("Breakout Volume Confirmed"),
+                            "breakout_follow_through_required": clean_scan.get("Breakout Follow-through Required"),
+                            "breakout_confirmation_reason": clean_scan.get("Breakout Follow-through Reason"),
+                            "confirmation_candle_minutes": clean_scan.get("Confirmation Candle Minutes"),
+                            "confirmation_closed_at": clean_scan.get("Confirmation Closed At"),
                         })
             replay_rows.append(row)
             if progress_callback and (idx == 1 or idx == total_events or idx % max(1, total_events // 100) == 0):
@@ -877,11 +937,12 @@ class StrategyLabController:
         data_start = min(df.index.min() for df in populated_frames).isoformat() if populated_frames else None
         data_end = max(df.index.max() for df in populated_frames).isoformat() if populated_frames else None
         meta = {
-            "version": "v0.10.3-close-time-replay",
+            "version": "v0.10.5-selectable-confirmation",
             "started_at": started_at,
             "completed_at": datetime.now().isoformat(timespec="seconds"),
             "status": "COMPLETE_WITH_DATA_ERRORS" if not errors.empty else "COMPLETE",
             "symbols": list(base_data.keys()),
+            "symbols_requested": list(settings.symbols),
             "gap_universe_count": int(len(gap_universe)),
             "gap_candle_symbols": int(len(gap_data)),
             "gap_candle_coverage_pct": round(100.0 * len(gap_data) / max(len(gap_universe), 1), 2),
@@ -897,6 +958,10 @@ class StrategyLabController:
             "data_end": data_end,
             "replay_events": int(len(replay)),
             "bar_timestamp_semantics": "completed_at_close",
+            "pmb_analysis_minutes": NORMAL_ANALYSIS_MINUTES,
+            "pmb_confirmation_minutes": confirmation_minutes(settings.breakout_follow_through),
+            "pmb_warmup_days": 7 if "PMB" in selected_strategies else 0,
+            "pmb_opening_analysis_minutes": OPENING_ANALYSIS_MINUTES if settings.use_staged_timeline else None,
             "gap_scanner_rows": int(len(gap_scanner)),
             "gap_qualified": int((gap_scanner.get("status", pd.Series(dtype=str)).astype(str) == "QUALIFIED").sum()) if not gap_scanner.empty else 0,
             "signals": int(len(signals)),

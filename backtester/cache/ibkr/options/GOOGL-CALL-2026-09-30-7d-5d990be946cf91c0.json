@@ -1,0 +1,11 @@
+{
+  "symbol": "GOOGL",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 350.0,
+  "right": "C",
+  "localSymbol": "GOOGL 261016C00350000",
+  "conId": 865378253,
+  "tradingClass": "GOOGL",
+  "multiplier": "100"
+}

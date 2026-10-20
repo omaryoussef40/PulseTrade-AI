@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-10-19T10:13:55.871176-04:00",
+  "mode": "IBKR Live",
+  "plan_date": "2026-10-12",
+  "decisions": [
+    {
+      "symbol": "URBN",
+      "status": "BLOCKED",
+      "reason": "Stock quote unavailable."
+    },
+    {
+      "symbol": "XOM",
+      "status": "BLOCKED",
+      "reason": "Stock quote unavailable."
+    }
+  ],
+  "positions": [],
+  "message": "Paste a Pine plan dated for today; expired levels cannot open new trades."
+}

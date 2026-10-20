@@ -1,0 +1,11 @@
+{
+  "symbol": "CRM",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 240.0,
+  "right": "C",
+  "localSymbol": "CRM   261016C00240000",
+  "conId": 881227603,
+  "tradingClass": "CRM",
+  "multiplier": "100"
+}

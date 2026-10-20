@@ -8,11 +8,13 @@ import csv
 import json
 import os
 import subprocess
+import sys
 import time
 import traceback
 from datetime import datetime, time as dtime, timedelta
 from html import escape
 from pathlib import Path
+from modules.strategy_controls import effective_config, check_automated_option_entry, verified_account_equity
 
 import pandas as pd
 import requests
@@ -20,6 +22,7 @@ import requests
 from modules.premarket_watchlist import build_premarket_watchlist, combined_watchlist, dynamic_config, normalize_symbols, should_auto_build
 from market_data import create_market_data_provider
 from backtester.controller import StrategyLabController, StrategyLabSettings
+from strategies.pmb.candles import confirmation_scan_interval_seconds
 from bot_core import (
     EASTERN,
     IBConfig,
@@ -209,7 +212,7 @@ def build_backtester_cache_warmup_settings(cfg: dict, symbols: list[str]) -> Str
 
 
 def run_backtester_cache_warmup_if_due() -> None:
-    cfg = load_config()
+    cfg = effective_config(load_config())
     automation = cfg.get("automation", {}) if isinstance(cfg.get("automation", {}), dict) else {}
     if not bool(automation.get("enabled", False)):
         return
@@ -826,6 +829,8 @@ def top_candidate_reject_reason(result: dict, strategy: dict) -> str:
             return "opening exhaustion block"
         if result.get("Midday Volume Block"):
             return "midday volume block"
+        if result.get("Breakout Confirmation Required", result.get("Breakout Follow-through Required")) and not result.get("Breakout Confirmation Confirmed", result.get("Breakout Follow-through Confirmed")):
+            return str(result.get("Breakout Follow-through Reason") or "breakout confirmation not passed")
         return f"non-trade signal: {signal or 'N/A'}"
     score = float(result.get("Score") or 0)
     min_score = float(strategy.get("min_score", 70))
@@ -1008,6 +1013,7 @@ def create_pending_approval(row: pd.Series, option_clean: dict, option_full: dic
         "source": source,
         "scan_id": scan_id,
         "approval_mode": approval_mode,
+        "strategy_profile": effective_config(load_config()).get("strategy", {}).get("active_strategy", "pmb"),
         "symbol": row["Symbol"],
         "signal": row["Signal"],
         "option": option_full["Option"],
@@ -1217,7 +1223,7 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
         )
     monitor_only = management_mode == POSITION_MANAGEMENT_MONITOR_ONLY
     if str(order.get("source") or "").lower() == OPENING_ORB_SOURCE:
-        approval_cfg = load_config()
+        approval_cfg = effective_config(load_config())
         approval_now = datetime.now(EASTERN)
         approval_state = refresh_opening_orb_trade_state(approval_cfg, ib=ib, now_et=approval_now)
         if (
@@ -1242,7 +1248,14 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
     limit_price = float(order.get("limit_price") or order.get("mid") or 0) if order_type == "LIMIT" else None
     action = str(order.get("action") or "BUY").upper()
     if action == "BUY" and not monitor_only:
-        approval_cfg = load_config()
+        approval_cfg = effective_config(load_config())
+        count, deployed = get_today_trade_stats()
+        equity=None
+        if approval_cfg.get('_concurrent_strategies'):
+            equity=verified_account_equity(ib,ib_cfg.account)
+            if approval_cfg.get('risk',{}).get('recycle_capital_after_exit'):
+                deployed=get_open_position_deployed()
+        check_automated_option_entry(approval_cfg, order, count, deployed,account_size=equity)
         approval_risk = approval_cfg.get("risk", {})
         symbol = str(order.get("symbol") or "").strip().upper()
         if (
@@ -1363,7 +1376,7 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
     )
     active_position = None
     if filled_qty > 0:
-        cfg = load_config()
+        cfg = effective_config(load_config())
         risk = cfg.get("risk", {})
         entry_source = str(order.get("source") or "").lower()
         opening_cfg = opening_orb_trade_config(cfg) if entry_source == OPENING_ORB_SOURCE else {}
@@ -1955,7 +1968,15 @@ def run_opening_orb_trade_cycle(
 
 
 def run_cycle(*, opening_trade_only: bool = False) -> None:
-    cfg = load_config()
+    cfg = effective_config(load_config())
+    if cfg.get("pine_stocks", {}).get("enabled", False) and not cfg.get("_concurrent_strategies"):
+        if cfg.get("automation", {}).get("enabled", False) and not opening_trade_only:
+            from modules.pine_stock_engine import run_pine_cycle
+            run_pine_cycle(cfg, manage_only=True) if cfg.get("_entries_paused") else run_pine_cycle(cfg)
+        return
+    if cfg.get("_entries_paused"):
+        write_health(last_status="Automatic entries paused by strategy controls")
+        return
     mode = cfg.get("account_mode", "Simulation")
     ibs = cfg.get("ib", {})
     strategy = dict(cfg.get("strategy", {}))
@@ -2104,6 +2125,12 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
                 app_log("IBKR account value unavailable; using saved account size for sizing.", "WARN")
         except Exception as exc:
             app_log(f"IBKR account value refresh failed; using saved account size: {exc}", "WARN")
+    if cfg.get('_concurrent_strategies'):
+        try:
+            account_size=verified_account_equity(ib,ib_cfg.account)
+        except ValueError as exc:
+            app_log(str(exc),'WARN')
+            can_trade=False
     max_spend_per_trade = float(risk.get("max_spend_per_trade", 250))
     max_daily_capital = float(risk.get("max_daily_capital", 500))
     max_spend_pct = float(risk.get("max_spend_per_trade_pct", 0) or 0)
@@ -2853,7 +2880,12 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
 
 
 def run_broker_sync_cycle() -> None:
-    cfg = load_config()
+    cfg = effective_config(load_config())
+    if cfg.get("pine_stocks", {}).get("enabled", False) and not cfg.get("_concurrent_strategies"):
+        if cfg.get("automation", {}).get("enabled", False):
+            from modules.pine_stock_engine import run_pine_cycle
+            run_pine_cycle(cfg, manage_only=True) if cfg.get("_entries_paused") else run_pine_cycle(cfg)
+        return
     mode = cfg.get("account_mode", "Simulation")
     ibs = cfg.get("ib", {})
     risk = cfg.get("risk", {})
@@ -2977,6 +3009,34 @@ def run_broker_sync_cycle() -> None:
             pass
 
 
+
+_STOCK_WORKER = None
+
+
+def stop_stock_worker():
+    global _STOCK_WORKER
+    if _STOCK_WORKER is not None and _STOCK_WORKER.poll() is None:
+        _STOCK_WORKER.terminate()
+        try:
+            _STOCK_WORKER.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _STOCK_WORKER.kill()
+            _STOCK_WORKER.wait(timeout=5)
+    _STOCK_WORKER=None
+
+
+def ensure_stock_worker(cfg):
+    global _STOCK_WORKER
+    if not cfg.get('_concurrent_strategies'):
+        stop_stock_worker()
+        return
+    if _STOCK_WORKER is None or _STOCK_WORKER.poll() is not None:
+        _STOCK_WORKER=subprocess.Popen([sys.executable,'-m','modules.pine_stock_worker','--parent-pid',str(os.getpid())],cwd=str(Path(__file__).resolve().parent))
+
+
+atexit.register(stop_stock_worker)
+
+
 def main() -> None:
     if not claim_single_engine_instance():
         return
@@ -2990,9 +3050,15 @@ def main() -> None:
     previous_schedule_stage = ""
     while True:
         try:
-            cfg = load_config()
+            cfg = effective_config(load_config())
+            ensure_stock_worker(cfg)
             automation = cfg.get("automation", {})
             scan_interval = max(10, int(automation.get("scan_interval_seconds", 60)))
+            strategy = cfg.get("strategy", {})
+            if str(strategy.get("active_strategy", "pmb")).lower() == "pmb":
+                scan_interval = confirmation_scan_interval_seconds(
+                    scan_interval, strategy.get("breakout_follow_through")
+                )
             sync_interval = max(5, int(automation.get("live_sync_interval_seconds", 15)))
             align_scans = bool(automation.get("align_scans_to_interval", scan_interval >= 300))
             first_scan_time = dtime(

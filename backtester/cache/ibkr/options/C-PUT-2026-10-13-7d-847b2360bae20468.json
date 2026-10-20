@@ -1,0 +1,11 @@
+{
+  "symbol": "C",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 130.0,
+  "right": "P",
+  "localSymbol": "C     261023P00130000",
+  "conId": 920166475,
+  "tradingClass": "C",
+  "multiplier": "100"
+}

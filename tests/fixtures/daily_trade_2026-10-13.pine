@@ -1,0 +1,225 @@
+//@version=6
+indicator("Orora - Daily U.S. Trade Levels - 2026-10-13", overlay=true, max_labels_count=100)
+
+// Tuesday 2026-10-13 discretionary levels. Research snapshot ~09:00 New York.
+// Plot levels on any date for study; entry signals only on 2026-10-13.
+showLabels = input.bool(true, "Show compact level labels")
+showReference = input.bool(true, "Show reference PDH and PDL")
+requireVolume = input.bool(false, "Use basic 1.3x last-20-bar volume filter")
+restrictMorning = input.bool(true, "Signals only 09:30-12:00 New York")
+
+float le = na
+float ls = na
+float lt1 = na
+float lt2 = na
+float se = na
+float ss = na
+float st1 = na
+float st2 = na
+string selectedSymbol = "NOT IN WATCHLIST"
+
+if syminfo.ticker == "UNH"
+    le := 398.40
+    ls := 392.60
+    lt1 := 405.00
+    lt2 := 412.20
+    se := 390.80
+    ss := 396.10
+    st1 := 384.30
+    st2 := 377.50
+    selectedSymbol := "UNH"
+
+if syminfo.ticker == "GS"
+    le := 931.20
+    ls := 922.00
+    lt1 := 942.80
+    lt2 := 952.50
+    se := 919.00
+    ss := 927.80
+    st1 := 909.00
+    st2 := 898.00
+    selectedSymbol := "GS"
+
+if syminfo.ticker == "MU"
+    le := 954.00
+    ls := 943.00
+    lt1 := 969.50
+    lt2 := 986.00
+    se := 932.00
+    ss := 944.40
+    st1 := 915.00
+    st2 := 898.00
+    selectedSymbol := "MU"
+
+if syminfo.ticker == "WDC"
+    le := 365.00
+    ls := 357.80
+    lt1 := 373.50
+    lt2 := 382.80
+    se := 352.50
+    ss := 360.10
+    st1 := 343.00
+    st2 := 334.00
+    selectedSymbol := "WDC"
+
+if syminfo.ticker == "WFC"
+    le := 82.15
+    ls := 81.05
+    lt1 := 83.50
+    lt2 := 84.65
+    se := 80.50
+    ss := 81.55
+    st1 := 79.25
+    st2 := 78.10
+    selectedSymbol := "WFC"
+
+if syminfo.ticker == "JNJ"
+    le := 260.80
+    ls := 258.30
+    lt1 := 263.75
+    lt2 := 267.00
+    se := 256.80
+    ss := 259.35
+    st1 := 253.80
+    st2 := 251.00
+    selectedSymbol := "JNJ"
+
+if syminfo.ticker == "JPM"
+    le := 339.70
+    ls := 336.80
+    lt1 := 343.30
+    lt2 := 347.00
+    se := 334.75
+    ss := 337.80
+    st1 := 331.00
+    st2 := 327.50
+    selectedSymbol := "JPM"
+
+if syminfo.ticker == "AMD"
+    le := 587.50
+    ls := 580.50
+    lt1 := 595.50
+    lt2 := 603.50
+    se := 575.50
+    ss := 582.00
+    st1 := 567.00
+    st2 := 558.50
+    selectedSymbol := "AMD"
+
+if syminfo.ticker == "NVDA"
+    le := 226.20
+    ls := 224.15
+    lt1 := 228.95
+    lt2 := 231.80
+    se := 222.75
+    ss := 225.00
+    st1 := 220.00
+    st2 := 217.10
+    selectedSymbol := "NVDA"
+
+if syminfo.ticker == "C"
+    le := 133.60
+    ls := 132.35
+    lt1 := 135.10
+    lt2 := 136.80
+    se := 130.65
+    ss := 131.90
+    st1 := 129.10
+    st2 := 127.40
+    selectedSymbol := "C"
+
+// Persistent discretionary support/resistance trade levels.
+plot(le, "LONG ABOVE", color=color.lime, linewidth=2, style=plot.style_linebr)
+plot(ls, "LONG STOP", color=color.orange, linewidth=1, style=plot.style_linebr)
+plot(lt1, "LONG TARGET 1", color=color.aqua, linewidth=1, style=plot.style_linebr)
+plot(lt2, "LONG TARGET 2", color=color.blue, linewidth=1, style=plot.style_linebr)
+plot(se, "SHORT BELOW", color=color.red, linewidth=2, style=plot.style_linebr)
+plot(ss, "SHORT STOP", color=color.fuchsia, linewidth=1, style=plot.style_linebr)
+plot(st1, "SHORT TARGET 1", color=color.purple, linewidth=1, style=plot.style_linebr)
+plot(st2, "SHORT TARGET 2", color=color.maroon, linewidth=1, style=plot.style_linebr)
+
+// New York regular-session VWAP, excluding extended hours.
+string tz = "America/New_York"
+int dayKey = year(time, tz) * 10000 + month(time, tz) * 100 + dayofmonth(time, tz)
+bool rth = timeframe.isintraday and not na(time(timeframe.period, "0930-1600:1234567", tz))
+bool newRth = rth and (not rth[1] or dayKey != dayKey[1])
+var float sumPriceVolume = 0.0
+var float sumVolume = 0.0
+if newRth
+    sumPriceVolume := 0.0
+    sumVolume := 0.0
+if rth
+    sumPriceVolume += hlc3 * volume
+    sumVolume += volume
+float rthVWAP = rth and sumVolume > 0 ? sumPriceVolume / sumVolume : na
+plot(rthVWAP, "Regular-session VWAP", color=color.yellow, linewidth=2, style=plot.style_linebr)
+
+// PDH and PDL references only; they do not generate the levels above.
+float pdh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+float pdl = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_on)
+plot(showReference ? pdh : na, "Previous-day high reference", color=color.new(color.gray, 55), linewidth=1, style=plot.style_linebr)
+plot(showReference ? pdl : na, "Previous-day low reference", color=color.new(color.gray, 55), linewidth=1, style=plot.style_linebr)
+
+// Date-restricted, closed-bar intraday crossing signals.
+bool targetDate = dayKey == 20261013
+bool inMorning = timeframe.isintraday and not na(time(timeframe.period, "0930-1200:1234567", tz))
+float priorVolumeAvg = ta.sma(volume, 20)[1]
+bool volumeOK = not requireVolume or (not na(priorVolumeAvg) and volume >= 1.3 * priorVolumeAvg)
+bool sessionOK = rth and targetDate and (not restrictMorning or inMorning)
+bool longCross = ta.crossover(close, le)
+bool shortCross = ta.crossunder(close, se)
+bool longSignal = barstate.isconfirmed and sessionOK and not na(le) and longCross and not na(rthVWAP) and close > rthVWAP and volumeOK
+bool shortSignal = barstate.isconfirmed and sessionOK and not na(se) and shortCross and not na(rthVWAP) and close < rthVWAP and volumeOK
+plotshape(longSignal, title="LONG breakout", text="LONG", style=shape.labelup, location=location.belowbar, color=color.green, textcolor=color.white, size=size.tiny)
+plotshape(shortSignal, title="SHORT breakdown", text="SHORT", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, size=size.tiny)
+alertcondition(longSignal, title="LONG - confirmed breakout", message="{{ticker}} LONG breakout {{close}} above RTH VWAP; Oct 13 trade levels. Check spreads and risk.")
+alertcondition(shortSignal, title="SHORT - confirmed breakdown", message="{{ticker}} SHORT breakdown {{close}} below RTH VWAP; Oct 13 trade levels. Check spreads and risk.")
+
+// Minimal right-edge labels; no historical label accumulation.
+f_price(float price) => na(price) ? "N/A" : str.tostring(price, format.mintick)
+var array<label> tags = array.new<label>()
+if barstate.islast
+    if array.size(tags) > 0
+        for i = 0 to array.size(tags) - 1
+            label.delete(array.get(tags, i))
+        array.clear(tags)
+    if showLabels and not na(le)
+        array.push(tags, label.new(bar_index + 2, le, "LONG > " + f_price(le), style=label.style_label_left, color=color.rgb(12, 100, 47), textcolor=color.white, size=size.tiny))
+        array.push(tags, label.new(bar_index + 2, ls, "L STOP " + f_price(ls), style=label.style_label_left, color=color.orange, textcolor=color.white, size=size.tiny))
+        array.push(tags, label.new(bar_index + 2, lt1, "L T1 " + f_price(lt1), style=label.style_label_left, color=color.teal, textcolor=color.white, size=size.tiny))
+        array.push(tags, label.new(bar_index + 2, lt2, "L T2 " + f_price(lt2), style=label.style_label_left, color=color.blue, textcolor=color.white, size=size.tiny))
+        array.push(tags, label.new(bar_index + 2, se, "SHORT < " + f_price(se), style=label.style_label_left, color=color.rgb(155, 27, 38), textcolor=color.white, size=size.tiny))
+        array.push(tags, label.new(bar_index + 2, ss, "S STOP " + f_price(ss), style=label.style_label_left, color=color.fuchsia, textcolor=color.white, size=size.tiny))
+        array.push(tags, label.new(bar_index + 2, st1, "S T1 " + f_price(st1), style=label.style_label_left, color=color.purple, textcolor=color.white, size=size.tiny))
+        array.push(tags, label.new(bar_index + 2, st2, "S T2 " + f_price(st2), style=label.style_label_left, color=color.maroon, textcolor=color.white, size=size.tiny))
+
+// White-text dashboard.
+color dark = color.rgb(19, 23, 29)
+color darkGreen = color.rgb(12, 100, 47)
+color darkRed = color.rgb(155, 27, 38)
+var table dash = table.new(position.top_right, 2, 12, border_width=1, frame_color=color.gray)
+if barstate.islast
+    table.cell(dash, 0, 0, "TUE OCT 13", text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 1, 0, selectedSymbol, text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 0, 1, "LONG ABOVE", text_color=color.white, bgcolor=darkGreen, text_size=size.tiny)
+    table.cell(dash, 1, 1, f_price(le), text_color=color.white, bgcolor=darkGreen, text_size=size.tiny)
+    table.cell(dash, 0, 2, "LONG STOP", text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 1, 2, f_price(ls), text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 0, 3, "LONG T1", text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 1, 3, f_price(lt1), text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 0, 4, "LONG T2", text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 1, 4, f_price(lt2), text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 0, 5, "SHORT BELOW", text_color=color.white, bgcolor=darkRed, text_size=size.tiny)
+    table.cell(dash, 1, 5, f_price(se), text_color=color.white, bgcolor=darkRed, text_size=size.tiny)
+    table.cell(dash, 0, 6, "SHORT STOP", text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 1, 6, f_price(ss), text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 0, 7, "SHORT T1", text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 1, 7, f_price(st1), text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 0, 8, "SHORT T2", text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 1, 8, f_price(st2), text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 0, 9, "RTH VWAP", text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 1, 9, f_price(rthVWAP), text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 0, 10, "PDH / PDL", text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 1, 10, f_price(pdh) + " / " + f_price(pdl), text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 0, 11, "SIGNAL STATUS", text_color=color.white, bgcolor=dark, text_size=size.tiny)
+    table.cell(dash, 1, 11, targetDate ? "OCT 13" : "PREVIEW / EXPIRED", text_color=color.white, bgcolor=dark, text_size=size.tiny)

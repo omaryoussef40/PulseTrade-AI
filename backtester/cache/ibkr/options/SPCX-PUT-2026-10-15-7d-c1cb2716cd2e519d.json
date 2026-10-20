@@ -1,0 +1,11 @@
+{
+  "symbol": "SPCX",
+  "option_dte": 7,
+  "expiry": "20261021",
+  "strike": 141.0,
+  "right": "P",
+  "localSymbol": "SPCX  261021P00141000",
+  "conId": 934467298,
+  "tradingClass": "SPCX",
+  "multiplier": "100"
+}

@@ -1,0 +1,11 @@
+{
+  "symbol": "HOOD",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 104.0,
+  "right": "P",
+  "localSymbol": "HOOD  261023P00104000",
+  "conId": 920201041,
+  "tradingClass": "HOOD",
+  "multiplier": "100"
+}

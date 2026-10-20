@@ -1,0 +1,9 @@
+{
+  "symbol": "OPEN",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 2.0,
+  "right": "P",
+  "localSymbol": "OPEN  261016P00002000",
+  "conId": 881676839
+}

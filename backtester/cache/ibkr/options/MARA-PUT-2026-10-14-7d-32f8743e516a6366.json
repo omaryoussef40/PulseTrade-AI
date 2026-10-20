@@ -1,0 +1,9 @@
+{
+  "symbol": "MARA",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 8.5,
+  "right": "P",
+  "localSymbol": "MARA  261023P00008500",
+  "conId": 920238365
+}

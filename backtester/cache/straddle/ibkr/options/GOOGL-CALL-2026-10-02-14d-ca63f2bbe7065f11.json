@@ -1,0 +1,9 @@
+{
+  "symbol": "GOOGL",
+  "option_dte": 14,
+  "expiry": "20261016",
+  "strike": 345.0,
+  "right": "C",
+  "localSymbol": "GOOGL 261016C00345000",
+  "conId": 865378185
+}

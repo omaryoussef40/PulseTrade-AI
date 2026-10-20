@@ -1,0 +1,11 @@
+{
+  "symbol": "QQQ",
+  "option_dte": 7,
+  "expiry": "20261015",
+  "strike": 744.0,
+  "right": "P",
+  "localSymbol": "QQQ   261015P00744000",
+  "conId": 930953711,
+  "tradingClass": "QQQ",
+  "multiplier": "100"
+}

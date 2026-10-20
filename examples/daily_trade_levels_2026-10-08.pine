@@ -1,0 +1,229 @@
+//@version=6
+indicator("Daily Trade Levels - Oct 8 2026", overlay=true, max_labels_count=50)
+
+// Discretionary levels, valid for Thursday Oct 8, 2026 only. Not PDH/PDL formulas.
+activeDay = year(time, "America/New_York") == 2026 and month(time, "America/New_York") == 10 and dayofmonth(time, "America/New_York") == 8
+vwapLine = ta.vwap(hlc3)
+pdh = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_on)
+
+float longEntry = na
+float longStop = na
+float longT1 = na
+float longT2 = na
+float shortEntry = na
+float shortStop = na
+float shortT1 = na
+float shortT2 = na
+string tickerName = "NOT IN WATCHLIST"
+
+// WOLF - Oct 8 event-adjusted structure
+if syminfo.ticker == "WOLF"
+    longEntry := 37.20
+    longStop := 35.00
+    longT1 := 39.50
+    longT2 := 42.50
+    shortEntry := 34.50
+    shortStop := 36.20
+    shortT1 := 32.30
+    shortT2 := 30.50
+    tickerName := "WOLF"
+
+// APA - Oct 8 event-adjusted structure
+if syminfo.ticker == "APA"
+    longEntry := 45.70
+    longStop := 44.80
+    longT1 := 46.65
+    longT2 := 47.65
+    shortEntry := 44.25
+    shortStop := 45.20
+    shortT1 := 43.30
+    shortT2 := 42.25
+    tickerName := "APA"
+
+// APLD - Oct 8 event-adjusted structure
+if syminfo.ticker == "APLD"
+    longEntry := 24.85
+    longStop := 24.25
+    longT1 := 25.60
+    longT2 := 26.30
+    shortEntry := 23.70
+    shortStop := 24.35
+    shortT1 := 22.90
+    shortT2 := 22.10
+    tickerName := "APLD"
+
+// PEP - Oct 8 event-adjusted structure
+if syminfo.ticker == "PEP"
+    longEntry := 126.60
+    longStop := 125.30
+    longT1 := 128.10
+    longT2 := 129.50
+    shortEntry := 124.20
+    shortStop := 125.40
+    shortT1 := 123.00
+    shortT2 := 121.70
+    tickerName := "PEP"
+
+// CAT - Oct 8 event-adjusted structure
+if syminfo.ticker == "CAT"
+    longEntry := 817.00
+    longStop := 805.00
+    longT1 := 831.00
+    longT2 := 845.00
+    shortEntry := 798.00
+    shortStop := 807.00
+    shortT1 := 787.00
+    shortT2 := 775.00
+    tickerName := "CAT"
+
+// INTC - Oct 8 event-adjusted structure
+if syminfo.ticker == "INTC"
+    longEntry := 112.50
+    longStop := 110.90
+    longT1 := 114.40
+    longT2 := 116.20
+    shortEntry := 109.70
+    shortStop := 111.50
+    shortT1 := 107.50
+    shortT2 := 105.20
+    tickerName := "INTC"
+
+// MRVL - Oct 8 event-adjusted structure
+if syminfo.ticker == "MRVL"
+    longEntry := 282.00
+    longStop := 278.00
+    longT1 := 287.00
+    longT2 := 292.00
+    shortEntry := 275.80
+    shortStop := 280.30
+    shortT1 := 270.50
+    shortT2 := 266.50
+    tickerName := "MRVL"
+
+// MU - Oct 8 event-adjusted structure
+if syminfo.ticker == "MU"
+    longEntry := 1092.00
+    longStop := 1074.00
+    longT1 := 1112.00
+    longT2 := 1135.00
+    shortEntry := 1064.00
+    shortStop := 1080.00
+    shortT1 := 1045.00
+    shortT2 := 1025.00
+    tickerName := "MU"
+
+// NVDA - Oct 8 event-adjusted structure
+if syminfo.ticker == "NVDA"
+    longEntry := 238.70
+    longStop := 236.50
+    longT1 := 241.30
+    longT2 := 243.50
+    shortEntry := 234.80
+    shortStop := 236.80
+    shortT1 := 232.20
+    shortT2 := 229.50
+    tickerName := "NVDA"
+
+// XOM - Oct 8 event-adjusted structure
+if syminfo.ticker == "XOM"
+    longEntry := 168.10
+    longStop := 166.50
+    longT1 := 169.85
+    longT2 := 171.50
+    shortEntry := 165.90
+    shortStop := 167.50
+    shortT1 := 164.00
+    shortT2 := 162.25
+    tickerName := "XOM"
+
+plot(activeDay ? longEntry : na, title="LONG ABOVE", color=color.lime, linewidth=2, style=plot.style_linebr)
+plot(activeDay ? longStop : na, title="LONG STOP", color=color.orange, linewidth=2, style=plot.style_linebr)
+plot(activeDay ? longT1 : na, title="LONG T1", color=color.aqua, linewidth=1, style=plot.style_linebr)
+plot(activeDay ? longT2 : na, title="LONG T2", color=color.blue, linewidth=1, style=plot.style_linebr)
+plot(activeDay ? shortEntry : na, title="SHORT BELOW", color=color.red, linewidth=2, style=plot.style_linebr)
+plot(activeDay ? shortStop : na, title="SHORT STOP", color=color.fuchsia, linewidth=2, style=plot.style_linebr)
+plot(activeDay ? shortT1 : na, title="SHORT T1", color=color.purple, linewidth=1, style=plot.style_linebr)
+plot(activeDay ? shortT2 : na, title="SHORT T2", color=color.maroon, linewidth=1, style=plot.style_linebr)
+plot(activeDay ? vwapLine : na, title="VWAP", color=color.yellow, linewidth=2)
+plot(activeDay ? pdh : na, title="Previous Day High", color=color.new(color.gray, 50), linewidth=1, style=plot.style_linebr)
+plot(activeDay ? pdl : na, title="Previous Day Low", color=color.new(color.gray, 50), linewidth=1, style=plot.style_linebr)
+
+// Breakout logic evaluated on each bar; alerts fire only on confirmed intraday bars.
+longCross = ta.crossover(close, longEntry)
+shortCross = ta.crossunder(close, shortEntry)
+longSignal = activeDay and timeframe.isintraday and barstate.isconfirmed and not na(longEntry) and longCross and close > vwapLine
+shortSignal = activeDay and timeframe.isintraday and barstate.isconfirmed and not na(shortEntry) and shortCross and close < vwapLine
+plotshape(longSignal, title="LONG SIGNAL", style=shape.labelup, location=location.belowbar, color=color.green, textcolor=color.white, text="LONG", size=size.tiny)
+plotshape(shortSignal, title="SHORT SIGNAL", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, text="SHORT", size=size.tiny)
+alertcondition(longSignal, title="LONG BREAKOUT", message="LONG breakout on {{ticker}} at {{close}} while above VWAP on Oct 8, 2026")
+alertcondition(shortSignal, title="SHORT BREAKDOWN", message="SHORT breakdown on {{ticker}} at {{close}} while below VWAP on Oct 8, 2026")
+
+var label label_longEntry = na
+var label label_longStop = na
+var label label_longT1 = na
+var label label_longT2 = na
+var label label_shortEntry = na
+var label label_shortStop = na
+var label label_shortT1 = na
+var label label_shortT2 = na
+if barstate.islast
+    if not na(label_longEntry)
+        label.delete(label_longEntry)
+    if not na(label_longStop)
+        label.delete(label_longStop)
+    if not na(label_longT1)
+        label.delete(label_longT1)
+    if not na(label_longT2)
+        label.delete(label_longT2)
+    if not na(label_shortEntry)
+        label.delete(label_shortEntry)
+    if not na(label_shortStop)
+        label.delete(label_shortStop)
+    if not na(label_shortT1)
+        label.delete(label_shortT1)
+    if not na(label_shortT2)
+        label.delete(label_shortT2)
+    if activeDay and not na(longEntry)
+        label_longEntry := label.new(bar_index + 2, longEntry, "LONG ABOVE " + str.tostring(longEntry, format.mintick), style=label.style_label_left, color=color.lime, textcolor=color.white, size=size.tiny)
+    if activeDay and not na(longStop)
+        label_longStop := label.new(bar_index + 2, longStop, "LONG STOP " + str.tostring(longStop, format.mintick), style=label.style_label_left, color=color.orange, textcolor=color.white, size=size.tiny)
+    if activeDay and not na(longT1)
+        label_longT1 := label.new(bar_index + 2, longT1, "LONG T1 " + str.tostring(longT1, format.mintick), style=label.style_label_left, color=color.aqua, textcolor=color.white, size=size.tiny)
+    if activeDay and not na(longT2)
+        label_longT2 := label.new(bar_index + 2, longT2, "LONG T2 " + str.tostring(longT2, format.mintick), style=label.style_label_left, color=color.blue, textcolor=color.white, size=size.tiny)
+    if activeDay and not na(shortEntry)
+        label_shortEntry := label.new(bar_index + 2, shortEntry, "SHORT BELOW " + str.tostring(shortEntry, format.mintick), style=label.style_label_left, color=color.red, textcolor=color.white, size=size.tiny)
+    if activeDay and not na(shortStop)
+        label_shortStop := label.new(bar_index + 2, shortStop, "SHORT STOP " + str.tostring(shortStop, format.mintick), style=label.style_label_left, color=color.fuchsia, textcolor=color.white, size=size.tiny)
+    if activeDay and not na(shortT1)
+        label_shortT1 := label.new(bar_index + 2, shortT1, "SHORT T1 " + str.tostring(shortT1, format.mintick), style=label.style_label_left, color=color.purple, textcolor=color.white, size=size.tiny)
+    if activeDay and not na(shortT2)
+        label_shortT2 := label.new(bar_index + 2, shortT2, "SHORT T2 " + str.tostring(shortT2, format.mintick), style=label.style_label_left, color=color.maroon, textcolor=color.white, size=size.tiny)
+
+var table dash = table.new(position.top_right, 2, 12, border_width=1)
+if barstate.islast
+    table.cell(dash, 0, 0, "OCT 8 - TRADE LEVELS", text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 1, 0, activeDay ? tickerName : "DATE EXPIRED", text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 0, 1, "LONG ABOVE", text_color=color.white, bgcolor=color.lime)
+    table.cell(dash, 1, 1, not activeDay or na(longEntry) ? "N/A" : str.tostring(longEntry, format.mintick), text_color=color.white, bgcolor=color.lime)
+    table.cell(dash, 0, 2, "LONG STOP", text_color=color.white, bgcolor=color.orange)
+    table.cell(dash, 1, 2, not activeDay or na(longStop) ? "N/A" : str.tostring(longStop, format.mintick), text_color=color.white, bgcolor=color.orange)
+    table.cell(dash, 0, 3, "LONG T1", text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 1, 3, not activeDay or na(longT1) ? "N/A" : str.tostring(longT1, format.mintick), text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 0, 4, "LONG T2", text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 1, 4, not activeDay or na(longT2) ? "N/A" : str.tostring(longT2, format.mintick), text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 0, 5, "SHORT BELOW", text_color=color.white, bgcolor=color.red)
+    table.cell(dash, 1, 5, not activeDay or na(shortEntry) ? "N/A" : str.tostring(shortEntry, format.mintick), text_color=color.white, bgcolor=color.red)
+    table.cell(dash, 0, 6, "SHORT STOP", text_color=color.white, bgcolor=color.fuchsia)
+    table.cell(dash, 1, 6, not activeDay or na(shortStop) ? "N/A" : str.tostring(shortStop, format.mintick), text_color=color.white, bgcolor=color.fuchsia)
+    table.cell(dash, 0, 7, "SHORT T1", text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 1, 7, not activeDay or na(shortT1) ? "N/A" : str.tostring(shortT1, format.mintick), text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 0, 8, "SHORT T2", text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 1, 8, not activeDay or na(shortT2) ? "N/A" : str.tostring(shortT2, format.mintick), text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 0, 9, "VWAP", text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 1, 9, not activeDay or na(vwapLine) ? "N/A" : str.tostring(vwapLine, format.mintick), text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 0, 10, "PDH", text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 1, 10, not activeDay or na(pdh) ? "N/A" : str.tostring(pdh, format.mintick), text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 0, 11, "PDL", text_color=color.white, bgcolor=color.black)
+    table.cell(dash, 1, 11, not activeDay or na(pdl) ? "N/A" : str.tostring(pdl, format.mintick), text_color=color.white, bgcolor=color.black)

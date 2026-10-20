@@ -1,0 +1,126 @@
+{
+  "session_date": "2026-10-12",
+  "levels": [
+    {
+      "symbol": "AMD",
+      "longEntry": 610.5,
+      "longStop": 603.5,
+      "longT1": 620.0,
+      "longT2": 629.0,
+      "shortEntry": 598.5,
+      "shortStop": 606.2,
+      "shortT1": 589.0,
+      "shortT2": 579.0
+    },
+    {
+      "symbol": "CCI",
+      "longEntry": 80.5,
+      "longStop": 78.9,
+      "longT1": 82.45,
+      "longT2": 84.5,
+      "shortEntry": 77.35,
+      "shortStop": 79.0,
+      "shortT1": 75.25,
+      "shortT2": 73.2
+    },
+    {
+      "symbol": "CRM",
+      "longEntry": 239.75,
+      "longStop": 236.25,
+      "longT1": 244.25,
+      "longT2": 248.5,
+      "shortEntry": 234.95,
+      "shortStop": 238.05,
+      "shortT1": 231.0,
+      "shortT2": 226.7
+    },
+    {
+      "symbol": "HUM",
+      "longEntry": 440.5,
+      "longStop": 433.5,
+      "longT1": 449.5,
+      "longT2": 459.0,
+      "shortEntry": 427.6,
+      "shortStop": 434.0,
+      "shortT1": 419.0,
+      "shortT2": 409.0
+    },
+    {
+      "symbol": "IREN",
+      "longEntry": 37.2,
+      "longStop": 35.95,
+      "longT1": 38.65,
+      "longT2": 40.2,
+      "shortEntry": 35.45,
+      "shortStop": 36.75,
+      "shortT1": 34.0,
+      "shortT2": 32.4
+    },
+    {
+      "symbol": "MU",
+      "longEntry": 1021.0,
+      "longStop": 1007.0,
+      "longT1": 1039.0,
+      "longT2": 1057.0,
+      "shortEntry": 998.0,
+      "shortStop": 1013.0,
+      "shortT1": 979.0,
+      "shortT2": 959.0
+    },
+    {
+      "symbol": "NVDA",
+      "longEntry": 232.3,
+      "longStop": 229.6,
+      "longT1": 235.6,
+      "longT2": 239.0,
+      "shortEntry": 227.9,
+      "shortStop": 230.2,
+      "shortT1": 225.05,
+      "shortT2": 222.05
+    },
+    {
+      "symbol": "TMUS",
+      "longEntry": 152.0,
+      "longStop": 149.45,
+      "longT1": 155.05,
+      "longT2": 158.15,
+      "shortEntry": 146.85,
+      "shortStop": 149.25,
+      "shortT1": 143.75,
+      "shortT2": 140.75
+    },
+    {
+      "symbol": "URBN",
+      "longEntry": 77.35,
+      "longStop": 75.45,
+      "longT1": 80.0,
+      "longT2": 82.25,
+      "shortEntry": 74.15,
+      "shortStop": 76.0,
+      "shortT1": 71.7,
+      "shortT2": 69.25
+    },
+    {
+      "symbol": "XOM",
+      "longEntry": 171.5,
+      "longStop": 169.85,
+      "longT1": 173.55,
+      "longT2": 175.65,
+      "shortEntry": 168.8,
+      "shortStop": 170.4,
+      "shortT1": 166.8,
+      "shortT2": 164.65
+    }
+  ],
+  "source_hash": "7dd69f6bc2ae4b8927871a4670eb87efcbb4a61890186591800f9a0ab975febc",
+  "source": "//@version=6\nindicator(\"Orora Daily Trade Study - Oct 12 2026\", overlay=true, max_labels_count=80)\n// Supplied October 12 trading levels and signal rules.\nshowLabels = input.bool(true, \"Show small level labels\")\nshowReferences = input.bool(true, \"Show PDH and PDL reference\")\nrequireVolume = input.bool(true, \"Require 1.3x prior 20-bar volume\")\nmorningOnly = input.bool(true, \"Only 09:30-12:00 New York signals\")\nstring nyTZ = \"America/New_York\"\nfloat le = na\nfloat ls = na\nfloat lt1 = na\nfloat lt2 = na\nfloat se = na\nfloat ss = na\nfloat st1 = na\nfloat st2 = na\nstring symbolName = \"NOT IN WATCHLIST\"\n\nif syminfo.ticker == \"CRM\"\n    le := 239.75\n    ls := 236.25\n    lt1 := 244.25\n    lt2 := 248.5\n    se := 234.95\n    ss := 238.05\n    st1 := 231\n    st2 := 226.7\n    symbolName := \"CRM\"\n\nif syminfo.ticker == \"IREN\"\n    le := 37.2\n    ls := 35.95\n    lt1 := 38.65\n    lt2 := 40.2\n    se := 35.45\n    ss := 36.75\n    st1 := 34\n    st2 := 32.4\n    symbolName := \"IREN\"\n\nif syminfo.ticker == \"MU\"\n    le := 1021\n    ls := 1007\n    lt1 := 1039\n    lt2 := 1057\n    se := 998\n    ss := 1013\n    st1 := 979\n    st2 := 959\n    symbolName := \"MU\"\n\nif syminfo.ticker == \"TMUS\"\n    le := 152\n    ls := 149.45\n    lt1 := 155.05\n    lt2 := 158.15\n    se := 146.85\n    ss := 149.25\n    st1 := 143.75\n    st2 := 140.75\n    symbolName := \"TMUS\"\n\nif syminfo.ticker == \"URBN\"\n    le := 77.35\n    ls := 75.45\n    lt1 := 80\n    lt2 := 82.25\n    se := 74.15\n    ss := 76\n    st1 := 71.7\n    st2 := 69.25\n    symbolName := \"URBN\"\n\nif syminfo.ticker == \"HUM\"\n    le := 440.5\n    ls := 433.5\n    lt1 := 449.5\n    lt2 := 459\n    se := 427.6\n    ss := 434\n    st1 := 419\n    st2 := 409\n    symbolName := \"HUM\"\n\nif syminfo.ticker == \"CCI\"\n    le := 80.5\n    ls := 78.9\n    lt1 := 82.45\n    lt2 := 84.5\n    se := 77.35\n    ss := 79\n    st1 := 75.25\n    st2 := 73.2\n    symbolName := \"CCI\"\n\nif syminfo.ticker == \"AMD\"\n    le := 610.5\n    ls := 603.5\n    lt1 := 620\n    lt2 := 629\n    se := 598.5\n    ss := 606.2\n    st1 := 589\n    st2 := 579\n    symbolName := \"AMD\"\n\nif syminfo.ticker == \"NVDA\"\n    le := 232.3\n    ls := 229.6\n    lt1 := 235.6\n    lt2 := 239\n    se := 227.9\n    ss := 230.2\n    st1 := 225.05\n    st2 := 222.05\n    symbolName := \"NVDA\"\n\nif syminfo.ticker == \"XOM\"\n    le := 171.5\n    ls := 169.85\n    lt1 := 173.55\n    lt2 := 175.65\n    se := 168.8\n    ss := 170.4\n    st1 := 166.8\n    st2 := 164.65\n    symbolName := \"XOM\"\n\nplot(le, \"LONG ABOVE\", color=color.lime, linewidth=2, style=plot.style_linebr)\nplot(ls, \"LONG STOP\", color=color.orange, linewidth=1, style=plot.style_linebr)\nplot(lt1, \"LONG TARGET 1\", color=color.aqua, linewidth=1, style=plot.style_linebr)\nplot(lt2, \"LONG TARGET 2\", color=color.blue, linewidth=1, style=plot.style_linebr)\nplot(se, \"SHORT BELOW\", color=color.red, linewidth=2, style=plot.style_linebr)\nplot(ss, \"SHORT STOP\", color=color.fuchsia, linewidth=1, style=plot.style_linebr)\nplot(st1, \"SHORT TARGET 1\", color=color.purple, linewidth=1, style=plot.style_linebr)\nplot(st2, \"SHORT TARGET 2\", color=color.maroon, linewidth=1, style=plot.style_linebr)\n\nint nyDayKey = year(time, nyTZ) * 10000 + month(time, nyTZ) * 100 + dayofmonth(time, nyTZ)\nbool inRth = not na(time(timeframe.period, \"0930-1600:1234567\", nyTZ))\nbool newRth = inRth and (not inRth[1] or nyDayKey != nyDayKey[1])\nvar float runningPV = 0.0\nvar float runningVolume = 0.0\nif newRth\n    runningPV := 0.0\n    runningVolume := 0.0\nif inRth\n    runningPV += hlc3 * volume\n    runningVolume += volume\nfloat rthVWAP = inRth and runningVolume > 0 ? runningPV / runningVolume : na\nplot(rthVWAP, \"RTH VWAP\", color=color.yellow, linewidth=2, style=plot.style_linebr)\nfloat pdh = request.security(syminfo.tickerid, \"D\", high[1], lookahead=barmerge.lookahead_on)\nfloat pdl = request.security(syminfo.tickerid, \"D\", low[1], lookahead=barmerge.lookahead_on)\nbool correctDate = nyDayKey == 20261012\nbool morningRth = not na(time(timeframe.period, \"0930-1200:1234567\", nyTZ))\nfloat average20PriorVolume = ta.sma(volume, 20)[1]\nbool volumeOK = not requireVolume or (not na(average20PriorVolume) and volume >= 1.3 * average20PriorVolume)\nbool timeOK = timeframe.isintraday and correctDate and inRth and (not morningOnly or morningRth)\nbool crossedLong = ta.crossover(close, le)\nbool crossedShort = ta.crossunder(close, se)\nbool longSignal = barstate.isconfirmed and timeOK and not na(le) and crossedLong and not na(rthVWAP) and close > rthVWAP and volumeOK\nbool shortSignal = barstate.isconfirmed and timeOK and not na(se) and crossedShort and not na(rthVWAP) and close < rthVWAP and volumeOK\nplotshape(longSignal, title=\"LONG signal\", text=\"LONG\", style=shape.labelup, location=location.belowbar, color=color.green, textcolor=color.white, size=size.tiny)\nplotshape(shortSignal, title=\"SHORT signal\", text=\"SHORT\", style=shape.labeldown, location=location.abovebar, color=color.red, textcolor=color.white, size=size.tiny)\n\nplot(showReferences ? pdh : na, \"PDH Reference\", color=color.new(color.gray, 50), linewidth=1, style=plot.style_linebr)\nplot(showReferences ? pdl : na, \"PDL Reference\", color=color.new(color.gray, 50), linewidth=1, style=plot.style_linebr)\nalertcondition(longSignal, title=\"LONG ABOVE + VWAP\", message=\"{{ticker}} LONG breakout confirmed at {{close}} with RTH VWAP, Oct 12 study. Verify option quotes.\")\nalertcondition(shortSignal, title=\"SHORT BELOW + VWAP\", message=\"{{ticker}} SHORT breakdown confirmed at {{close}} with RTH VWAP, Oct 12 study. Verify option quotes.\")\nf_display(float v) => na(v) ? \"N/A\" : str.tostring(v, format.mintick)\nvar array<label> levelLabels = array.new<label>()\nif barstate.islast\n    if array.size(levelLabels) > 0\n        for i = 0 to array.size(levelLabels) - 1\n            label.delete(array.get(levelLabels, i))\n        array.clear(levelLabels)\n    if showLabels and not na(le)\n        array.push(levelLabels, label.new(bar_index + 2, le, \"LONG > \" + f_display(le), color=color.green, textcolor=color.white, style=label.style_label_left, size=size.tiny))\n        array.push(levelLabels, label.new(bar_index + 2, ls, \"L STOP \" + f_display(ls), color=color.orange, textcolor=color.white, style=label.style_label_left, size=size.tiny))\n        array.push(levelLabels, label.new(bar_index + 2, lt1, \"L T1 \" + f_display(lt1), color=color.teal, textcolor=color.white, style=label.style_label_left, size=size.tiny))\n        array.push(levelLabels, label.new(bar_index + 2, lt2, \"L T2 \" + f_display(lt2), color=color.blue, textcolor=color.white, style=label.style_label_left, size=size.tiny))\n        array.push(levelLabels, label.new(bar_index + 2, se, \"SHORT < \" + f_display(se), color=color.red, textcolor=color.white, style=label.style_label_left, size=size.tiny))\n        array.push(levelLabels, label.new(bar_index + 2, ss, \"S STOP \" + f_display(ss), color=color.fuchsia, textcolor=color.white, style=label.style_label_left, size=size.tiny))\n        array.push(levelLabels, label.new(bar_index + 2, st1, \"S T1 \" + f_display(st1), color=color.purple, textcolor=color.white, style=label.style_label_left, size=size.tiny))\n        array.push(levelLabels, label.new(bar_index + 2, st2, \"S T2 \" + f_display(st2), color=color.maroon, textcolor=color.white, style=label.style_label_left, size=size.tiny))\n\nvar table dash = table.new(position.top_right, 2, 12, frame_color=color.new(color.gray, 50), border_width=1)\nif barstate.islast\n    table.cell(dash, 0, 0, \"OCT 12 TRADE LEVELS\", text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 1, 0, symbolName, text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 0, 1, \"LONG ABOVE\", text_color=color.white, bgcolor=color.green, text_size=size.tiny)\n    table.cell(dash, 1, 1, f_display(le), text_color=color.white, bgcolor=color.green, text_size=size.tiny)\n    table.cell(dash, 0, 2, \"LONG STOP\", text_color=color.white, bgcolor=color.orange, text_size=size.tiny)\n    table.cell(dash, 1, 2, f_display(ls), text_color=color.white, bgcolor=color.orange, text_size=size.tiny)\n    table.cell(dash, 0, 3, \"LONG T1\", text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 1, 3, f_display(lt1), text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 0, 4, \"LONG T2\", text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 1, 4, f_display(lt2), text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 0, 5, \"SHORT BELOW\", text_color=color.white, bgcolor=color.red, text_size=size.tiny)\n    table.cell(dash, 1, 5, f_display(se), text_color=color.white, bgcolor=color.red, text_size=size.tiny)\n    table.cell(dash, 0, 6, \"SHORT STOP\", text_color=color.white, bgcolor=color.fuchsia, text_size=size.tiny)\n    table.cell(dash, 1, 6, f_display(ss), text_color=color.white, bgcolor=color.fuchsia, text_size=size.tiny)\n    table.cell(dash, 0, 7, \"SHORT T1\", text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 1, 7, f_display(st1), text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 0, 8, \"SHORT T2\", text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 1, 8, f_display(st2), text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 0, 9, \"RTH VWAP\", text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 1, 9, f_display(rthVWAP), text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 0, 10, \"PDH / PDL\", text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 1, 10, f_display(pdh) + \" / \" + f_display(pdl), text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 0, 11, \"STATUS\", text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n    table.cell(dash, 1, 11, correctDate ? \"DATE ACTIVE\" : \"PREVIEW / EXPIRED\", text_color=color.white, bgcolor=color.black, text_size=size.tiny)\n",
+  "version": "daily-pine-stocks-v2",
+  "signal_rules": {
+    "require_volume": true,
+    "morning_only": true,
+    "volume_multiple": 1.3,
+    "volume_lookback": 20,
+    "morning_start": "09:30",
+    "morning_end": "12:00"
+  }
+}

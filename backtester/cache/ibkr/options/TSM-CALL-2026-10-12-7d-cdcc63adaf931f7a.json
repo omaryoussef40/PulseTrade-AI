@@ -1,0 +1,9 @@
+{
+  "symbol": "TSM",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 452.5,
+  "right": "C",
+  "localSymbol": "TSM   261016C00452500",
+  "conId": 926305938
+}

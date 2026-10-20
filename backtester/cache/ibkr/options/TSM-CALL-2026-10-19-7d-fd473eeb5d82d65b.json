@@ -1,0 +1,11 @@
+{
+  "symbol": "TSM",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 425.0,
+  "right": "C",
+  "localSymbol": "TSM   261023C00425000",
+  "conId": 920316128,
+  "tradingClass": "TSM",
+  "multiplier": "100"
+}

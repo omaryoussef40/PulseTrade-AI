@@ -21,6 +21,7 @@ The PMB strategy stays broker-agnostic: it receives normalized OHLCV DataFrames.
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -197,7 +198,8 @@ class IBKRMarketDataProvider:
             return self._stock_contract_cache[symbol]
 
         ib = self.connect()
-        contract = Stock(symbol, "SMART", "USD")
+        # IBKR identifies share classes with a space (BRK B, BF B).
+        contract = Stock(symbol.replace(".", " ").replace("-", " "), "SMART", "USD")
         qualified = ib.qualifyContracts(contract)
         if not qualified:
             raise RuntimeError(f"Could not qualify stock contract for {symbol}")
@@ -211,18 +213,21 @@ class IBKRMarketDataProvider:
         bar_size: str = "5 mins",
         what_to_show: str = "TRADES",
         use_rth: bool = True,
+        end_datetime: str = "",
+        timeout_seconds: float | None = None,
     ) -> pd.DataFrame:
         ib = self.connect()
         contract = self.qualify_stock(symbol)
         bars = ib.reqHistoricalData(
             contract,
-            endDateTime="",
+            endDateTime=end_datetime,
             durationStr=duration,
             barSizeSetting=bar_size,
             whatToShow=what_to_show,
             useRTH=use_rth,
-            formatDate=1,
+            formatDate=2 if end_datetime else 1,
             keepUpToDate=False,
+            **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
         )
         return self._bars_to_ohlcv(bars)
 
@@ -360,6 +365,7 @@ def create_market_data_provider(
     ib=None,
     client_id_offset: int = 200,
     readonly_override: bool | None = None,
+    cache_dir: str | Path | None = None,
 ):
     """Create a market-data provider for Strategy Lab and replay workflows.
 
@@ -386,11 +392,12 @@ def create_market_data_provider(
                 timezone=EASTERN,
             ),
             ib=ib,
+            **({"cache_dir": cache_dir} if cache_dir is not None else {}),
         )
 
     if source_clean in {"yahoo", "yfinance", "yahoo finance"}:
         from providers.yahoo_provider import YahooMarketDataProvider as _Provider
-        return _Provider(timezone=EASTERN)
+        return _Provider(timezone=EASTERN, **({"cache_dir": cache_dir} if cache_dir is not None else {}))
 
     raise ValueError(f"Unsupported market data source: {source}")
 

@@ -1,0 +1,11 @@
+{
+  "symbol": "WDC",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 367.5,
+  "right": "C",
+  "localSymbol": "WDC   261023C00367500",
+  "conId": 933469463,
+  "tradingClass": "WDC",
+  "multiplier": "100"
+}

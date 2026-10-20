@@ -1,0 +1,9 @@
+{
+  "symbol": "CLF",
+  "option_dte": 7,
+  "expiry": "20261009",
+  "strike": 11.5,
+  "right": "P",
+  "localSymbol": "CLF   261009P00011500",
+  "conId": 917733215
+}

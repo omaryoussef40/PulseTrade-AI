@@ -1,0 +1,9 @@
+{
+  "symbol": "JPM",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 335.0,
+  "right": "P",
+  "localSymbol": "JPM   261016P00335000",
+  "conId": 872899488
+}

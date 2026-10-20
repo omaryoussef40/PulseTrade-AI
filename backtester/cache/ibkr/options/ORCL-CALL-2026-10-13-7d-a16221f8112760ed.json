@@ -1,0 +1,11 @@
+{
+  "symbol": "ORCL",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 142.0,
+  "right": "C",
+  "localSymbol": "ORCL  261023C00142000",
+  "conId": 920259736,
+  "tradingClass": "ORCL",
+  "multiplier": "100"
+}

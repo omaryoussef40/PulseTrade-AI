@@ -192,6 +192,7 @@ class IBKRMarketDataProvider:
         end: str | None = None,
         regular_hours_only: bool = True,
         force_refresh: bool = False,
+        allow_cache_fallback: bool = True,
     ) -> pd.DataFrame:
         clean_symbol = str(symbol).strip().upper()
         period_days = self._period_to_days(period or "30d")
@@ -215,7 +216,7 @@ class IBKRMarketDataProvider:
         try:
             downloaded = self.historical_bars(symbol=clean_symbol, duration=duration, bar_size=bar_size, use_rth=regular_hours_only)
         except Exception as exc:
-            if self._cache_covers_period(cached, period_days):
+            if allow_cache_fallback and self._cache_covers_period(cached, period_days):
                 self._last_load_sources[clean_symbol] = "cache_fallback"
                 return self._slice_cached_period(cached, period_days)
             self._last_load_sources[clean_symbol] = "error"
@@ -223,7 +224,7 @@ class IBKRMarketDataProvider:
                 raise RuntimeError(self._stale_data_message(clean_symbol, cached, f"IBKR refresh failed: {exc}")) from exc
             raise
         if downloaded.empty:
-            if self._cache_covers_period(cached, period_days):
+            if allow_cache_fallback and self._cache_covers_period(cached, period_days):
                 self._last_load_sources[clean_symbol] = "cache_fallback"
                 return self._slice_cached_period(cached, period_days)
             if not cached.empty:
@@ -232,6 +233,10 @@ class IBKRMarketDataProvider:
             self._last_load_sources[clean_symbol] = "empty"
             return downloaded
 
+        if force_refresh and not allow_cache_fallback and not cached.empty:
+            # Strict research refresh replaces fetched sessions in full; an old
+            # cached afternoon must not conceal a partial fresh response.
+            cached=cached.loc[cached.index.date<downloaded.index.min().date()]
         merged = self._merge_and_prune_cache(cached, downloaded)
         self._write_cache(merged, cache_path)
         self._prune_old_cache_files()
@@ -365,6 +370,7 @@ class IBKRMarketDataProvider:
         bar_size: str = "5 mins",
         what_to_show: str = "TRADES",
         use_rth: bool = True,
+        force_refresh: bool = False,
     ) -> tuple[dict[str, Any], pd.DataFrame]:
         symbol = str(symbol).strip().upper()
         signal = str(signal).strip().upper()
@@ -373,18 +379,19 @@ class IBKRMarketDataProvider:
             ref_ts = ref_ts.tz_localize(self.config.timezone)
         else:
             ref_ts = ref_ts.tz_convert(self.config.timezone)
-        cached_info, cached_bars = self._find_cached_option_session(
-            symbol,
-            signal,
-            underlying_price,
-            option_dte,
-            reference_time,
-            bar_size,
-            what_to_show,
-            use_rth,
-        )
-        if cached_info and not cached_bars.empty:
-            return cached_info, cached_bars
+        if not force_refresh:
+            cached_info, cached_bars = self._find_cached_option_session(
+                symbol,
+                signal,
+                underlying_price,
+                option_dte,
+                reference_time,
+                bar_size,
+                what_to_show,
+                use_rth,
+            )
+            if cached_info and not cached_bars.empty:
+                return cached_info, cached_bars
 
         failure_path = self._option_failure_cache_path(
             symbol,
@@ -396,7 +403,7 @@ class IBKRMarketDataProvider:
             what_to_show,
             use_rth,
         )
-        cached_failure = self._read_option_failure_cache(failure_path)
+        cached_failure = "" if force_refresh else self._read_option_failure_cache(failure_path)
         if cached_failure:
             raise RuntimeError(cached_failure)
 
@@ -410,7 +417,11 @@ class IBKRMarketDataProvider:
             params = ib.reqSecDefOptParams(symbol, "", stock.secType, stock.conId)
             if not params:
                 raise RuntimeError(f"No IBKR option chain returned for {symbol}")
-            chain = next((p for p in params if p.exchange == "SMART"), params[0])
+            standard_chains = [p for p in params
+                if str(p.multiplier) == "100" and str(p.tradingClass).upper() == symbol]
+            if not standard_chains:
+                raise RuntimeError(f"No standard 100-share {symbol} option chain returned; adjusted option classes are excluded.")
+            chain = next((p for p in standard_chains if p.exchange == "SMART"), standard_chains[0])
 
             ref_date = ref_ts.date()
             target_date = ref_date + timedelta(days=int(option_dte))
@@ -466,7 +477,7 @@ class IBKRMarketDataProvider:
             for expiry_value, expiry_date in expiry_candidates[:4]:
                 for strike_value in strike_candidates:
                     attempted.append(f"{expiry_value} {strike_value:g}")
-                    candidate_contract = Option(symbol, expiry_value, strike_value, right, "SMART", currency="USD", multiplier="100")
+                    candidate_contract = Option(symbol, expiry_value, strike_value, right, "SMART", currency="USD", multiplier="100", tradingClass=chain.tradingClass)
                     if expiry_date < today:
                         candidate_contract.includeExpired = True
                     qualified = ib.qualifyContracts(candidate_contract)
@@ -491,11 +502,14 @@ class IBKRMarketDataProvider:
                 "right": right,
                 "localSymbol": getattr(contract, "localSymbol", ""),
                 "conId": getattr(contract, "conId", None),
+                "tradingClass": getattr(contract, "tradingClass", None),
+                "multiplier": getattr(contract, "multiplier", "100"),
             }
             option_cache_path = self._contract_option_cache_path(info, ref_ts, bar_size, what_to_show, use_rth)
-            cached_info, cached_bars = self._read_option_cache(option_cache_path)
-            if cached_info and not cached_bars.empty:
-                return cached_info, cached_bars
+            if not force_refresh:
+                cached_info, cached_bars = self._read_option_cache(option_cache_path)
+                if cached_info and not cached_bars.empty:
+                    return cached_info, cached_bars
 
             end_dt = ref_ts.replace(hour=16, minute=0, second=0, microsecond=0)
             bars = ib.reqHistoricalData(
@@ -509,7 +523,10 @@ class IBKRMarketDataProvider:
                 keepUpToDate=False,
             )
             df = self._bars_to_ohlcv(bars)
+            if df.empty:
+                raise RuntimeError(f"IBKR returned no {what_to_show} option candles for {symbol} {right} {expiry} {strike:g} ({info['localSymbol']}, class {info['tradingClass']}) on {ref_ts.date()}. The API connected, but this contract's historical data was unavailable.")
             self._write_option_cache(option_cache_path, info, df)
+            if not df.empty:failure_path.unlink(missing_ok=True)
             self._prune_old_cache_files()
             return info, df
         finally:
@@ -526,6 +543,7 @@ class IBKRMarketDataProvider:
         bar_size: str = "5 mins",
         what_to_show: str = "TRADES",
         use_rth: bool = True,
+        force_refresh: bool = False,
     ) -> tuple[dict[str, Any], pd.DataFrame]:
         """Load one exact option series, used when paired legs must match."""
         symbol = str(symbol).strip().upper()
@@ -545,7 +563,7 @@ class IBKRMarketDataProvider:
             f"{self._safe_key(symbol)}-{self._safe_key(signal)}-"
             f"{ref_ts.date().isoformat()}-{int(option_dte)}d-"
         )
-        for meta_path in self.option_cache_dir.glob(f"{prefix}*.json"):
+        for meta_path in ([] if force_refresh else self.option_cache_dir.glob(f"{prefix}*.json")):
             if "unavailable" in meta_path.name:
                 continue
             try:
@@ -583,9 +601,10 @@ class IBKRMarketDataProvider:
                 "conId": getattr(contract, "conId", None),
             }
             cache_path = self._contract_option_cache_path(info, ref_ts, bar_size, what_to_show, use_rth)
-            cached_info, cached_bars = self._read_option_cache(cache_path)
-            if cached_info and not cached_bars.empty:
-                return cached_info, cached_bars
+            if not force_refresh:
+                cached_info, cached_bars = self._read_option_cache(cache_path)
+                if cached_info and not cached_bars.empty:
+                    return cached_info, cached_bars
 
             end_dt = ref_ts.replace(hour=16, minute=0, second=0, microsecond=0)
             bars = ib.reqHistoricalData(
@@ -861,6 +880,9 @@ class IBKRMarketDataProvider:
             try:
                 with meta_path.open("r", encoding="utf-8") as f:
                     info = json.load(f)
+                cached_class = info.get("tradingClass") or str(info.get("localSymbol") or "")[:6].strip()
+                if cached_class and str(cached_class).upper() != symbol.upper():
+                    continue
                 strike = float(info.get("strike"))
             except Exception:
                 continue

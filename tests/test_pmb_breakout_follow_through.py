@@ -37,6 +37,61 @@ def _frames(follow_close=102.4, follow_high=102.8):
 
 
 class BreakoutFollowThroughTests(unittest.TestCase):
+    def evaluate(self, intraday, today, config, direction="CALL"):
+        return evaluate_breakout_follow_through(intraday, today, direction=direction, orb_high=101.0, orb_low=99.0, orb_bars=3, config=config)
+
+    def test_volume_only_accepts_breakout_without_next_candle(self):
+        intraday, today = _frames()
+        today = today.iloc[:-1]
+        intraday = intraday.loc[intraday.index <= today.index[-1]]
+        result = self.evaluate(intraday, today, {**CONFIG, "volume_enabled": True, "follow_through_enabled": False})
+        self.assertTrue(result["confirmed"])
+        self.assertTrue(result["volume_confirmed"])
+        self.assertIsNone(result["follow_through_time"])
+
+    def test_volume_only_still_rejects_weak_volume(self):
+        intraday, today = _frames()
+        intraday.loc[today.index[-2], "Volume"] = 1000
+        today = intraday.loc[today.index]
+        result = self.evaluate(intraday, today, {**CONFIG, "volume_enabled": True, "follow_through_enabled": False})
+        self.assertFalse(result["confirmed"])
+        self.assertIn("volume too weak", result["reason"])
+
+    def test_volume_only_still_requires_historical_baseline(self):
+        _, today = _frames()
+        result = self.evaluate(today, today, {**CONFIG, "volume_enabled": True, "follow_through_enabled": False})
+        self.assertFalse(result["confirmed"])
+        self.assertIn("baseline unavailable", result["reason"])
+
+    def test_follow_through_only_needs_no_volume_history(self):
+        _, today = _frames()
+        result = self.evaluate(today, today, {**CONFIG, "volume_enabled": False, "follow_through_enabled": True})
+        self.assertTrue(result["confirmed"])
+        self.assertIsNone(result["volume_ratio"])
+
+    def test_follow_through_only_still_waits_for_next_candle(self):
+        _, today = _frames()
+        today = today.iloc[:-1]
+        result = self.evaluate(today, today, {**CONFIG, "volume_enabled": False, "follow_through_enabled": True})
+        self.assertFalse(result["confirmed"])
+        self.assertEqual(result["reason"], "Waiting for the next candle")
+
+    def test_explicit_disabled_controls_override_legacy_enabled(self):
+        result = self.evaluate(pd.DataFrame(), pd.DataFrame(), {**CONFIG, "volume_enabled": False, "follow_through_enabled": False})
+        self.assertFalse(result["required"])
+        self.assertTrue(result["confirmed"])
+
+    def test_explicit_volume_control_overrides_legacy_disabled_for_put(self):
+        intraday, today = _frames()
+        # Mirror prices around 100 to exercise the short direction.
+        for frame in (intraday, today):
+            high, low = frame["High"].copy(), frame["Low"].copy()
+            frame["High"], frame["Low"] = 200 - low, 200 - high
+            frame["Open"], frame["Close"] = 200 - frame["Open"], 200 - frame["Close"]
+        today = today.iloc[:-1]
+        result = self.evaluate(intraday.loc[intraday.index <= today.index[-1]], today, {**CONFIG, "enabled": False, "volume_enabled": True, "follow_through_enabled": False}, direction="PUT")
+        self.assertTrue(result["confirmed"])
+
     def test_accepts_high_volume_breakout_with_immediate_extension(self):
         intraday, today = _frames()
         result = evaluate_breakout_follow_through(intraday, today, direction="CALL", orb_high=101.0, orb_low=99.0, orb_bars=3, config=CONFIG)

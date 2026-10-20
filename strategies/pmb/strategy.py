@@ -11,6 +11,7 @@ from datetime import time as dtime, timedelta
 from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
+from .candles import confirmation_minutes
 
 EASTERN = ZoneInfo("America/New_York")
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
@@ -297,25 +298,38 @@ def evaluate_breakout_follow_through(
     orb_low: float,
     orb_bars: int,
     config: dict | None = None,
+    confirmation_intraday: pd.DataFrame | None = None,
+    confirmation_source_minutes: int | None = None,
+    as_of: pd.Timestamp | None = None,
 ) -> dict:
-    """Confirm the first ORB break with its volume and the immediately next bar.
+    """Apply independent volume and next-candle checks to the first ORB break.
 
-    The scanner only approves the one bar immediately after a qualifying break.
-    This prevents it from treating an already-old move as fresh continuation.
+    Legacy ``enabled`` settings activate both checks. Explicit per-check settings
+    override that flag. Only the next-candle check imposes its freshness window.
     """
     cfg = {**DEFAULT_BREAKOUT_FOLLOW_THROUGH, **(config or {})}
+    volume_required = bool(cfg.get("volume_enabled", cfg["enabled"]))
+    follow_required = bool(cfg.get("follow_through_enabled", cfg["enabled"]))
+    required = volume_required or follow_required
     direction = str(direction or "").upper()
     result = {
-        "required": bool(cfg["enabled"]),
-        "confirmed": not bool(cfg["enabled"]),
+        "required": required,
+        "confirmed": not required,
+        "volume_required": volume_required,
+        "volume_confirmed": not volume_required,
+        "follow_through_required": follow_required,
+        "follow_through_confirmed": not follow_required,
         "breakout_time": None,
         "breakout_volume": None,
         "volume_baseline": None,
         "volume_ratio": None,
         "follow_through_time": None,
+        "confirmation_minutes": None,
+        "confirmation_close": None,
+        "confirmation_closed_at": None,
         "reason": "Breakout volume/follow-through filter disabled",
     }
-    if not cfg["enabled"]:
+    if not required:
         return result
     if direction not in {"CALL", "PUT"} or today_data is None or today_data.empty:
         result["reason"] = "No directional session data for breakout confirmation"
@@ -333,32 +347,70 @@ def evaluate_breakout_follow_through(
     breakout = crossed.iloc[0]
     result["breakout_time"] = breakout_time
     result["breakout_volume"] = float(breakout["Volume"])
-    historical_slot = intraday[(intraday.index.date < breakout_time.date()) & (intraday.index.time == breakout_time.time())]
-    historical_volume = pd.to_numeric(historical_slot["Volume"], errors="coerce").dropna()
-    historical_volume = historical_volume[historical_volume > 0].tail(20)
-    required_sessions = max(1, int(cfg["min_volume_sessions"]))
-    if len(historical_volume) < required_sessions:
-        result["reason"] = f"Breakout volume baseline unavailable ({len(historical_volume)} < {required_sessions} sessions)"
-        return result
-    baseline = float(historical_volume.median())
-    result["volume_baseline"] = baseline
-    result["volume_ratio"] = float(breakout["Volume"]) / baseline if baseline > 0 else None
-    if result["volume_ratio"] is None or result["volume_ratio"] < float(cfg["min_breakout_volume_ratio"]):
-        result["reason"] = (
-            f"Breakout volume too weak ({result['volume_ratio'] or 0:.2f}x < "
-            f"{float(cfg['min_breakout_volume_ratio']):.2f}x baseline)"
-        )
+    if volume_required:
+        historical_slot = intraday[(intraday.index.date < breakout_time.date()) & (intraday.index.time == breakout_time.time())]
+        historical_volume = pd.to_numeric(historical_slot["Volume"], errors="coerce").dropna()
+        historical_volume = historical_volume[historical_volume > 0].tail(20)
+        required_sessions = max(1, int(cfg["min_volume_sessions"]))
+        if len(historical_volume) < required_sessions:
+            result["reason"] = f"Breakout volume baseline unavailable ({len(historical_volume)} < {required_sessions} sessions)"
+            return result
+        baseline = float(historical_volume.median())
+        result["volume_baseline"] = baseline
+        result["volume_ratio"] = float(breakout["Volume"]) / baseline if baseline > 0 else None
+        if result["volume_ratio"] is None or result["volume_ratio"] < float(cfg["min_breakout_volume_ratio"]):
+            result["reason"] = (
+                f"Breakout volume too weak ({result['volume_ratio'] or 0:.2f}x < "
+                f"{float(cfg['min_breakout_volume_ratio']):.2f}x baseline)"
+            )
+            return result
+        result["volume_confirmed"] = True
+
+    if not follow_required:
+        result["confirmed"] = True
+        result["reason"] = "Breakout volume confirmed; next-candle confirmation disabled"
         return result
 
-    next_bars = today_data[today_data.index > breakout_time]
-    if next_bars.empty:
-        result["reason"] = "Breakout volume passed; waiting for the next candle"
-        return result
-    follow = next_bars.iloc[0]
-    result["follow_through_time"] = next_bars.index[0]
-    if today_data.index[-1] != next_bars.index[0]:
-        result["reason"] = "Follow-through confirmation is stale"
-        return result
+    analysis_minutes = _bar_minutes(today_data.index, fallback=15)
+    if "confirmation_minutes" in (config or {}):
+        minutes = confirmation_minutes(cfg, analysis_minutes)
+        source = confirmation_intraday if confirmation_intraday is not None else today_data
+        if source.empty:
+            result["reason"] = f"Waiting for the completed {minutes}-minute confirmation candle"
+            return result
+        source_minutes = int(confirmation_source_minutes or _bar_minutes(source.index, fallback=analysis_minutes))
+        result["confirmation_minutes"] = minutes
+        if source_minutes > minutes or minutes % source_minutes:
+            result["reason"] = f"{minutes}-minute confirmation requires finer completed candle data"
+            return result
+        start = breakout_time + pd.Timedelta(minutes=analysis_minutes)
+        end = start + pd.Timedelta(minutes=minutes)
+        expected = pd.date_range(start, periods=minutes // source_minutes, freq=f"{source_minutes}min")
+        window = source[(source.index >= start) & (source.index < end)]
+        current = pd.Timestamp(as_of) if as_of is not None else source.index[-1] + pd.Timedelta(minutes=source_minutes)
+        if current < end or not window.index.equals(expected):
+            result["reason"] = f"Waiting for the completed {minutes}-minute confirmation candle"
+            return result
+        if current.floor(f"{source_minutes}min") > end:
+            result["reason"] = "Follow-through confirmation is stale"
+            return result
+        follow = pd.Series({"Close": window.iloc[-1]["Close"], "High": window["High"].max(), "Low": window["Low"].min()})
+        result["follow_through_time"] = start
+        result["confirmation_closed_at"] = end
+    else:
+        # Legacy configurations use the immediately next analysis candle.
+        next_bars = today_data[today_data.index > breakout_time]
+        if next_bars.empty:
+            result["reason"] = "Breakout volume passed; waiting for the next candle" if volume_required else "Waiting for the next candle"
+            return result
+        follow = next_bars.iloc[0]
+        result["follow_through_time"] = next_bars.index[0]
+        result["confirmation_minutes"] = analysis_minutes
+        result["confirmation_closed_at"] = next_bars.index[0] + pd.Timedelta(minutes=analysis_minutes)
+        if today_data.index[-1] != next_bars.index[0]:
+            result["reason"] = "Follow-through confirmation is stale"
+            return result
+    result["confirmation_close"] = float(follow["Close"])
 
     held_level = float(follow["Close"]) > level if is_call else float(follow["Close"]) < level
     extended = float(follow["High"]) > float(breakout["High"]) if is_call else float(follow["Low"]) < float(breakout["Low"])
@@ -368,7 +420,8 @@ def evaluate_breakout_follow_through(
         result["reason"] = "Follow-through candle did not extend the breakout"
     else:
         result["confirmed"] = True
-        result["reason"] = "Breakout volume and immediate follow-through confirmed"
+        result["follow_through_confirmed"] = True
+        result["reason"] = "Breakout volume and immediate follow-through confirmed" if volume_required else "Immediate follow-through confirmed; breakout volume filter disabled"
     return result
 
 
@@ -505,6 +558,9 @@ def scan_dataframe(
     retest_max_minutes: int = DEFAULT_RETEST_MAX_MINUTES,
     analysis_bar_minutes: int | None = None,
     breakout_follow_through: dict | None = None,
+    confirmation_intraday: pd.DataFrame | None = None,
+    confirmation_source_minutes: int | None = None,
+    as_of: pd.Timestamp | None = None,
 ) -> dict | None:
     symbol = str(symbol).strip().upper()
     retest_intraday = _normalize_ohlcv(intraday, timezone=timezone)
@@ -640,13 +696,18 @@ def scan_dataframe(
         orb_low=orb_low,
         orb_bars=orb_bars,
         config=breakout_follow_through,
+        confirmation_intraday=_normalize_ohlcv(confirmation_intraday, timezone=timezone) if confirmation_intraday is not None else None,
+        confirmation_source_minutes=confirmation_source_minutes,
+        as_of=as_of,
     )
     if signal in {"CALL", "PUT"} and bool(follow_through.get("required")):
         if bool(follow_through.get("confirmed")):
             reasons = list(reasons) + [str(follow_through["reason"])]
-            components = list(components) + [
-                f"Breakout volume {float(follow_through['volume_ratio']):.2f}x baseline; immediate follow-through passed"
-            ]
+            components = list(components)
+            if follow_through["volume_required"]:
+                components.append(f"Breakout volume {float(follow_through['volume_ratio']):.2f}x baseline: passed")
+            if follow_through["follow_through_required"]:
+                components.append("Immediate follow-through: passed")
         else:
             signal = "WAIT"
             reasons = list(reasons) + [str(follow_through.get("reason") or "Breakout follow-through not confirmed")]
@@ -683,7 +744,8 @@ def scan_dataframe(
         "Confidence": round(confidence, 1),  # compatibility only
         "Bull Score": round(call_score, 1),
         "Bear Score": round(put_score, 1),
-        "Price": round(price, 2),
+        "Price": round(float(follow_through["confirmation_close"]), 2) if signal in {"CALL", "PUT"} and follow_through.get("confirmed") and follow_through.get("confirmation_close") is not None else round(price, 2),
+        "Analysis Price": round(price, 2),
         "RVOL": round(rvol, 2),
         "ATR %": round(atr_percent, 2),
         "VWAP": round(float(last["VWAP"]), 2),
@@ -724,13 +786,19 @@ def scan_dataframe(
         "Retest Time": retest_result.get("retest_time").strftime("%Y-%m-%d %H:%M %Z") if hasattr(retest_result.get("retest_time"), "strftime") else None,
         "Retest Minutes After Breakout": round(float(retest_result["elapsed_minutes"]), 1) if retest_result.get("elapsed_minutes") is not None else None,
         "Retest Reason": retest_result.get("reason"),
-        "Breakout Follow-through Required": bool(follow_through.get("required")),
-        "Breakout Follow-through Confirmed": bool(follow_through.get("confirmed")),
+        "Breakout Confirmation Required": bool(follow_through.get("required")),
+        "Breakout Confirmation Confirmed": bool(follow_through.get("confirmed")),
+        "Breakout Volume Required": bool(follow_through.get("volume_required")),
+        "Breakout Volume Confirmed": bool(follow_through.get("volume_confirmed")),
+        "Breakout Follow-through Required": bool(follow_through.get("follow_through_required")),
+        "Breakout Follow-through Confirmed": bool(follow_through.get("follow_through_confirmed")),
         "Breakout Follow-through Reason": follow_through.get("reason"),
         "Breakout Volume": round(float(follow_through["breakout_volume"]), 2) if follow_through.get("breakout_volume") is not None else None,
         "Breakout Volume Baseline": round(float(follow_through["volume_baseline"]), 2) if follow_through.get("volume_baseline") is not None else None,
         "Breakout Volume Ratio": round(float(follow_through["volume_ratio"]), 2) if follow_through.get("volume_ratio") is not None else None,
         "Breakout Follow-through Time": follow_through.get("follow_through_time").strftime("%Y-%m-%d %H:%M %Z") if hasattr(follow_through.get("follow_through_time"), "strftime") else None,
+        "Confirmation Candle Minutes": follow_through.get("confirmation_minutes"),
+        "Confirmation Closed At": follow_through.get("confirmation_closed_at").strftime("%Y-%m-%d %H:%M %Z") if hasattr(follow_through.get("confirmation_closed_at"), "strftime") else None,
         "PDH Break": pdh_break,
         "PDL Break": pdl_break,
         "Above VWAP": above_vwap,

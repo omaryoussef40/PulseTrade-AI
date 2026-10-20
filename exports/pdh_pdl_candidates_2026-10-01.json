@@ -1,0 +1,333 @@
+{
+  "date": "2026-10-01",
+  "universe": [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "NVDA",
+    "AAPL",
+    "MSFT",
+    "META",
+    "AMZN",
+    "GOOGL",
+    "TSLA",
+    "AMD",
+    "PLTR",
+    "COIN",
+    "MSTR",
+    "MU",
+    "TSM",
+    "JPM",
+    "GS",
+    "BAC",
+    "NFLX",
+    "UBER",
+    "XOM",
+    "COST",
+    "RBLX",
+    "HOOD",
+    "SOFI",
+    "RKLB",
+    "HIMS",
+    "SPCX",
+    "INTC",
+    "MRNA",
+    "SNPS",
+    "MKC",
+    "NKE",
+    "ACN"
+  ],
+  "source": "IBKR historical candles; Pine rules reproduced in Python, not TradingView feed",
+  "results": [
+    {
+      "symbol": "MU",
+      "time": "09:45",
+      "direction": "Bear",
+      "status": 2,
+      "price": 1052.17,
+      "opening_rvol": 1.76,
+      "pdh": 1083.5,
+      "pdl": 1062.36,
+      "atr": 45.0812
+    },
+    {
+      "symbol": "MKC",
+      "time": "09:45",
+      "direction": "Bear",
+      "status": 2,
+      "price": 46.05,
+      "opening_rvol": 4.74,
+      "pdh": 49.2,
+      "pdl": 46.25,
+      "atr": 1.3294
+    },
+    {
+      "symbol": "NKE",
+      "time": "09:45",
+      "direction": "Bull",
+      "status": 1,
+      "price": 35.76,
+      "opening_rvol": 1.67,
+      "pdh": 35.99,
+      "pdl": 35.15,
+      "atr": 0.9747
+    },
+    {
+      "symbol": "NKE",
+      "time": "10:15",
+      "direction": "Bull",
+      "status": 1,
+      "price": 35.78,
+      "opening_rvol": 1.67,
+      "pdh": 35.99,
+      "pdl": 35.15,
+      "atr": 0.9747
+    },
+    {
+      "symbol": "NKE",
+      "time": "10:30",
+      "direction": "Bull",
+      "status": 1,
+      "price": 35.8,
+      "opening_rvol": 1.67,
+      "pdh": 35.99,
+      "pdl": 35.15,
+      "atr": 0.9747
+    },
+    {
+      "symbol": "NKE",
+      "time": "10:45",
+      "direction": "Bull",
+      "status": 1,
+      "price": 35.76,
+      "opening_rvol": 1.67,
+      "pdh": 35.99,
+      "pdl": 35.15,
+      "atr": 0.9747
+    },
+    {
+      "symbol": "NKE",
+      "time": "11:00",
+      "direction": "Bull",
+      "status": 1,
+      "price": 35.82,
+      "opening_rvol": 1.67,
+      "pdh": 35.99,
+      "pdl": 35.15,
+      "atr": 0.9747
+    }
+  ],
+  "base_metrics": [
+    {
+      "symbol": "SPY",
+      "opening_rvol": 1.26,
+      "daily_atr_percent": 0.87,
+      "average_daily_volume": 26393121
+    },
+    {
+      "symbol": "QQQ",
+      "opening_rvol": 0.81,
+      "daily_atr_percent": 1.26,
+      "average_daily_volume": 20348504
+    },
+    {
+      "symbol": "IWM",
+      "opening_rvol": 1.26,
+      "daily_atr_percent": 1.24,
+      "average_daily_volume": 15343750
+    },
+    {
+      "symbol": "NVDA",
+      "opening_rvol": 0.95,
+      "daily_atr_percent": 2.61,
+      "average_daily_volume": 62113734
+    },
+    {
+      "symbol": "AAPL",
+      "opening_rvol": 0.83,
+      "daily_atr_percent": 2.18,
+      "average_daily_volume": 25045243
+    },
+    {
+      "symbol": "MSFT",
+      "opening_rvol": 1.34,
+      "daily_atr_percent": 2.3,
+      "average_daily_volume": 11096294
+    },
+    {
+      "symbol": "META",
+      "opening_rvol": 0.51,
+      "daily_atr_percent": 3.73,
+      "average_daily_volume": 15477945
+    },
+    {
+      "symbol": "AMZN",
+      "opening_rvol": 1.1,
+      "daily_atr_percent": 2.27,
+      "average_daily_volume": 17414215
+    },
+    {
+      "symbol": "GOOGL",
+      "opening_rvol": 1.42,
+      "daily_atr_percent": 2.46,
+      "average_daily_volume": 14482465
+    },
+    {
+      "symbol": "TSLA",
+      "opening_rvol": 0.56,
+      "daily_atr_percent": 3.46,
+      "average_daily_volume": 28322114
+    },
+    {
+      "symbol": "AMD",
+      "opening_rvol": 0.65,
+      "daily_atr_percent": 3.96,
+      "average_daily_volume": 12159505
+    },
+    {
+      "symbol": "PLTR",
+      "opening_rvol": 0.49,
+      "daily_atr_percent": 3.39,
+      "average_daily_volume": 13973716
+    },
+    {
+      "symbol": "COIN",
+      "opening_rvol": 0.75,
+      "daily_atr_percent": 6.05,
+      "average_daily_volume": 5703403
+    },
+    {
+      "symbol": "MSTR",
+      "opening_rvol": 0.68,
+      "daily_atr_percent": 5.85,
+      "average_daily_volume": 13634459
+    },
+    {
+      "symbol": "MU",
+      "opening_rvol": 1.76,
+      "daily_atr_percent": 4.23,
+      "average_daily_volume": 15763229
+    },
+    {
+      "symbol": "TSM",
+      "opening_rvol": 0.89,
+      "daily_atr_percent": 2.3,
+      "average_daily_volume": 5576508
+    },
+    {
+      "symbol": "JPM",
+      "opening_rvol": 1.13,
+      "daily_atr_percent": 1.96,
+      "average_daily_volume": 3643734
+    },
+    {
+      "symbol": "GS",
+      "opening_rvol": 0.99,
+      "daily_atr_percent": 2.75,
+      "average_daily_volume": 993737
+    },
+    {
+      "symbol": "BAC",
+      "opening_rvol": 1.61,
+      "daily_atr_percent": 2.13,
+      "average_daily_volume": 22349246
+    },
+    {
+      "symbol": "NFLX",
+      "opening_rvol": 0.82,
+      "daily_atr_percent": 2.96,
+      "average_daily_volume": 20183684
+    },
+    {
+      "symbol": "UBER",
+      "opening_rvol": 0.47,
+      "daily_atr_percent": 2.78,
+      "average_daily_volume": 11571084
+    },
+    {
+      "symbol": "XOM",
+      "opening_rvol": 0.48,
+      "daily_atr_percent": 2.2,
+      "average_daily_volume": 6005695
+    },
+    {
+      "symbol": "COST",
+      "opening_rvol": 0.36,
+      "daily_atr_percent": 1.73,
+      "average_daily_volume": 1087017
+    },
+    {
+      "symbol": "RBLX",
+      "opening_rvol": 0.58,
+      "daily_atr_percent": 5.89,
+      "average_daily_volume": 6841477
+    },
+    {
+      "symbol": "HOOD",
+      "opening_rvol": 0.47,
+      "daily_atr_percent": 5.63,
+      "average_daily_volume": 16308975
+    },
+    {
+      "symbol": "SOFI",
+      "opening_rvol": 0.63,
+      "daily_atr_percent": 4.19,
+      "average_daily_volume": 35980581
+    },
+    {
+      "symbol": "RKLB",
+      "opening_rvol": 1.19,
+      "daily_atr_percent": 5.72,
+      "average_daily_volume": 13425668
+    },
+    {
+      "symbol": "HIMS",
+      "opening_rvol": 0.73,
+      "daily_atr_percent": 5.87,
+      "average_daily_volume": 6776674
+    },
+    {
+      "symbol": "SPCX",
+      "opening_rvol": 0.52,
+      "daily_atr_percent": 4.21,
+      "average_daily_volume": 57612469
+    },
+    {
+      "symbol": "INTC",
+      "opening_rvol": 0.64,
+      "daily_atr_percent": 5.14,
+      "average_daily_volume": 72600973
+    },
+    {
+      "symbol": "MRNA",
+      "opening_rvol": 0.76,
+      "daily_atr_percent": 6.84,
+      "average_daily_volume": 9327446
+    },
+    {
+      "symbol": "SNPS",
+      "opening_rvol": 7.16,
+      "daily_atr_percent": 3.67,
+      "average_daily_volume": 1100906
+    },
+    {
+      "symbol": "MKC",
+      "opening_rvol": 4.74,
+      "daily_atr_percent": 2.87,
+      "average_daily_volume": 1579082
+    },
+    {
+      "symbol": "NKE",
+      "opening_rvol": 1.67,
+      "daily_atr_percent": 2.75,
+      "average_daily_volume": 22679551
+    },
+    {
+      "symbol": "ACN",
+      "opening_rvol": 9.55,
+      "daily_atr_percent": 3.77,
+      "average_daily_volume": 2593862
+    }
+  ],
+  "errors": []
+}

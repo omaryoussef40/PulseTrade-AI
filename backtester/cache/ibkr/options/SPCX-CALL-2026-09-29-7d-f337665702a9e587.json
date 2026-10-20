@@ -1,0 +1,9 @@
+{
+  "symbol": "SPCX",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 149.0,
+  "right": "C",
+  "localSymbol": "SPCX  261016C00149000",
+  "conId": 926293155
+}

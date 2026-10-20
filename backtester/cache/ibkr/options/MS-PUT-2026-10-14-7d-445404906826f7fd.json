@@ -1,0 +1,11 @@
+{
+  "symbol": "MS",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 180.0,
+  "right": "P",
+  "localSymbol": "MS    261023P00180000",
+  "conId": 920233300,
+  "tradingClass": "MS",
+  "multiplier": "100"
+}

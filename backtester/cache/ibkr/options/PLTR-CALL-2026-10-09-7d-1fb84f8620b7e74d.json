@@ -1,0 +1,9 @@
+{
+  "symbol": "PLTR",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 205.0,
+  "right": "C",
+  "localSymbol": "PLTR  261016C00205000",
+  "conId": 926262785
+}

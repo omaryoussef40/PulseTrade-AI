@@ -1,0 +1,11 @@
+{
+  "symbol": "BAC",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 50.0,
+  "right": "P",
+  "localSymbol": "BAC   261023P00050000",
+  "conId": 920158188,
+  "tradingClass": "BAC",
+  "multiplier": "100"
+}

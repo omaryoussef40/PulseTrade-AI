@@ -1,0 +1,9 @@
+{
+  "symbol": "AMZN",
+  "option_dte": 14,
+  "expiry": "20261023",
+  "strike": 257.5,
+  "right": "P",
+  "localSymbol": "AMZN  261023P00257500",
+  "conId": 931220767
+}

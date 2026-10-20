@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 import asyncio
 import calendar
 import html
@@ -24,6 +25,8 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 from bot_core import *
+from modules.status_dock import STATUS_DOCK_SCRIPT
+from modules.workspace_ui import PAGES, resolve_page, render_overview, render_strategy_cards, read_json, render_orders, stock_positions, merge_settings_changes, position_rows
 from engine import (
     approval_mode_from_config,
     is_telegram_polling_noise,
@@ -105,7 +108,7 @@ APP_DISPLAY_NAME = "PulseTrade AI"
 st.set_page_config(page_title=APP_DISPLAY_NAME, layout="wide")
 getattr(st, "html", lambda body: st.markdown(body, unsafe_allow_html=True))("""
 <style>
-    .block-container { padding-top: 2.75rem !important; padding-bottom: 7.25rem !important; }
+    .block-container { padding-top: 2.75rem !important; padding-bottom: calc(var(--pt-status-height, 5.25rem) + 2rem) !important; }
     div[data-testid="stMetricValue"] { font-size: 1.24rem !important; line-height: 1.16 !important; white-space: nowrap !important; }
     div[data-testid="stMetricLabel"] { font-size: 0.78rem !important; line-height: 1.12 !important; }
     div[data-testid="stMetric"] { min-width: 0 !important; }
@@ -255,6 +258,30 @@ getattr(st, "html", lambda body: st.markdown(body, unsafe_allow_html=True))("""
         line-height: 1.1 !important;
     }
 
+    /* Black labels and light backgrounds for actions, links and dialog buttons. */
+    html body [data-testid="stApp"] :is(button, a[data-testid^="stBaseButton"]),
+    html body [data-testid="stApp"] :is(button, a[data-testid^="stBaseButton"]) *,
+    html body [role="dialog"] :is(button, a[data-testid^="stBaseButton"]),
+    html body [role="dialog"] :is(button, a[data-testid^="stBaseButton"]) * {
+        color: #000000 !important;
+        -webkit-text-fill-color: #000000 !important;
+    }
+    html body [data-testid="stApp"] :is(button, a[data-testid^="stBaseButton"]),
+    html body [role="dialog"] :is(button, a[data-testid^="stBaseButton"]) {
+        background: #f1f5f9 !important;
+    }
+    html body [data-testid="stApp"] :is(button:hover, button[aria-pressed="true"], button[data-active="true"], a[data-testid^="stBaseButton"]:hover),
+    html body [role="dialog"] :is(button:hover, a[data-testid^="stBaseButton"]:hover) {
+        background: #dbeafe !important;
+    }
+    html body [data-testid="stApp"] button:disabled,
+    html body [role="dialog"] button:disabled {
+        background: #e2e8f0 !important;
+        border-style: dashed !important;
+        opacity: 1 !important;
+        cursor: not-allowed;
+    }
+
     /* Cleaner action buttons */
     div.stButton > button {
         border-radius: 12px !important;
@@ -320,8 +347,8 @@ getattr(st, "html", lambda body: st.markdown(body, unsafe_allow_html=True))("""
     }
     .fixed-status-dock {
         position: fixed;
-        left: 0;
-        right: 0;
+        left: var(--pt-status-left, 0px);
+        right: var(--pt-status-right, 0px);
         bottom: 0;
         z-index: 999;
         background: rgba(11,15,22,0.96);
@@ -329,10 +356,10 @@ getattr(st, "html", lambda body: st.markdown(body, unsafe_allow_html=True))("""
         box-shadow: 0 -10px 30px rgba(0,0,0,0.32);
     }
     .fixed-status-inner {
-        margin-left: 22rem;
-        padding: 10px 2.4rem 12px 2.4rem;
+        margin-left: 0;
+        padding: 10px 12px;
         display: grid;
-        grid-template-columns: repeat(6, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 10px;
     }
     .compact-status-card {
@@ -372,7 +399,7 @@ getattr(st, "html", lambda body: st.markdown(body, unsafe_allow_html=True))("""
             padding: 8px 10px 10px 10px;
             grid-template-columns: repeat(2, minmax(0, 1fr));
         }
-        .block-container { padding-bottom: 14rem !important; }
+        .block-container { padding-bottom: calc(var(--pt-status-height, 10rem) + 2rem) !important; }
     }
     @media (max-width: 1100px) {
         .compact-status-wrap { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
@@ -909,38 +936,12 @@ def apply_trading_style_preset(config: dict, preset_name: str) -> dict:
     return config
 
 
-def render_platform_settings():
-    st.markdown("### Platform Settings")
-    st.header("Control Panel")
-    approval_label = approval_mode_from_config(cfg)
-    style_label = cfg.get("dashboard", {}).get("trading_style_mode", cfg.get("dashboard", {}).get("trading_style_preset", "Manual"))
-    order_label = trading_status_from_config(cfg)
-    max_trade_pct = float(cfg.get("risk", {}).get("max_spend_per_trade_pct", 0) or 0)
-    max_daily_pct = float(cfg.get("risk", {}).get("max_daily_capital_pct", 0) or 0)
-    scan_seconds = int(cfg.get("automation", {}).get("scan_interval_seconds", 60))
-    st.markdown(
-        f"""
-        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap:.65rem; margin:.4rem 0 1rem;">
-            <div class="pt-safe-metric"><div class="pt-safe-metric-label">Mode</div><div class="pt-safe-metric-value">{html.escape(str(cfg.get("account_mode", "Simulation")))}</div></div>
-            <div class="pt-safe-metric"><div class="pt-safe-metric-label">Approval</div><div class="pt-safe-metric-value">{html.escape(str(approval_label))}</div></div>
-            <div class="pt-safe-metric"><div class="pt-safe-metric-label">Orders</div><div class="pt-safe-metric-value">{html.escape(str(order_label).replace(" / ", " "))}</div></div>
-            <div class="pt-safe-metric"><div class="pt-safe-metric-label">Style</div><div class="pt-safe-metric-value">{html.escape(str(style_label))}</div></div>
-            <div class="pt-safe-metric"><div class="pt-safe-metric-label">Trade / Day</div><div class="pt-safe-metric-value">{max_trade_pct:.1f}% / {max_daily_pct:.1f}%</div></div>
-            <div class="pt-safe-metric"><div class="pt-safe-metric-label">Scan</div><div class="pt-safe-metric-value">{scan_seconds}s</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    tab_trading, tab_risk, tab_strategy, tab_watchlists, tab_advanced = st.tabs([
-        "Trading",
-        "Risk & Size",
-        "Strategy",
-        "Watchlists",
-        "Advanced",
-    ])
-
-    with tab_trading:
+def render_platform_settings(section="Advanced"):
+    original = load_config()
+    cfg = deepcopy(original)
+    preset_locked = cfg.get("dashboard", {}).get("trading_style_mode", cfg.get("dashboard", {}).get("trading_style_preset", "Manual")) != "Manual"
+    st.caption("Changes apply only when you save this section.")
+    if section == "Trading":
         st.markdown("#### Trading Mode")
         dashboard_cfg = cfg.setdefault("dashboard", {})
         cfg["account_mode"] = st.radio("Trading account mode", ["Simulation", "Paper", "Live"], index=["Simulation", "Paper", "Live"].index(cfg.get("account_mode", "Simulation")), horizontal=True)
@@ -948,6 +949,20 @@ def render_platform_settings():
         cfg["automation"]["enabled"] = st.checkbox("Enable engine automation", value=bool(cfg["automation"].get("enabled", False)))
         cfg["automation"]["place_orders"] = st.checkbox("Allow engine to place orders", value=bool(cfg["automation"].get("place_orders", False)))
         cfg["automation"]["confirm_order_risk"] = st.checkbox("I understand this can place IBKR orders", value=bool(cfg["automation"].get("confirm_order_risk", False)))
+        current_approval_mode = approval_mode_from_config(cfg)
+        cfg["automation"]["approval_mode"] = st.selectbox(
+            "Entry approval mode",
+            ["Dashboard", "Telegram", "Automatic"],
+            index=["Dashboard", "Telegram", "Automatic"].index(current_approval_mode),
+            help="Dashboard and Telegram pause scanner entries for approval. Automatic submits scanner trades immediately when all safety gates are armed.",
+        )
+        cfg["automation"]["require_trade_approval"] = cfg["automation"]["approval_mode"] == "Telegram"
+        if cfg["account_mode"] == "Live":
+            st.error("LIVE mode selected. Orders can use real money if all confirmations are enabled.")
+            cfg["automation"]["live_confirm_text"] = st.text_input("Type TRADE LIVE to unlock live orders", value=str(cfg["automation"].get("live_confirm_text", "")))
+        else:
+            cfg["automation"]["live_confirm_text"] = ""
+    if section == "Schedule":
         timeline_cfg = cfg.setdefault("staged_trading_timeline", {})
         timeline_cfg["enabled"] = st.toggle(
             "Automatic staged trading timeline",
@@ -984,19 +999,6 @@ def render_platform_settings():
             f"5m ORB | score {float(opening_cfg['min_score']):g}+ | "
             f"RVOL {float(opening_cfg['min_rvol']):g}+ | 5% option stop | max 50% capital"
         )
-        current_approval_mode = approval_mode_from_config(cfg)
-        cfg["automation"]["approval_mode"] = st.selectbox(
-            "Entry approval mode",
-            ["Dashboard", "Telegram", "Automatic"],
-            index=["Dashboard", "Telegram", "Automatic"].index(current_approval_mode),
-            help="Dashboard and Telegram pause scanner entries for approval. Automatic submits scanner trades immediately when all safety gates are armed.",
-        )
-        cfg["automation"]["require_trade_approval"] = cfg["automation"]["approval_mode"] == "Telegram"
-        if cfg["account_mode"] == "Live":
-            st.error("LIVE mode selected. Orders can use real money if all confirmations are enabled.")
-            cfg["automation"]["live_confirm_text"] = st.text_input("Type TRADE LIVE to unlock live orders", value=str(cfg["automation"].get("live_confirm_text", "")))
-        else:
-            cfg["automation"]["live_confirm_text"] = ""
         cfg["automation"]["scan_interval_seconds"] = st.number_input("Engine scan interval seconds", value=int(cfg["automation"].get("scan_interval_seconds", 900)), min_value=10, max_value=3600, step=10, disabled=bool(timeline_cfg["enabled"]))
         cfg["automation"]["align_scans_to_interval"] = st.checkbox(
             "Align scans to candle boundaries",
@@ -1023,10 +1025,12 @@ def render_platform_settings():
         ))
         cfg["automation"]["live_sync_interval_seconds"] = st.number_input("IBKR live trade sync seconds", value=int(cfg["automation"].get("live_sync_interval_seconds", 15)), min_value=5, max_value=300, step=5)
         cfg["automation"]["scan_only_market_hours"] = st.checkbox("Scan only during market hours", value=bool(cfg["automation"].get("scan_only_market_hours", True)))
+    if section == "Trading":
         cfg["order"]["type"] = st.selectbox("Order type", ["LIMIT", "MARKET"], index=0 if cfg["order"].get("type", "LIMIT") == "LIMIT" else 1)
+    if section == "Trading":
         st.caption(f"Trading status: {trading_status_from_config(cfg)}")
 
-    with tab_strategy:
+    if section == "Strategy":
         st.markdown("#### Strategy Preset")
         dashboard_cfg = cfg.setdefault("dashboard", {})
         style_options = ["Scalping", "Intraday", "Manual"]
@@ -1075,7 +1079,7 @@ def render_platform_settings():
             dashboard_cfg["trading_style_preset"] = "Manual"
         preset_locked = selected_style != "Manual"
 
-    with tab_risk:
+    if section == "Risk & Size":
         st.markdown("#### Position Size")
         r = cfg["risk"]
         s = cfg["strategy"]
@@ -1121,7 +1125,9 @@ def render_platform_settings():
             default_daily_pct = round(float(r.get("max_daily_capital", 500)) / account_size * 100, 2)
 
         r["max_spend_per_trade_pct"] = st.number_input("Max amount per trade % of account", value=float(default_trade_pct), min_value=0.1, max_value=100.0, step=0.5)
-        r["max_daily_capital_pct"] = st.number_input("Max daily capital % of account", value=float(default_daily_pct), min_value=0.1, max_value=100.0, step=0.5)
+        r["max_daily_capital_pct"] = st.number_input("Max daily capital % of account", value=float(default_daily_pct), min_value=0.1, max_value=100.0, step=0.5, disabled=cfg.get("strategy_control", {}).get("active")=="dual")
+        if cfg.get("strategy_control", {}).get("active")=="dual":
+            st.caption("The total PMB cap is managed in Strategies → Capital Allocation.")
         r["max_spend_per_trade"] = round(account_size * float(r["max_spend_per_trade_pct"]) / 100.0, 2)
         r["max_daily_capital"] = round(account_size * float(r["max_daily_capital_pct"]) / 100.0, 2)
         st.caption(f"Calculated limits: ${r['max_spend_per_trade']:,.2f} per trade | ${r['max_daily_capital']:,.2f} max daily capital")
@@ -1149,7 +1155,7 @@ def render_platform_settings():
         else:
             st.caption(f"Today: {today_trade_count} trades | ${today_deployed_capital:,.2f} deployed")
 
-    with tab_advanced:
+    if section == "Display":
         st.markdown("#### Performance Capital")
         perf = cfg.setdefault("performance", {})
         perf["original_deposited_capital"] = st.number_input(
@@ -1160,7 +1166,7 @@ def render_platform_settings():
         )
         st.caption("Used only for performance return math. Broker trade P/L still comes from synced IBKR executions.")
 
-    with tab_risk:
+    if section == "Risk & Size":
         st.markdown("#### Trade Management")
         r = cfg["risk"]
         s = cfg["strategy"]
@@ -1193,7 +1199,7 @@ def render_platform_settings():
         r["max_consecutive_losses"] = st.number_input("Stop after consecutive losses", value=int(r.get("max_consecutive_losses", 2)), min_value=1, max_value=10, step=1, disabled=preset_locked)
         r["max_daily_drawdown_pct"] = st.number_input("Max daily drawdown % of account", value=float(r.get("max_daily_drawdown_pct", 5.0)), min_value=1.0, max_value=50.0, step=1.0, disabled=preset_locked)
 
-    with tab_strategy:
+    if section == "Strategy":
         st.markdown("#### Signal Filters")
         s = cfg["strategy"]
         s["option_dte"] = st.number_input("Target option DTE", value=int(s.get("option_dte", 7)), min_value=0, max_value=45, step=1)
@@ -1227,18 +1233,38 @@ def render_platform_settings():
         )
         st.markdown("#### Breakout Confirmation")
         breakout_confirmation = s.setdefault("breakout_follow_through", {})
-        breakout_confirmation["enabled"] = st.checkbox(
-            "Require breakout volume and immediate follow-through",
-            value=bool(breakout_confirmation.get("enabled", False)),
-            help="The breakout candle must have unusual volume for that time of day. The next candle must hold beyond the opening range and extend the move.",
+        breakout_confirmation["volume_enabled"] = st.checkbox(
+            "Require breakout volume",
+            value=bool(breakout_confirmation.get("volume_enabled", breakout_confirmation.get("enabled", False))),
+            help="The first breakout candle must meet the volume threshold for that time of day. This check does not require another candle.",
         )
-        breakout_confirmation["min_breakout_volume_ratio"] = st.number_input(
-            "Minimum breakout-candle volume vs. same-time baseline",
-            value=float(breakout_confirmation.get("min_breakout_volume_ratio", 2.0)),
-            min_value=0.5,
-            max_value=10.0,
-            step=0.25,
-            disabled=not breakout_confirmation["enabled"],
+        breakout_confirmation["follow_through_enabled"] = st.checkbox(
+            "Wait for the next candle to confirm the breakout",
+            value=bool(breakout_confirmation.get("follow_through_enabled", breakout_confirmation.get("enabled", False))),
+            help="Wait for the next completed candle to hold beyond the opening range. Later confirmation is rejected as stale.",
+        )
+        confirmation_options = [5, 15]
+        saved_confirmation_minutes = int(breakout_confirmation.get("confirmation_minutes", 15))
+        breakout_confirmation["confirmation_minutes"] = st.selectbox(
+            "Confirmation candle",
+            confirmation_options,
+            index=confirmation_options.index(saved_confirmation_minutes) if saved_confirmation_minutes in confirmation_options else 1,
+            format_func=lambda value: f"{value} minutes",
+            disabled=not breakout_confirmation["follow_through_enabled"],
+            help="Choose the completed candle immediately after the breakout. Normal PMB analysis remains 15 minutes.",
+            key="live_confirmation_minutes",
+        )
+        breakout_confirmation["enabled"] = breakout_confirmation["volume_enabled"] or breakout_confirmation["follow_through_enabled"]
+        breakout_volume_options = [1.5, 1.75, 2.0]
+        current_breakout_volume = float(breakout_confirmation.get("min_breakout_volume_ratio", 2.0))
+        if current_breakout_volume not in breakout_volume_options:
+            current_breakout_volume = min(breakout_volume_options, key=lambda value: abs(value - current_breakout_volume))
+        breakout_confirmation["min_breakout_volume_ratio"] = st.selectbox(
+            "Required breakout-candle volume vs. same-time baseline",
+            breakout_volume_options,
+            index=breakout_volume_options.index(current_breakout_volume),
+            format_func=lambda value: f"{value:g}×",
+            disabled=not breakout_confirmation["volume_enabled"],
         )
         breakout_confirmation["min_volume_sessions"] = st.number_input(
             "Minimum prior sessions for volume baseline",
@@ -1246,21 +1272,22 @@ def render_platform_settings():
             min_value=1,
             max_value=20,
             step=1,
-            disabled=not breakout_confirmation["enabled"],
+            disabled=not breakout_confirmation["volume_enabled"],
         )
         breakout_confirmation["require_extension"] = st.checkbox(
             "Require the next candle to extend the breakout",
             value=bool(breakout_confirmation.get("require_extension", True)),
-            disabled=not breakout_confirmation["enabled"],
+            disabled=not breakout_confirmation["follow_through_enabled"],
         )
-        if breakout_confirmation["enabled"]:
+        if breakout_confirmation["follow_through_enabled"]:
             st.caption("Only the candle immediately after the first opening-range break can confirm. Later moves are rejected as stale.")
+            st.caption(f"Live scan spacing is capped at {breakout_confirmation['confirmation_minutes']} minutes to check the confirmation window.")
         if not s["use_rvol_filter"]:
             st.caption("RVOL is informational only and will not block trades.")
         if s["use_sr_filter"]:
             st.caption("CALLs need room before nearest resistance; PUTs need room before nearest support.")
 
-    with tab_strategy:
+    if section == "Strategy":
         st.markdown("#### Option Contract Filters")
         option_filters = cfg.setdefault("option_filters", {})
         option_filters["require_live_greeks"] = st.checkbox(
@@ -1339,7 +1366,7 @@ def render_platform_settings():
         )
         st.caption("These are hard gates before live order placement. Spread and real delta now decide whether an option is tradeable.")
 
-    with tab_watchlists:
+    if section == "Watchlists":
         st.markdown("#### Manual Watchlist")
         current_watchlist = [str(x).strip().upper() for x in cfg.get("watchlist", WATCHLIST) if str(x).strip()]
         current_watchlist_set = set(current_watchlist)
@@ -1439,7 +1466,7 @@ def render_platform_settings():
             step=1,
         ))
 
-    with tab_advanced:
+    if section == "Connection":
         st.markdown("#### IBKR Connection")
         ibs = cfg["ib"]
         ibs["host"] = st.text_input("Host", value=ibs.get("host", "127.0.0.1"))
@@ -1453,7 +1480,7 @@ def render_platform_settings():
         ibs["account"] = st.text_input("Account ID optional", value=ibs.get("account", ""))
         ibs["readonly"] = st.checkbox("Read-only connection", value=bool(ibs.get("readonly", False)))
 
-    with tab_advanced:
+    if section == "Integrations":
         st.markdown("#### IBKR Flex Historical Sync")
         flex = cfg.setdefault("ibkr_flex", {})
         flex["token"] = st.text_input(
@@ -1473,15 +1500,21 @@ def render_platform_settings():
         )
         st.caption("Used only for direct historical trade/P&L sync. This does not place orders.")
 
-    with tab_advanced:
+    if section == "Integrations":
         st.markdown("#### Telegram")
         tg = cfg["telegram"]
         tg["bot_token"] = st.text_input("Bot token", value=tg.get("bot_token", os.getenv("TELEGRAM_BOT_TOKEN", "")), type="password")
         tg["chat_id"] = st.text_input("Chat ID", value=tg.get("chat_id", os.getenv("TELEGRAM_CHAT_ID", "")))
         tg["send_alerts"] = st.checkbox("Send Telegram alerts", value=bool(tg.get("send_alerts", False)))
 
-    save_config(cfg)
-    st.caption("Settings auto-saved to config.json")
+    changed = cfg != original
+    save_status=st.empty()
+    save_status.caption("Unsaved changes" if changed else "Saved settings")
+    if st.button("Save " + section.lower() + " settings", type="primary", key="save_platform_" + section):
+        fresh = load_config()
+        save_config(merge_settings_changes(original, cfg, fresh))
+        save_status.caption("Saved settings")
+        st.success("Settings saved. The engine will use them on its next cycle.")
 
 
 with st.sidebar:
@@ -1494,58 +1527,15 @@ with st.sidebar:
         """,
         unsafe_allow_html=True,
     )
-    sidebar_page_labels = {
-        "📊 Performance & Trade Journal": "📊  Overview",
-        "🤖 AI AUDIT": "🤖  AI AUDIT",
-        "💼 Positions": "💼  Live Trading",
-        "📈 Strategy Lab": "🎯  Backtesting",
-        "🧠 Market Intelligence": "🧠  Market Intel",
-        "🗓️ Earnings": "🗓️  Earnings",
-        "📈 Scanner & Breakdown": "📡  Scanner",
-        "🏦 Account Status": "💳  Account",
-        "📝 Logs": "📝  Logs",
-    }
-    sidebar_pages = [
-        "📊 Performance & Trade Journal",
-        "🤖 AI AUDIT",
-        "💼 Positions",
-        "📈 Strategy Lab",
-        "🧠 Market Intelligence",
-        "🗓️ Earnings",
-        "📈 Scanner & Breakdown",
-        "🏦 Account Status",
-        "📝 Logs",
-    ]
-    sidebar_page_slugs = {
-        "📊 Performance & Trade Journal": "overview",
-        "🤖 AI AUDIT": "ai-audit",
-        "💼 Positions": "live-trading",
-        "📈 Strategy Lab": "backtesting",
-        "🧠 Market Intelligence": "market-intel",
-        "🗓️ Earnings": "earnings",
-        "📈 Scanner & Breakdown": "scanner",
-        "🏦 Account Status": "account",
-        "📝 Logs": "logs",
-    }
-    slug_to_sidebar_page = {slug: page for page, slug in sidebar_page_slugs.items()}
-    slug_to_sidebar_page.update({
-        "positions": "💼 Positions",
-        "strategy": "📈 Strategy Lab",
-        "price-action": "📈 Scanner & Breakdown",
-    })
-    query_page = st.query_params.get("page", "overview")
-    default_sidebar_page = slug_to_sidebar_page.get(str(query_page), sidebar_pages[0])
-    selected_page = st.radio(
-        "Menu",
-        sidebar_pages,
-        index=sidebar_pages.index(default_sidebar_page),
-        format_func=lambda page: sidebar_page_labels.get(page, page),
-        label_visibility="collapsed",
-        key="sidebar_selected_page",
-    )
-    selected_page_slug = sidebar_page_slugs.get(selected_page, "overview")
-    if st.query_params.get("page") != selected_page_slug:
-        st.query_params["page"] = selected_page_slug
+    requested_page, legacy_view = resolve_page(str(st.query_params.get("page", "overview")))
+    sidebar_pages = list(PAGES)
+    # Migrate widget values from an already open version of the dashboard.
+    if st.session_state.get("sidebar_selected_page") not in (None, *sidebar_pages):
+        del st.session_state["sidebar_selected_page"]
+    workspace_page = st.radio("Menu", sidebar_pages, index=sidebar_pages.index(requested_page), format_func=PAGES.get, label_visibility="collapsed", key="sidebar_selected_page")
+    if st.query_params.get("page") != workspace_page:
+        st.query_params["page"] = workspace_page
+    selected_page = workspace_page
     sidebar_health = read_health()
     engine_label = "Engine Running" if bool(sidebar_health.get("engine_running", False)) else "Engine Stopped"
     dot_color = "#16a34a" if bool(sidebar_health.get("engine_running", False)) else "#dc2626"
@@ -1769,6 +1759,15 @@ def cached_catalyst_map(symbols_key: tuple[str, ...], min_impact: int = 70, look
 @st.cache_data(ttl=5, show_spinner=False)
 def cached_socket_ping(host: str, port: int, timeout_seconds: float) -> bool:
     try:
+        if str(host).lower() in {"localhost", "127.0.0.1", "::1"}:
+            # Inspect the local listener without opening an incomplete API
+            # session, which Gateway logs as a missing client-version error.
+            result = subprocess.run(
+                ["lsof", "-nP", "-a", f"-iTCP:{int(port)}", "-sTCP:LISTEN", "-t"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=max(1., timeout_seconds), check=False,
+            )
+            return result.returncode == 0
         with socket.create_connection((host, int(port)), timeout=timeout_seconds):
             return True
     except Exception:
@@ -2054,7 +2053,6 @@ def sync_ibkr_account_status(force: bool = False) -> dict:
         st.session_state["ibkr_account_summary"] = summary
         st.session_state["ibkr_connected"] = False
         health["ib_connected"] = False
-        write_health(ib_connected=False, last_status="IBKR disconnected", last_error=summary["error"])
         return summary
 
     if not force and st.session_state.get("ibkr_account_summary", {}).get("connected"):
@@ -2079,7 +2077,6 @@ def sync_ibkr_account_status(force: bool = False) -> dict:
         st.session_state["ibkr_connected"] = True
         st.session_state.pop("ibkr_auto_connect_error", None)
         health["ib_connected"] = True
-        write_health(ib_connected=True, last_status="Account summary synced")
         return summary
     except Exception as e:
         summary = {
@@ -2093,7 +2090,6 @@ def sync_ibkr_account_status(force: bool = False) -> dict:
         st.session_state["ibkr_connected"] = False
         st.session_state["ibkr_auto_connect_error"] = str(e)
         health["ib_connected"] = False
-        write_health(ib_connected=False, last_status="Account summary failed", last_error=str(e))
         return summary
 
 
@@ -2210,34 +2206,27 @@ def _fmt_pct_cell(value) -> str:
 
 @st.fragment(run_every="5s")
 def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig, health_snapshot: dict) -> None:
-    st.markdown("### Live IBKR Positions")
+    st.markdown("### Positions")
+    strategy_filter=st.radio("Position strategy",["All","PMB","Daily Stocks","Other / manual"],horizontal=True,key="live_position_strategy")
+    stock_records=stock_positions(cfg_snapshot,st.session_state.get("ibkr_account_summary",{}).get("account_id"))
+    broker_positions=[]
+    marks={}
     try:
-        broker_positions = cached_ibkr_positions(
-            ib_cfg_snapshot.host,
-            int(ib_cfg_snapshot.port),
-            int(ib_cfg_snapshot.client_id) + 205,
-            ib_cfg_snapshot.account,
-        )
+        broker_positions=cached_ibkr_positions(ib_cfg_snapshot.host,int(ib_cfg_snapshot.port),int(ib_cfg_snapshot.client_id)+205,ib_cfg_snapshot.account)
         if broker_positions:
-            broker_df = pd.DataFrame(broker_positions)
-            preferred_cols = [
-                "account",
-                "symbol",
-                "localSymbol",
-                "secType",
-                "position",
-                "avgCost",
-                "lastTradeDateOrContractMonth",
-                "strike",
-                "right",
-                "currency",
-            ]
-            shown_cols = [col for col in preferred_cols if col in broker_df.columns]
-            st.dataframe(broker_df[shown_cols] if shown_cols else broker_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No live positions found in IBKR.")
+            try:
+                marks=cached_ibkr_portfolio_pnl(ib_cfg_snapshot.host,int(ib_cfg_snapshot.port),int(ib_cfg_snapshot.client_id)+209,ib_cfg_snapshot.account)
+            except Exception:
+                st.caption("Current broker marks are unavailable. Recorded positions are still shown.")
     except Exception as exc:
         st.warning(f"Could not fetch live IBKR positions: {display_exception_message(exc)}")
+    rows=position_rows(broker_positions,read_active_positions(),stock_records,marks)
+    if strategy_filter!="All":rows=[row for row in rows if row['Strategy']==strategy_filter]
+    if rows:
+        st.dataframe(pd.DataFrame(rows),use_container_width=True,hide_index=True)
+        st.caption("Options use contracts; stocks use shares. INTENT and UNKNOWN rows are unresolved order records. Unavailable prices and P&L are left blank.")
+    else:
+        st.info("No positions for this selection.")
 
     if st.button("Sync Bot Positions With IBKR", icon=":material/sync:", use_container_width=True):
         sync_ib = None
@@ -2944,12 +2933,10 @@ def render_compact_status_bar():
     status_health["ib_connected"] = live_ibkr_ping(ib_cfg)
     maybe_send_status_alerts(status_cfg, status_health, engine_process_running)
     items = [
-        ("Engine Status", "🟢 Running" if status_health.get("engine_running") else "⚪ Unknown"),
-        ("IBKR Status", "🟢 Connected" if status_health.get("ib_connected") else "🔴 Disconnected"),
-        ("Market Condition", "🟢 Open" if is_market_open_now(status_cfg) else "🔴 Closed"),
-        ("Account Mode", str(status_cfg.get("account_mode", "Simulation"))),
-        ("Order Status", operational_order_label(status_cfg, status_health)),
-        ("Next Action", next_action_label(status_cfg, status_health)),
+        ("Mode", str(status_cfg.get("account_mode", "Simulation"))),
+        ("IBKR", "Connected" if status_health.get("ib_connected") else "Disconnected"),
+        ("Automation", "On" if status_cfg.get("automation", {}).get("enabled") else "Paused"),
+        ("New York", datetime.now(EASTERN).strftime("%a %H:%M ET")),
     ]
     cards = "".join(
         "<div class='compact-status-card'>"
@@ -2958,9 +2945,9 @@ def render_compact_status_bar():
         "</div>"
         for label, value in items
     )
-    st.markdown(
-        f"<div class='fixed-status-dock'><div class='fixed-status-inner'>{cards}</div></div>",
-        unsafe_allow_html=True,
+    st.html(
+        f"<div class='fixed-status-dock'><div class='fixed-status-inner'>{cards}</div></div>" + STATUS_DOCK_SCRIPT,
+        unsafe_allow_javascript=True,
     )
 
 
@@ -2981,12 +2968,9 @@ def render_account_status_tab():
     st.caption("Auto-connects on dashboard startup. Use these controls only when TWS/IB Gateway was restarted or account data needs a manual refresh.")
     account_summary = sync_ibkr_account_status()
 
-    with st.expander("⚙️ Platform Settings", expanded=False):
-        render_platform_settings()
-
     st.divider()
 
-    control_cols = st.columns(4)
+    control_cols = st.columns(3)
     with control_cols[0]:
         if st.button("Reconnect IBKR", use_container_width=True):
             account_summary = sync_ibkr_account_status(force=True)
@@ -3012,15 +2996,6 @@ def render_account_status_tab():
                 st.success("Telegram sent")
             else:
                 st.error("Telegram failed")
-
-    with control_cols[3]:
-        if st.button("Run One Engine Cycle Now", use_container_width=True):
-            try:
-                run_cycle()
-                st.success("Engine cycle completed. Check logs/health below.")
-            except Exception as e:
-                st.error(f"Engine cycle failed: {e}")
-                st.caption("Technical details are hidden in the dashboard. Check the terminal/log files if needed.")
 
     if not account_summary.get("connected") and st.session_state.get("ibkr_auto_connect_error"):
         st.warning(f"IBKR auto-connect pending: {st.session_state.get('ibkr_auto_connect_error')}")
@@ -3808,7 +3783,9 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
                     require_retest=bool(scan_cfg["strategy"].get("require_break_retest", False)),
                     retest_tolerance_pct=float(scan_cfg["strategy"].get("retest_tolerance_pct", 0.10)),
                     retest_max_minutes=int(scan_cfg["strategy"].get("retest_max_minutes", 45)),
-                    analysis_bar_minutes=5,
+                    intraday_bar_size="15 mins",
+                    analysis_bar_minutes=15,
+                    breakout_follow_through=dict(scan_cfg["strategy"].get("breakout_follow_through") or {}),
                 )
                 if result:
                     rows.append(clean_for_table(result))
@@ -3857,14 +3834,16 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
                     "message": f"Pricing options for {symbol} ({j + 1}/{len(priced_candidates)})",
                 })
                 try:
-                    option = recommend_option_ib(
-                        ib,
-                        symbol,
-                        row["Signal"],
-                        float(row["Price"]),
-                        int(scan_cfg["strategy"].get("option_dte", 7)),
-                        scan_cfg.get("option_filters", {}),
-                    )
+                    from modules.scanner_option_worker import lookup_option
+                    option = lookup_option({
+                        "ib": {"host": scan_ib_cfg.host, "port": scan_ib_cfg.port,
+                               "client_id": scan_ib_cfg.client_id + 1,
+                               "account": scan_ib_cfg.account},
+                        "symbol": symbol, "signal": row["Signal"],
+                        "price": float(row["Price"]),
+                        "dte": int(scan_cfg["strategy"].get("option_dte", 7)),
+                        "filters": scan_cfg.get("option_filters", {}),
+                    })
                     if option:
                         option_clean = {k: v for k, v in option.items() if k != "Contract"}
                         option_rows.append({"Symbol": symbol, "Signal": row["Signal"], "Score": row["Score"], "Confidence": row["Confidence"], **option_clean})
@@ -3880,7 +3859,24 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
         final_message = "Scanner complete"
         if stock_df.empty:
             final_status = "no_data"
-            final_message = "Scanner completed, but IBKR did not return today's completed ORB session bars yet. Try again after 09:45 ET."
+            analysis_minutes = 15
+            required_bars = max(
+                int(scan_cfg["strategy"].get("min_session_bars", 7)),
+                max(1, int(round(float(scan_cfg["strategy"].get("orb_minutes", 15)) / analysis_minutes))) + 1,
+            )
+            now_et = datetime.now(EASTERN)
+            ready_at = now_et.replace(hour=9, minute=30, second=0, microsecond=0) + timedelta(minutes=required_bars * analysis_minutes)
+            if now_et < ready_at:
+                final_message = (
+                    f"Scanner needs at least {required_bars} completed {analysis_minutes}-minute session candles. "
+                    f"The earliest scan result is available after {ready_at:%H:%M} ET, once IBKR supplies those bars."
+                )
+            else:
+                final_message = (
+                    "Scanner returned no usable results for today's session. "
+                    f"The minimum candle wait ended at {ready_at:%H:%M} ET. "
+                    "Check IBKR historical data availability and scanner diagnostics, then retry."
+                )
 
         write_scanner_job_status({
             "status": final_status,
@@ -3914,8 +3910,7 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
 def run_ibkr_scanner_ui(scan_cfg: dict, scan_symbols: list[str]):
     status = read_scanner_job_status()
     if status.get("status") == "running":
-        st.info(f"Scanner is already running: {status.get('completed', 0)} / {status.get('total', len(scan_symbols))} symbols.")
-        st_autorefresh(interval=2_000, key="scanner_job_refresh")
+        # The results panel below renders progress and owns the refresh timer.
         return
     threading.Thread(target=run_ibkr_scanner_job, args=(json.loads(json.dumps(scan_cfg, default=str)), list(scan_symbols), "manual"), daemon=True, name="ibkr-scanner-job").start()
     st.success("Scanner started in the background. You can switch tabs and come back for results.")
@@ -4268,16 +4263,100 @@ if selected_page == "🏦 Account Status":
     sync_ibkr_account_status(force=False)
     schedule_ibkr_reconnect_refresh()
 render_app_header()
-render_premarket_watchlist_marquee(cfg)
+if workspace_page == "research":
+    render_premarket_watchlist_marquee(cfg)
 
 # Page routing from sidebar navigation
+
+if workspace_page == "overview":
+    overview_refresh = st.button("Refresh account data", key="overview_refresh_account")
+    overview_account = sync_ibkr_account_status(force=overview_refresh)
+    render_overview(cfg, read_health(), overview_account, read_active_positions())
+
+elif workspace_page == "strategies":
+    st.header("Strategies")
+    render_strategy_cards(cfg, read_health(), read_json(PROJECT_ROOT / "exports" / "pine_stock_status.json"))
+    strategy_workspace = st.radio("Strategy workspace", ["PMB", "Daily Stocks", "Capital Allocation"], horizontal=True, key="strategy_workspace", index=1 if legacy_view == "Daily Stocks" else 0)
+    if strategy_workspace == "Capital Allocation":
+        from modules.strategy_controls_ui import render as render_controls
+        render_controls(cfg, allocation_only=True)
+        selected_page = "workspace-handled"
+    elif strategy_workspace == "Daily Stocks":
+        from modules.pine_stock_ui import render_workspace
+        render_workspace(cfg)
+        selected_page = "workspace-handled"
+    else:
+        pmb_view = st.radio("PMB workspace", ["Scanner", "Charts", "Setup"], horizontal=True, key="pmb_workspace")
+        if pmb_view == "Setup":
+            setup_view = st.radio("PMB setup", ["Signals", "Risk & exits", "Watchlist", "Schedule"], horizontal=True, key="pmb_setup")
+            render_platform_settings({"Signals": "Strategy", "Risk & exits": "Risk & Size", "Watchlist": "Watchlists", "Schedule": "Schedule"}[setup_view])
+            selected_page = "workspace-handled"
+        else:
+            selected_page = "📈 Scanner & Breakdown"
+
+elif workspace_page == "live-trading":
+    st.header("Live Trading")
+    live_view = st.radio("Trading workspace", ["Positions", "Approvals", "Orders", "Controls"], horizontal=True, key="live_workspace")
+    if live_view == "Controls":
+        render_platform_settings("Trading")
+        from modules.pine_stock_ui import render_execution_settings
+        render_execution_settings(cfg)
+        if st.button("Start trading engine", key="workspace_start_engine"):
+            start_trading_engine_once()
+            st.info(st.session_state.get("trading_engine_auto_start_status", "Engine start requested."))
+        selected_page = "workspace-handled"
+    else:
+        selected_page = "💼 Positions"
+
+elif workspace_page == "backtesting":
+    backtest_view = st.radio("Backtest strategy", ["PMB options", "Daily Pine"], horizontal=True, key="backtest_workspace")
+    if backtest_view == "Daily Pine":
+        from backtester.pine_ui import render as render_pine_backtest
+        render_pine_backtest(cfg)
+        selected_page = "workspace-handled"
+    else:
+        selected_page = "📈 Strategy Lab"
+
+elif workspace_page == "journal":
+    journal_view = st.radio("Journal workspace", ["Performance", "AI Audit"], horizontal=True, key="journal_workspace", index=1 if legacy_view == "AI Audit" else 0)
+    selected_page = "🤖 AI AUDIT" if journal_view == "AI Audit" else "📊 Performance & Trade Journal"
+
+elif workspace_page == "research":
+    st.header("Market Research")
+    research_view = st.radio("Research workspace", ["News & intelligence", "Earnings", "Price Action Lab"], horizontal=True, key="research_workspace", index=1 if legacy_view == "Earnings" else 0)
+    selected_page = {"News & intelligence": "🧠 Market Intelligence", "Earnings": "🗓️ Earnings", "Price Action Lab": "🧪 Price Action Lab"}[research_view]
+
+elif workspace_page == "settings":
+    st.header("Settings")
+    settings_view = st.radio("Settings workspace", ["Connection", "Integrations", "Display", "Logs"], horizontal=True, key="settings_workspace", index=3 if legacy_view == "Logs" else 0)
+    if settings_view == "Connection":
+        render_account_status_tab()
+        with st.expander("Connection configuration"):
+            render_platform_settings("Connection")
+        selected_page = "workspace-handled"
+    elif settings_view == "Integrations":
+        from modules.daily_email_brief_ui import render as render_email
+        render_platform_settings("Integrations")
+        st.divider()
+        render_email(cfg, settings_only=True)
+        selected_page = "workspace-handled"
+    elif settings_view == "Display":
+        render_platform_settings("Display")
+        st.caption("New York time is used for market sessions and trading windows.")
+        st.info("The compact status header is shared across all pages. Strategy and chart preferences are available in their workspaces.")
+        selected_page = "workspace-handled"
+    else:
+        selected_page = "📝 Logs"
 
 if selected_page == "🏦 Account Status":
     render_account_status_tab()
 
+elif selected_page == "📋 Daily Stock Levels":
+    from modules.pine_stock_ui import render as render_stock_levels
+    render_stock_levels(cfg)
+
 elif selected_page == "📈 Scanner & Breakdown":
-    scan_col, breakdown_col = st.columns([1, 1])
-    with scan_col:
+    if pmb_view == "Scanner":
         st.subheader("Scanner")
         st.caption("Scan the full watchlist, rank the best setups, and review option ideas.")
         run_scanner_clicked = st.button("▶ Run IBKR Scanner", use_container_width=True)
@@ -4286,7 +4365,10 @@ elif selected_page == "📈 Scanner & Breakdown":
 
         stock_df, option_df, scanner_job_status = load_saved_scanner_results()
         if scanner_job_status.get("status") == "running":
-            st.info(f"Scanner running in background: {scanner_job_status.get('completed', 0)} / {scanner_job_status.get('total', len(symbols))} symbols.")
+            completed = scanner_job_status.get("completed", 0)
+            total = scanner_job_status.get("total", len(symbols))
+            message = scanner_job_status.get("message") or "Scanner running"
+            st.info(f"{message} · Stocks scanned: {completed} / {total}.")
             st_autorefresh(interval=2_000, key="scanner_job_refresh_display")
         elif scanner_job_status.get("status") == "error":
             st.error(f"Scanner failed: {scanner_job_status.get('message', 'Unknown error')}")
@@ -4317,8 +4399,8 @@ elif selected_page == "📈 Scanner & Breakdown":
         elif scanner_job_status.get("status") not in {"running", "stale", "no_data"}:
             st.info("No scanner results yet. Run the IBKR scanner once and the results will stay here while you navigate.")
 
-    with breakdown_col:
-        st.subheader("Ticker Breakdown")
+    if pmb_view == "Charts":
+        st.subheader("Ticker chart & analysis")
         st.caption("Analyze one ticker using the same scanner logic.")
         ticker = st.text_input("Ticker", value="", label_visibility="collapsed").strip().upper()
         if st.button("Analyze Ticker", use_container_width=True):
@@ -4418,10 +4500,7 @@ elif selected_page == "🗓️ Earnings":
 
 elif selected_page == "💼 Positions":
     start_telegram_decision_worker()
-    st.subheader("Positions")
-    st.caption("The dashboard starts the trading engine automatically. Order placement still follows the automation and safety settings.")
     positions_refresh_seconds = 5
-
     mode = cfg.get("account_mode", "Simulation")
     trading_status = trading_status_from_config(cfg)
     orders_unlocked = orders_unlocked_from_config(cfg)
@@ -4429,510 +4508,494 @@ elif selected_page == "💼 Positions":
     place_orders = bool(cfg.get("automation", {}).get("place_orders", False))
     risk_confirmed = bool(cfg.get("automation", {}).get("confirm_order_risk", False))
     automation_enabled = bool(cfg.get("automation", {}).get("enabled", False))
+    if live_view == "Positions":
+        render_live_positions_fragment(cfg, ib_cfg, health)
+        with st.expander("Option position management", expanded=False):
+            render_bot_managed_positions(cfg, ib_cfg)
+    elif live_view == "Orders":
+        render_orders()
 
-    st.markdown("### Status")
-    health_now = read_health()
-    engine_process_running, _engine_message = get_trading_engine_process_status()
-    compact_cols = st.columns(8)
-    compact_cols[0].metric("Engine", "Running" if engine_process_running else "Stopped")
-    compact_cols[1].metric("IBKR", "Connected" if live_ibkr_ping(ib_cfg) else "Disconnected")
-    compact_cols[2].metric("Mode", mode)
-    compact_cols[3].metric("Orders", operational_order_label(cfg, health))
-    compact_cols[4].metric("Automation", "On" if automation_enabled else "Off")
-    compact_cols[5].metric("Place", "Allowed" if place_orders else "Disabled")
-    compact_cols[6].metric("Risk", "Confirmed" if risk_confirmed else "No")
-    compact_cols[7].metric("Read-only", "On" if readonly else "Off")
+    if live_view == "Approvals":
+        approval_mode = approval_mode_from_config(cfg)
+        configured_scan_interval = max(10, int(cfg.get("automation", {}).get("scan_interval_seconds", 60)))
+        candidate_refresh_seconds = positions_refresh_seconds
 
-    with st.expander("Status details", expanded=False):
-        st.json({
-            "Trading Status": trading_status,
-            "IB Port": ib_cfg.port,
-            "Last Engine Status": health_now.get("last_status", "N/A") if health_now else "N/A",
-            "Candidates": health_now.get("candidates", 0) if health_now else 0,
-            "Health": health_now or {},
-        })
+        approvals = read_pending_approvals()
+        approvals_by_id = {str(order.get("id") or ""): order for order in approvals}
+        scan_snapshot = read_current_scan_candidates()
+        all_scan_rows = list(scan_snapshot.get("candidates") or [])
+        current_scan_candidates = [
+            row for row in all_scan_rows
+            if str(row.get("trade_status") or "").lower() != "scanner rejected"
+        ]
+        latest_scan_id = str(scan_snapshot.get("scan_id") or "")
 
-    render_live_positions_fragment(cfg, ib_cfg, health)
-    render_bot_managed_positions(cfg, ib_cfg)
+        with st.expander("Current Scan Trade Candidates", expanded=True):
+            st.caption(
+                f"Approval mode: {approval_mode} | Engine scan interval: {configured_scan_interval} seconds. "
+                f"Positions refreshes every {candidate_refresh_seconds} seconds to pick up newly completed scans."
+            )
+            if current_scan_candidates:
+                candidate_rows = []
+                for order_item in current_scan_candidates:
+                    candidate_rows.append({
+                        "symbol": order_item.get("symbol"),
+                        "side": order_item.get("signal"),
+                        "tradable": "Yes" if order_item.get("tradable") else "No",
+                        "status": order_item.get("trade_status") or order_item.get("status"),
+                        "why_not_tradable": order_item.get("block_reason"),
+                        "score": order_item.get("score"),
+                        "grade": order_item.get("grade"),
+                        "rank": order_item.get("rank_score"),
+                        "option": order_item.get("option"),
+                        "qty": order_item.get("quantity"),
+                        "mid": order_item.get("mid"),
+                        "limit": order_item.get("limit_price"),
+                        "est_cost": order_item.get("estimated_cost"),
+                        "spend_limit": order_item.get("spend_limit"),
+                        "remaining_capital": order_item.get("remaining_capital"),
+                        "scan": order_item.get("scan_id"),
+                    })
 
-    approval_mode = approval_mode_from_config(cfg)
-    configured_scan_interval = max(10, int(cfg.get("automation", {}).get("scan_interval_seconds", 60)))
-    candidate_refresh_seconds = positions_refresh_seconds
-
-    approvals = read_pending_approvals()
-    approvals_by_id = {str(order.get("id") or ""): order for order in approvals}
-    scan_snapshot = read_current_scan_candidates()
-    all_scan_rows = list(scan_snapshot.get("candidates") or [])
-    current_scan_candidates = [
-        row for row in all_scan_rows
-        if str(row.get("trade_status") or "").lower() != "scanner rejected"
-    ]
-    latest_scan_id = str(scan_snapshot.get("scan_id") or "")
-
-    with st.expander("Current Scan Trade Candidates", expanded=True):
-        st.caption(
-            f"Approval mode: {approval_mode} | Engine scan interval: {configured_scan_interval} seconds. "
-            f"Positions refreshes every {candidate_refresh_seconds} seconds to pick up newly completed scans."
-        )
-        if current_scan_candidates:
-            candidate_rows = []
-            for order_item in current_scan_candidates:
-                candidate_rows.append({
-                    "symbol": order_item.get("symbol"),
-                    "side": order_item.get("signal"),
-                    "tradable": "Yes" if order_item.get("tradable") else "No",
-                    "status": order_item.get("trade_status") or order_item.get("status"),
-                    "why_not_tradable": order_item.get("block_reason"),
-                    "score": order_item.get("score"),
-                    "grade": order_item.get("grade"),
-                    "rank": order_item.get("rank_score"),
-                    "option": order_item.get("option"),
-                    "qty": order_item.get("quantity"),
-                    "mid": order_item.get("mid"),
-                    "limit": order_item.get("limit_price"),
-                    "est_cost": order_item.get("estimated_cost"),
-                    "spend_limit": order_item.get("spend_limit"),
-                    "remaining_capital": order_item.get("remaining_capital"),
-                    "scan": order_item.get("scan_id"),
-                })
-
-            for order_item in current_scan_candidates:
-                with st.container(border=True):
-                    left, mid, right = st.columns([3, 2, 2])
-                    with left:
-                        st.markdown(f"**{order_item.get('symbol', 'N/A')} {order_item.get('signal', 'N/A')}**")
-                        st.caption(str(order_item.get("option", "N/A")))
-                        block_reason = str(order_item.get("block_reason") or "")
-                        if block_reason:
-                            st.warning(block_reason)
-                        reasons = str(order_item.get("reasons") or "")
-                        if reasons:
-                            st.caption(reasons[:420] + ("..." if len(reasons) > 420 else ""))
-                    with mid:
-                        st.metric("Score", order_item.get("score", "N/A"))
-                        st.caption(
-                            f"Qty {order_item.get('quantity', 0)} | "
-                            f"Mid ${float(order_item.get('mid') or 0):.2f} | "
-                            f"Cost ${float(order_item.get('estimated_cost') or 0):,.2f}"
-                        )
-                    with right:
-                        approval_id = str(order_item.get("approval_id") or "")
-                        pending_order = approvals_by_id.get(approval_id, {})
-                        approve_disabled = (
-                            not orders_unlocked
-                            or not bool(order_item.get("tradable"))
-                            or not pending_order
-                            or str(pending_order.get("status", "")).lower() not in ["pending", "sent"]
-                        )
-                        button_key = approval_id or f"{order_item.get('scan_id')}_{order_item.get('symbol')}_{order_item.get('signal')}"
-                        if st.button(
-                            "Confirm Trade",
-                            key=f"approve_scan_{button_key}",
-                            icon=":material/check_circle:",
-                            use_container_width=True,
-                            disabled=approve_disabled,
-                        ):
-                            approval_ib = None
-                            try:
-                                approval_ib = connect_ib(dashboard_ib_cfg(307, readonly=False))
-                                status = submit_approved_order(approval_ib, dashboard_ib_cfg(307, readonly=False), pending_order)
-                                update_pending_approval(
-                                    approval_id,
-                                    decision_at=datetime.now(EASTERN).isoformat(),
-                                    decision_source="dashboard",
-                                )
-                                st.success(f"Submitted {order_item.get('symbol')} {order_item.get('signal')}: {status}")
-                                st.rerun()
-                            except Exception as exc:
-                                update_pending_approval(
-                                    approval_id,
-                                    status="failed",
-                                    failed_at=datetime.now(EASTERN).isoformat(),
-                                    decision_source="dashboard",
-                                    error=str(exc),
-                                )
-                                st.error(f"Order submit failed: {display_exception_message(exc)}")
-                            finally:
+                for order_item in current_scan_candidates:
+                    with st.container(border=True):
+                        left, mid, right = st.columns([3, 2, 2])
+                        with left:
+                            st.markdown(f"**{order_item.get('symbol', 'N/A')} {order_item.get('signal', 'N/A')}**")
+                            st.caption(str(order_item.get("option", "N/A")))
+                            block_reason = str(order_item.get("block_reason") or "")
+                            if block_reason:
+                                st.warning(block_reason)
+                            reasons = str(order_item.get("reasons") or "")
+                            if reasons:
+                                st.caption(reasons[:420] + ("..." if len(reasons) > 420 else ""))
+                        with mid:
+                            st.metric("Score", order_item.get("score", "N/A"))
+                            st.caption(
+                                f"Qty {order_item.get('quantity', 0)} | "
+                                f"Mid ${float(order_item.get('mid') or 0):.2f} | "
+                                f"Cost ${float(order_item.get('estimated_cost') or 0):,.2f}"
+                            )
+                        with right:
+                            approval_id = str(order_item.get("approval_id") or "")
+                            pending_order = approvals_by_id.get(approval_id, {})
+                            approve_disabled = (
+                                not orders_unlocked
+                                or not bool(order_item.get("tradable"))
+                                or not pending_order
+                                or str(pending_order.get("status", "")).lower() not in ["pending", "sent"]
+                            )
+                            button_key = approval_id or f"{order_item.get('scan_id')}_{order_item.get('symbol')}_{order_item.get('signal')}"
+                            if st.button(
+                                "Confirm Trade",
+                                key=f"approve_scan_{button_key}",
+                                icon=":material/check_circle:",
+                                use_container_width=True,
+                                disabled=approve_disabled,
+                            ):
+                                approval_ib = None
                                 try:
-                                    if approval_ib and approval_ib.isConnected():
-                                        approval_ib.disconnect()
-                                except Exception:
-                                    pass
-                        reject_disabled = not pending_order or str(pending_order.get("status", "")).lower() not in ["pending", "sent"]
-                        if st.button(
-                            "Refuse Trade",
-                            key=f"reject_scan_{button_key}",
-                            icon=":material/cancel:",
-                            use_container_width=True,
-                            disabled=reject_disabled,
-                        ):
-                            if approval_id:
-                                update_pending_approval(
-                                    approval_id,
-                                    status="rejected",
-                                    decision_at=datetime.now(EASTERN).isoformat(),
-                                    decision_source="dashboard",
-                                )
-                                st.info(f"Rejected {order_item.get('symbol')} {order_item.get('signal')}.")
-                                st.rerun()
-                        if approve_disabled:
-                            st.caption("Confirm is enabled only for tradable rows with a live pending approval.")
+                                    approval_ib = connect_ib(dashboard_ib_cfg(307, readonly=False))
+                                    status = submit_approved_order(approval_ib, dashboard_ib_cfg(307, readonly=False), pending_order)
+                                    update_pending_approval(
+                                        approval_id,
+                                        decision_at=datetime.now(EASTERN).isoformat(),
+                                        decision_source="dashboard",
+                                    )
+                                    st.success(f"Submitted {order_item.get('symbol')} {order_item.get('signal')}: {status}")
+                                    st.rerun()
+                                except Exception as exc:
+                                    update_pending_approval(
+                                        approval_id,
+                                        status="failed",
+                                        failed_at=datetime.now(EASTERN).isoformat(),
+                                        decision_source="dashboard",
+                                        error=str(exc),
+                                    )
+                                    st.error(f"Order submit failed: {display_exception_message(exc)}")
+                                finally:
+                                    try:
+                                        if approval_ib and approval_ib.isConnected():
+                                            approval_ib.disconnect()
+                                    except Exception:
+                                        pass
+                            reject_disabled = not pending_order or str(pending_order.get("status", "")).lower() not in ["pending", "sent"]
+                            if st.button(
+                                "Refuse Trade",
+                                key=f"reject_scan_{button_key}",
+                                icon=":material/cancel:",
+                                use_container_width=True,
+                                disabled=reject_disabled,
+                            ):
+                                if approval_id:
+                                    update_pending_approval(
+                                        approval_id,
+                                        status="rejected",
+                                        decision_at=datetime.now(EASTERN).isoformat(),
+                                        decision_source="dashboard",
+                                    )
+                                    st.info(f"Rejected {order_item.get('symbol')} {order_item.get('signal')}.")
+                                    st.rerun()
+                            if approve_disabled:
+                                st.caption("Confirm is enabled only for tradable rows with a live pending approval.")
 
-            st.markdown("#### Candidate Table")
-            st.dataframe(pd.DataFrame(candidate_rows), use_container_width=True, hide_index=True)
-        else:
-            st.info(scan_snapshot.get("message") or "No trade candidates found for the latest scan.")
-            hidden_count = max(0, len(all_scan_rows) - len(current_scan_candidates))
-            if hidden_count:
-                st.caption(f"{hidden_count} scanner-rejected ticker(s) hidden.")
+                st.markdown("#### Candidate Table")
+                st.dataframe(pd.DataFrame(candidate_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info(scan_snapshot.get("message") or "No trade candidates found for the latest scan.")
+                hidden_count = max(0, len(all_scan_rows) - len(current_scan_candidates))
+                if hidden_count:
+                    st.caption(f"{hidden_count} scanner-rejected ticker(s) hidden.")
 
-    def is_recent_pending_approval(order: dict) -> bool:
-        if str(order.get("status", "")).lower() not in ["pending", "sent"]:
-            return False
-        try:
-            created_at = datetime.fromisoformat(str(order.get("created_at")))
-            return (datetime.now(EASTERN) - created_at).total_seconds() <= 120
-        except Exception:
-            return False
-
-    pending_telegram_orders = [o for o in read_pending_approvals() if is_recent_pending_approval(o)]
-    if pending_telegram_orders:
-        st_autorefresh(interval=1_000, key="telegram_order_decision_refresh")
-        st.caption("Waiting for Telegram decision. The background worker is checking for replies.")
-
-    st.markdown("### Manual Order Approval")
-    with st.container(border=True):
-        st.session_state.setdefault("manual_order_expiry", "")
-        st.session_state.setdefault("manual_order_strike", 0.0)
-        st.session_state.setdefault("manual_order_limit", 0.0)
-        st.session_state.setdefault("manual_order_mid", 0.0)
-        st.session_state.setdefault("manual_order_underlying", None)
-        st.session_state.setdefault("manual_order_requested_strike", 0.0)
-        st.session_state.setdefault("manual_order_loaded_contract", None)
-        st.session_state.setdefault("manual_order_contract_details", None)
-
-        m1, m2, m3, m4 = st.columns(4)
-        manual_symbol = m1.text_input("Symbol", value="SPY", key="manual_order_symbol").strip().upper()
-        manual_signal = m2.selectbox("Option side", ["CALL", "PUT"], key="manual_order_signal")
-        manual_dte = m3.selectbox("Expiry target", [7, 14, 30, 45], format_func=lambda days: f"{days} DTE", key="manual_order_dte")
-        manual_requested_strike = m4.number_input(
-            "Strike",
-            min_value=0.0,
-            step=0.5,
-            key="manual_order_requested_strike",
-            help="Enter the exact strike, or leave 0 to select the nearest ATM strike.",
-        )
-        if st.button("Load IBKR Contract", icon=":material/search:", use_container_width=True):
-            st.session_state["manual_order_loaded_contract"] = None
-            st.session_state["manual_order_contract_details"] = None
+        def is_recent_pending_approval(order: dict) -> bool:
+            if str(order.get("status", "")).lower() not in ["pending", "sent"]:
+                return False
             try:
-                defaults = load_manual_option_defaults(
-                    manual_symbol,
-                    manual_signal,
-                    int(manual_dte),
-                    requested_strike=float(manual_requested_strike),
+                created_at = datetime.fromisoformat(str(order.get("created_at")))
+                return (datetime.now(EASTERN) - created_at).total_seconds() <= 120
+            except Exception:
+                return False
+
+        pending_telegram_orders = [o for o in read_pending_approvals() if is_recent_pending_approval(o)]
+        if pending_telegram_orders:
+            st_autorefresh(interval=1_000, key="telegram_order_decision_refresh")
+            st.caption("Waiting for Telegram decision. The background worker is checking for replies.")
+
+    if live_view == "Orders":
+        st.markdown("### Manual Order Approval")
+        with st.container(border=True):
+            st.session_state.setdefault("manual_order_expiry", "")
+            st.session_state.setdefault("manual_order_strike", 0.0)
+            st.session_state.setdefault("manual_order_limit", 0.0)
+            st.session_state.setdefault("manual_order_mid", 0.0)
+            st.session_state.setdefault("manual_order_underlying", None)
+            st.session_state.setdefault("manual_order_requested_strike", 0.0)
+            st.session_state.setdefault("manual_order_loaded_contract", None)
+            st.session_state.setdefault("manual_order_contract_details", None)
+
+            m1, m2, m3, m4 = st.columns(4)
+            manual_symbol = m1.text_input("Symbol", value="SPY", key="manual_order_symbol").strip().upper()
+            manual_signal = m2.selectbox("Option side", ["CALL", "PUT"], key="manual_order_signal")
+            manual_dte = m3.selectbox("Expiry target", [7, 14, 30, 45], format_func=lambda days: f"{days} DTE", key="manual_order_dte")
+            manual_requested_strike = m4.number_input(
+                "Strike",
+                min_value=0.0,
+                step=0.5,
+                key="manual_order_requested_strike",
+                help="Enter the exact strike, or leave 0 to select the nearest ATM strike.",
+            )
+            if st.button("Load IBKR Contract", icon=":material/search:", use_container_width=True):
+                st.session_state["manual_order_loaded_contract"] = None
+                st.session_state["manual_order_contract_details"] = None
+                try:
+                    defaults = load_manual_option_defaults(
+                        manual_symbol,
+                        manual_signal,
+                        int(manual_dte),
+                        requested_strike=float(manual_requested_strike),
+                    )
+                    st.session_state["manual_order_expiry"] = defaults["expiry"]
+                    st.session_state["manual_order_strike"] = defaults["strike"]
+                    st.session_state["manual_order_mid"] = defaults["mid"]
+                    st.session_state["manual_order_limit"] = defaults["limit"]
+                    st.session_state["manual_order_underlying"] = defaults.get("underlying")
+                    st.session_state["manual_order_loaded_contract"] = {
+                        "symbol": manual_symbol,
+                        "signal": manual_signal,
+                        "dte": int(manual_dte),
+                        "requested_strike": float(manual_requested_strike),
+                        "expiry": defaults["expiry"],
+                        "strike": defaults["strike"],
+                    }
+                    st.session_state["manual_order_contract_details"] = defaults
+                    st.success(
+                        f"Loaded {manual_symbol} {manual_signal}: "
+                        f"{defaults['expiry']} {defaults['strike']:g} | mid ${defaults['mid']:.2f}"
+                    )
+                    if defaults.get("warning"):
+                        st.warning(defaults["warning"])
+                except Exception as e:
+                    st.error(f"Could not load IBKR option defaults: {e}")
+
+            m5, m6, m7, m8 = st.columns(4)
+            manual_expiry = m5.text_input("Resolved expiry", key="manual_order_expiry", disabled=True).strip()
+            manual_strike = m6.number_input("Resolved strike", min_value=0.0, step=0.5, key="manual_order_strike", disabled=True)
+            manual_mid = m7.number_input("Estimated mid", min_value=0.0, step=0.05, key="manual_order_mid")
+            manual_limit = m8.number_input("Limit price", min_value=0.0, step=0.05, key="manual_order_limit")
+
+            m9, m10 = st.columns(2)
+            manual_qty = m9.number_input("Quantity", value=1, min_value=1, step=1, key="manual_order_qty")
+            manual_order_type = m10.selectbox("Order type", ["LIMIT", "MARKET"], key="manual_order_type")
+
+            loaded_contract = st.session_state.get("manual_order_loaded_contract")
+            loaded_matches_request = (
+                isinstance(loaded_contract, dict)
+                and loaded_contract.get("symbol") == manual_symbol
+                and loaded_contract.get("signal") == manual_signal
+                and int(loaded_contract.get("dte") or 0) == int(manual_dte)
+                and abs(float(loaded_contract.get("requested_strike") or 0) - float(manual_requested_strike)) < 0.0001
+            )
+            contract_details = st.session_state.get("manual_order_contract_details") if loaded_matches_request else None
+            if isinstance(contract_details, dict):
+                st.markdown("#### Contract Greeks")
+                delta_value = _number_or_none(contract_details.get("delta"))
+                gamma_value = _number_or_none(contract_details.get("gamma"))
+                theta_value = _number_or_none(contract_details.get("theta"))
+                vega_value = _number_or_none(contract_details.get("vega"))
+                iv_value = _number_or_none(contract_details.get("implied_vol"))
+                delta_rating = contract_details.get("delta_rating") if isinstance(contract_details.get("delta_rating"), dict) else {}
+                rating_label = str(delta_rating.get("label") or "Unavailable")
+                rating_score = _number_or_none(delta_rating.get("score"))
+                greek_values = [
+                    ("Delta", "N/A" if delta_value is None else f"{delta_value:.4f}"),
+                    ("Gamma", "N/A" if gamma_value is None else f"{gamma_value:.5f}"),
+                    ("Theta", "N/A" if theta_value is None else f"{theta_value:.4f}"),
+                    ("Vega", "N/A" if vega_value is None else f"{vega_value:.4f}"),
+                    ("IV", "N/A" if iv_value is None else f"{iv_value * 100:.1f}%"),
+                    ("Delta rating", rating_label if rating_score is None else f"{rating_label} {rating_score:.0f}/100"),
+                ]
+                greek_cells = "".join(
+                    f'<div style="padding:.55rem .7rem;min-width:0;">'
+                    f'<div style="color:#94a3b8;font-size:.78rem;font-weight:700;">{html.escape(label)}</div>'
+                    f'<div style="font-size:1.02rem;font-weight:800;overflow-wrap:anywhere;">{html.escape(value)}</div>'
+                    f'</div>'
+                    for label, value in greek_values
                 )
-                st.session_state["manual_order_expiry"] = defaults["expiry"]
-                st.session_state["manual_order_strike"] = defaults["strike"]
-                st.session_state["manual_order_mid"] = defaults["mid"]
-                st.session_state["manual_order_limit"] = defaults["limit"]
-                st.session_state["manual_order_underlying"] = defaults.get("underlying")
-                st.session_state["manual_order_loaded_contract"] = {
+                st.markdown(
+                    f'<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));'
+                    f'border-top:1px solid rgba(148,163,184,.25);border-bottom:1px solid rgba(148,163,184,.25);'
+                    f'margin-bottom:.65rem;">{greek_cells}</div>',
+                    unsafe_allow_html=True,
+                )
+                rating_message = str(delta_rating.get("detail") or "IBKR did not return a live delta.")
+                if rating_label in {"Excellent", "Good"}:
+                    st.success(rating_message)
+                else:
+                    st.warning(rating_message)
+                bid_value = _number_or_none(contract_details.get("bid"))
+                ask_value = _number_or_none(contract_details.get("ask"))
+                spread_value = _number_or_none(contract_details.get("spread_pct"))
+                greek_source = str(contract_details.get("greek_source") or "unavailable")
+                st.caption(
+                    f"Greeks source: {greek_source} | "
+                    f"Bid / Ask: {_fmt_money_cell(bid_value)} / {_fmt_money_cell(ask_value)} | "
+                    f"Spread: {_fmt_pct_cell(spread_value)}"
+                )
+
+            def build_manual_order_payload() -> dict:
+                option_label = f"{manual_symbol} {manual_expiry} {manual_strike:g} {manual_signal}"
+                mid_or_limit = float(manual_mid or manual_limit or 0)
+                underlying_price = _number_or_none(st.session_state.get("manual_order_underlying"))
+                return {
+                    "id": make_approval_id(manual_symbol, manual_signal),
+                    "status": "pending",
+                    "created_at": datetime.now(EASTERN).isoformat(),
+                    "approval_mode": "Dashboard",
+                    "source": MANUAL_ORDER_SOURCE,
+                    "management_mode": POSITION_MANAGEMENT_MONITOR_ONLY,
                     "symbol": manual_symbol,
                     "signal": manual_signal,
-                    "dte": int(manual_dte),
-                    "requested_strike": float(manual_requested_strike),
-                    "expiry": defaults["expiry"],
-                    "strike": defaults["strike"],
+                    "option": option_label,
+                    "expiry": manual_expiry,
+                    "strike": float(manual_strike),
+                    "type": manual_signal,
+                    "quantity": int(manual_qty),
+                    "mid": mid_or_limit,
+                    "estimated_cost": round(float(manual_qty) * mid_or_limit * 100, 2),
+                    "order_type": manual_order_type,
+                    "limit_price": float(manual_limit) if manual_order_type == "LIMIT" else None,
+                    "account_mode": mode,
+                    "score": "MANUAL",
+                    "grade": "Manual",
+                    "setup_quality": "Manual order",
+                    "rank_score": 0,
+                    "delta": (contract_details or {}).get("delta"),
+                    "gamma": (contract_details or {}).get("gamma"),
+                    "theta": (contract_details or {}).get("theta"),
+                    "vega": (contract_details or {}).get("vega"),
+                    "implied_vol": (contract_details or {}).get("implied_vol"),
+                    "greek_source": (contract_details or {}).get("greek_source"),
+                    "delta_rating": (contract_details or {}).get("delta_rating"),
+                    "reasons": "Manual order entered and approved from Positions tab.",
+                    "raw_signal": {"Symbol": manual_symbol, "Signal": manual_signal, "Price": underlying_price},
+                    "option_data": {
+                        "Option": option_label,
+                        "Expiry": manual_expiry,
+                        "Strike": float(manual_strike),
+                        "Type": manual_signal,
+                        "Mid": mid_or_limit,
+                        "Delta": (contract_details or {}).get("delta"),
+                        "Gamma": (contract_details or {}).get("gamma"),
+                        "Theta": (contract_details or {}).get("theta"),
+                        "Vega": (contract_details or {}).get("vega"),
+                        "Implied Vol": (contract_details or {}).get("implied_vol"),
+                        "Greek Source": (contract_details or {}).get("greek_source"),
+                    },
                 }
-                st.session_state["manual_order_contract_details"] = defaults
-                st.success(
-                    f"Loaded {manual_symbol} {manual_signal}: "
-                    f"{defaults['expiry']} {defaults['strike']:g} | mid ${defaults['mid']:.2f}"
-                )
-                if defaults.get("warning"):
-                    st.warning(defaults["warning"])
-            except Exception as e:
-                st.error(f"Could not load IBKR option defaults: {e}")
 
-        m5, m6, m7, m8 = st.columns(4)
-        manual_expiry = m5.text_input("Resolved expiry", key="manual_order_expiry", disabled=True).strip()
-        manual_strike = m6.number_input("Resolved strike", min_value=0.0, step=0.5, key="manual_order_strike", disabled=True)
-        manual_mid = m7.number_input("Estimated mid", min_value=0.0, step=0.05, key="manual_order_mid")
-        manual_limit = m8.number_input("Limit price", min_value=0.0, step=0.05, key="manual_order_limit")
-
-        m9, m10 = st.columns(2)
-        manual_qty = m9.number_input("Quantity", value=1, min_value=1, step=1, key="manual_order_qty")
-        manual_order_type = m10.selectbox("Order type", ["LIMIT", "MARKET"], key="manual_order_type")
-
-        loaded_contract = st.session_state.get("manual_order_loaded_contract")
-        loaded_matches_request = (
-            isinstance(loaded_contract, dict)
-            and loaded_contract.get("symbol") == manual_symbol
-            and loaded_contract.get("signal") == manual_signal
-            and int(loaded_contract.get("dte") or 0) == int(manual_dte)
-            and abs(float(loaded_contract.get("requested_strike") or 0) - float(manual_requested_strike)) < 0.0001
-        )
-        contract_details = st.session_state.get("manual_order_contract_details") if loaded_matches_request else None
-        if isinstance(contract_details, dict):
-            st.markdown("#### Contract Greeks")
-            delta_value = _number_or_none(contract_details.get("delta"))
-            gamma_value = _number_or_none(contract_details.get("gamma"))
-            theta_value = _number_or_none(contract_details.get("theta"))
-            vega_value = _number_or_none(contract_details.get("vega"))
-            iv_value = _number_or_none(contract_details.get("implied_vol"))
-            delta_rating = contract_details.get("delta_rating") if isinstance(contract_details.get("delta_rating"), dict) else {}
-            rating_label = str(delta_rating.get("label") or "Unavailable")
-            rating_score = _number_or_none(delta_rating.get("score"))
-            greek_values = [
-                ("Delta", "N/A" if delta_value is None else f"{delta_value:.4f}"),
-                ("Gamma", "N/A" if gamma_value is None else f"{gamma_value:.5f}"),
-                ("Theta", "N/A" if theta_value is None else f"{theta_value:.4f}"),
-                ("Vega", "N/A" if vega_value is None else f"{vega_value:.4f}"),
-                ("IV", "N/A" if iv_value is None else f"{iv_value * 100:.1f}%"),
-                ("Delta rating", rating_label if rating_score is None else f"{rating_label} {rating_score:.0f}/100"),
-            ]
-            greek_cells = "".join(
-                f'<div style="padding:.55rem .7rem;min-width:0;">'
-                f'<div style="color:#94a3b8;font-size:.78rem;font-weight:700;">{html.escape(label)}</div>'
-                f'<div style="font-size:1.02rem;font-weight:800;overflow-wrap:anywhere;">{html.escape(value)}</div>'
-                f'</div>'
-                for label, value in greek_values
-            )
-            st.markdown(
-                f'<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));'
-                f'border-top:1px solid rgba(148,163,184,.25);border-bottom:1px solid rgba(148,163,184,.25);'
-                f'margin-bottom:.65rem;">{greek_cells}</div>',
-                unsafe_allow_html=True,
-            )
-            rating_message = str(delta_rating.get("detail") or "IBKR did not return a live delta.")
-            if rating_label in {"Excellent", "Good"}:
-                st.success(rating_message)
-            else:
-                st.warning(rating_message)
-            bid_value = _number_or_none(contract_details.get("bid"))
-            ask_value = _number_or_none(contract_details.get("ask"))
-            spread_value = _number_or_none(contract_details.get("spread_pct"))
-            greek_source = str(contract_details.get("greek_source") or "unavailable")
-            st.caption(
-                f"Greeks source: {greek_source} | "
-                f"Bid / Ask: {_fmt_money_cell(bid_value)} / {_fmt_money_cell(ask_value)} | "
-                f"Spread: {_fmt_pct_cell(spread_value)}"
-            )
-
-        def build_manual_order_payload() -> dict:
-            option_label = f"{manual_symbol} {manual_expiry} {manual_strike:g} {manual_signal}"
-            mid_or_limit = float(manual_mid or manual_limit or 0)
-            underlying_price = _number_or_none(st.session_state.get("manual_order_underlying"))
-            return {
-                "id": make_approval_id(manual_symbol, manual_signal),
-                "status": "pending",
-                "created_at": datetime.now(EASTERN).isoformat(),
-                "approval_mode": "Dashboard",
-                "source": MANUAL_ORDER_SOURCE,
-                "management_mode": POSITION_MANAGEMENT_MONITOR_ONLY,
-                "symbol": manual_symbol,
-                "signal": manual_signal,
-                "option": option_label,
-                "expiry": manual_expiry,
-                "strike": float(manual_strike),
-                "type": manual_signal,
-                "quantity": int(manual_qty),
-                "mid": mid_or_limit,
-                "estimated_cost": round(float(manual_qty) * mid_or_limit * 100, 2),
-                "order_type": manual_order_type,
-                "limit_price": float(manual_limit) if manual_order_type == "LIMIT" else None,
-                "account_mode": mode,
-                "score": "MANUAL",
-                "grade": "Manual",
-                "setup_quality": "Manual order",
-                "rank_score": 0,
-                "delta": (contract_details or {}).get("delta"),
-                "gamma": (contract_details or {}).get("gamma"),
-                "theta": (contract_details or {}).get("theta"),
-                "vega": (contract_details or {}).get("vega"),
-                "implied_vol": (contract_details or {}).get("implied_vol"),
-                "greek_source": (contract_details or {}).get("greek_source"),
-                "delta_rating": (contract_details or {}).get("delta_rating"),
-                "reasons": "Manual order entered and approved from Positions tab.",
-                "raw_signal": {"Symbol": manual_symbol, "Signal": manual_signal, "Price": underlying_price},
-                "option_data": {
-                    "Option": option_label,
-                    "Expiry": manual_expiry,
-                    "Strike": float(manual_strike),
-                    "Type": manual_signal,
-                    "Mid": mid_or_limit,
-                    "Delta": (contract_details or {}).get("delta"),
-                    "Gamma": (contract_details or {}).get("gamma"),
-                    "Theta": (contract_details or {}).get("theta"),
-                    "Vega": (contract_details or {}).get("vega"),
-                    "Implied Vol": (contract_details or {}).get("implied_vol"),
-                    "Greek Source": (contract_details or {}).get("greek_source"),
-                },
-            }
-
-        def submit_manual_popup_order(order: dict) -> None:
-            st.session_state["manual_order_submitting"] = True
-            orders = read_pending_approvals()
-            if not any(str(existing.get("id")) == str(order.get("id")) for existing in orders):
-                orders.append(order)
-                write_pending_approvals(orders)
-            approval_ib = None
-            try:
-                approval_ib = connect_ib(dashboard_ib_cfg(308, readonly=False))
-                status = submit_approved_order(approval_ib, dashboard_ib_cfg(308, readonly=False), order, max_wait_seconds=3)
-                update_pending_approval(
-                    order["id"],
-                    decision_at=datetime.now(EASTERN).isoformat(),
-                    decision_source="dashboard_popup",
-                )
-                st.session_state["manual_order_last_status"] = f"Submitted {order.get('symbol')} {order.get('signal')}: {status}"
-                st.session_state.pop("manual_order_pending_popup", None)
-                st.rerun()
-            except Exception as exc:
-                update_pending_approval(
-                    order.get("id", ""),
-                    status="failed",
-                    failed_at=datetime.now(EASTERN).isoformat(),
-                    decision_source="dashboard_popup",
-                    error=str(exc),
-                )
-                st.error(f"Order submit failed: {display_exception_message(exc)}")
-            finally:
-                st.session_state["manual_order_submitting"] = False
+            def submit_manual_popup_order(order: dict) -> None:
+                st.session_state["manual_order_submitting"] = True
+                orders = read_pending_approvals()
+                if not any(str(existing.get("id")) == str(order.get("id")) for existing in orders):
+                    orders.append(order)
+                    write_pending_approvals(orders)
+                approval_ib = None
                 try:
-                    if approval_ib and approval_ib.isConnected():
-                        approval_ib.disconnect()
-                except Exception:
-                    pass
-
-        def render_manual_order_confirmation(order: dict) -> None:
-            order_type_label = str(order.get("order_type", "LIMIT"))
-            limit_label = f"${float(order.get('limit_price') or 0):.2f}" if order.get("limit_price") else "Market"
-            position_cost = float(order.get("estimated_cost") or 0)
-            st.markdown(f"**Order Brief: {order.get('symbol')} {order.get('signal')}**")
-            st.caption(str(order.get("option", "")))
-            st.markdown(
-                f"""
-                <div style="border:1px solid #e5e7eb;border-radius:8px;padding:0.85rem;margin:0.75rem 0;background:#f8fafc;">
-                    <div style="font-size:0.82rem;color:#64748b;font-weight:800;margin-bottom:0.35rem;">Position Cost</div>
-                    <div style="font-size:1.6rem;font-weight:800;color:#111827;">${position_cost:,.2f}</div>
-                    <div style="font-size:0.86rem;color:#475569;margin-top:0.35rem;">
-                        {int(order.get("quantity") or 0)} contract(s) x ${float(order.get("mid") or order.get("limit_price") or 0):.2f} x 100 multiplier
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            review_cols = st.columns(4)
-            review_cols[0].metric("Qty", order.get("quantity", 0))
-            review_cols[1].metric("Side", order.get("signal", "N/A"))
-            review_cols[2].metric("Order", order_type_label)
-            review_cols[3].metric("Price", limit_label)
-            order_delta_rating = order.get("delta_rating") if isinstance(order.get("delta_rating"), dict) else {}
-            order_iv = _number_or_none(order.get("implied_vol"))
-            order_greek_values = [
-                ("Delta", "N/A" if _number_or_none(order.get("delta")) is None else f"{float(order.get('delta')):.4f}"),
-                ("Gamma", "N/A" if _number_or_none(order.get("gamma")) is None else f"{float(order.get('gamma')):.5f}"),
-                ("Theta", "N/A" if _number_or_none(order.get("theta")) is None else f"{float(order.get('theta')):.4f}"),
-                ("Vega", "N/A" if _number_or_none(order.get("vega")) is None else f"{float(order.get('vega')):.4f}"),
-                ("IV", "N/A" if order_iv is None else f"{order_iv * 100:.1f}%"),
-                ("Delta rating", str(order_delta_rating.get("label") or "Unavailable")),
-            ]
-            order_greek_cells = "".join(
-                f'<div style="padding:.4rem .5rem;min-width:0;">'
-                f'<div style="color:#64748b;font-size:.74rem;font-weight:700;">{html.escape(label)}</div>'
-                f'<div style="font-weight:800;overflow-wrap:anywhere;">{html.escape(value)}</div>'
-                f'</div>'
-                for label, value in order_greek_values
-            )
-            st.markdown(
-                f'<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));'
-                f'border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;margin:.6rem 0;">'
-                f'{order_greek_cells}</div>',
-                unsafe_allow_html=True,
-            )
-            st.caption(f"Account mode: {order.get('account_mode', 'N/A')} | Expiry: {order.get('expiry', 'N/A')} | Strike: {order.get('strike', 'N/A')}")
-            st.info("Monitor only: PulseTrade will not place stop-loss/take-profit orders or close this position.")
-            if not orders_unlocked:
-                st.warning("Order placement is locked by the current automation/safety settings.")
-            confirm_cols = st.columns(2)
-            submitting = bool(st.session_state.get("manual_order_submitting"))
-            if submitting:
-                st.info("Submitting order to IBKR...")
-            with confirm_cols[0]:
-                if st.button("Place Order", key="manual_popup_confirm", use_container_width=True, disabled=not orders_unlocked or submitting):
-                    with st.spinner("Submitting order to IBKR..."):
-                        submit_manual_popup_order(order)
-            with confirm_cols[1]:
-                if st.button("Cancel", key="manual_popup_cancel", use_container_width=True, disabled=submitting):
+                    approval_ib = connect_ib(dashboard_ib_cfg(308, readonly=False))
+                    status = submit_approved_order(approval_ib, dashboard_ib_cfg(308, readonly=False), order, max_wait_seconds=3)
+                    update_pending_approval(
+                        order["id"],
+                        decision_at=datetime.now(EASTERN).isoformat(),
+                        decision_source="dashboard_popup",
+                    )
+                    st.session_state["manual_order_last_status"] = f"Submitted {order.get('symbol')} {order.get('signal')}: {status}"
                     st.session_state.pop("manual_order_pending_popup", None)
                     st.rerun()
-
-        dialog = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
-        if dialog is not None:
-            @dialog("Confirm Manual Order")
-            def manual_order_confirmation_dialog(order: dict) -> None:
-                render_manual_order_confirmation(order)
-
-        if st.button("Review Manual Order", use_container_width=True):
-            if not loaded_matches_request:
-                st.error("Load the selected IBKR contract after choosing the symbol, side, expiry target, and strike.")
-            elif not manual_symbol or not manual_expiry or manual_strike <= 0:
-                st.error("Enter symbol, expiry, and strike before reviewing the order.")
-            elif manual_order_type == "LIMIT" and manual_limit <= 0:
-                st.error("Limit orders need a limit price greater than zero.")
-            else:
-                st.session_state["manual_order_pending_popup"] = build_manual_order_payload()
-
-        if st.session_state.get("manual_order_last_status"):
-            st.success(st.session_state["manual_order_last_status"])
-        pending_popup_order = st.session_state.get("manual_order_pending_popup")
-        if isinstance(pending_popup_order, dict):
-            if dialog is not None:
-                manual_order_confirmation_dialog(pending_popup_order)
-            else:
-                with st.container(border=True):
-                    st.markdown("#### Confirm Manual Order")
-                    render_manual_order_confirmation(pending_popup_order)
-
-    if st.button("Manage Open Positions Now", use_container_width=True):
-        try:
-            if not read_active_positions():
-                st.info("No active positions to manage.")
-            else:
-                ib = connect_ib(dashboard_ib_cfg(304))
-                try:
-                    r = cfg["risk"]
-                    events = manage_open_positions(
-                        ib=ib,
-                        account=ib_cfg.account,
-                        stop_loss_pct=float(r.get("stop_loss_pct", 20.0)),
-                        take_profit_pct=float(r.get("take_profit_pct", 30.0)),
-                        breakeven_trigger_pct=float(r.get("breakeven_trigger_pct", 15.0)),
-                        trailing_trigger_pct=float(r.get("trailing_trigger_pct", 25.0)),
-                        trailing_stop_pct=float(r.get("trailing_stop_pct", 10.0)),
-                        force_exit_time=dtime(int(r.get("force_exit_hour", 15)), int(r.get("force_exit_minute", 55))),
-                        force_exit_enabled=bool(r.get("force_exit_enabled", True)),
-                        require_eod_exit_approval=bool(r.get("require_eod_exit_approval", True)),
-                        allow_live_orders=orders_unlocked_from_config(cfg),
-                        trailing_from_entry=bool(r.get("trailing_from_entry", True)),
-                        fixed_take_profit_enabled=bool(r.get("use_take_profit_with_trailing", False)),
+                except Exception as exc:
+                    update_pending_approval(
+                        order.get("id", ""),
+                        status="failed",
+                        failed_at=datetime.now(EASTERN).isoformat(),
+                        decision_source="dashboard_popup",
+                        error=str(exc),
                     )
+                    st.error(f"Order submit failed: {display_exception_message(exc)}")
                 finally:
+                    st.session_state["manual_order_submitting"] = False
                     try:
-                        ib.disconnect()
+                        if approval_ib and approval_ib.isConnected():
+                            approval_ib.disconnect()
                     except Exception:
                         pass
-                st.dataframe(pd.DataFrame(events), use_container_width=True) if events else st.info("No active positions to manage.")
-        except Exception as e:
-            clean_ui_error("Position management failed", e)
+
+            def render_manual_order_confirmation(order: dict) -> None:
+                order_type_label = str(order.get("order_type", "LIMIT"))
+                limit_label = f"${float(order.get('limit_price') or 0):.2f}" if order.get("limit_price") else "Market"
+                position_cost = float(order.get("estimated_cost") or 0)
+                st.markdown(f"**Order Brief: {order.get('symbol')} {order.get('signal')}**")
+                st.caption(str(order.get("option", "")))
+                st.markdown(
+                    f"""
+                    <div style="border:1px solid #e5e7eb;border-radius:8px;padding:0.85rem;margin:0.75rem 0;background:#f8fafc;">
+                        <div style="font-size:0.82rem;color:#64748b;font-weight:800;margin-bottom:0.35rem;">Position Cost</div>
+                        <div style="font-size:1.6rem;font-weight:800;color:#111827;">${position_cost:,.2f}</div>
+                        <div style="font-size:0.86rem;color:#475569;margin-top:0.35rem;">
+                            {int(order.get("quantity") or 0)} contract(s) x ${float(order.get("mid") or order.get("limit_price") or 0):.2f} x 100 multiplier
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                review_cols = st.columns(4)
+                review_cols[0].metric("Qty", order.get("quantity", 0))
+                review_cols[1].metric("Side", order.get("signal", "N/A"))
+                review_cols[2].metric("Order", order_type_label)
+                review_cols[3].metric("Price", limit_label)
+                order_delta_rating = order.get("delta_rating") if isinstance(order.get("delta_rating"), dict) else {}
+                order_iv = _number_or_none(order.get("implied_vol"))
+                order_greek_values = [
+                    ("Delta", "N/A" if _number_or_none(order.get("delta")) is None else f"{float(order.get('delta')):.4f}"),
+                    ("Gamma", "N/A" if _number_or_none(order.get("gamma")) is None else f"{float(order.get('gamma')):.5f}"),
+                    ("Theta", "N/A" if _number_or_none(order.get("theta")) is None else f"{float(order.get('theta')):.4f}"),
+                    ("Vega", "N/A" if _number_or_none(order.get("vega")) is None else f"{float(order.get('vega')):.4f}"),
+                    ("IV", "N/A" if order_iv is None else f"{order_iv * 100:.1f}%"),
+                    ("Delta rating", str(order_delta_rating.get("label") or "Unavailable")),
+                ]
+                order_greek_cells = "".join(
+                    f'<div style="padding:.4rem .5rem;min-width:0;">'
+                    f'<div style="color:#64748b;font-size:.74rem;font-weight:700;">{html.escape(label)}</div>'
+                    f'<div style="font-weight:800;overflow-wrap:anywhere;">{html.escape(value)}</div>'
+                    f'</div>'
+                    for label, value in order_greek_values
+                )
+                st.markdown(
+                    f'<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));'
+                    f'border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;margin:.6rem 0;">'
+                    f'{order_greek_cells}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.caption(f"Account mode: {order.get('account_mode', 'N/A')} | Expiry: {order.get('expiry', 'N/A')} | Strike: {order.get('strike', 'N/A')}")
+                st.info("Monitor only: PulseTrade will not place stop-loss/take-profit orders or close this position.")
+                if not orders_unlocked:
+                    st.warning("Order placement is locked by the current automation/safety settings.")
+                confirm_cols = st.columns(2)
+                submitting = bool(st.session_state.get("manual_order_submitting"))
+                if submitting:
+                    st.info("Submitting order to IBKR...")
+                with confirm_cols[0]:
+                    if st.button("Place Order", key="manual_popup_confirm", use_container_width=True, disabled=not orders_unlocked or submitting):
+                        with st.spinner("Submitting order to IBKR..."):
+                            submit_manual_popup_order(order)
+                with confirm_cols[1]:
+                    if st.button("Cancel", key="manual_popup_cancel", use_container_width=True, disabled=submitting):
+                        st.session_state.pop("manual_order_pending_popup", None)
+                        st.rerun()
+
+            dialog = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+            if dialog is not None:
+                @dialog("Confirm Manual Order")
+                def manual_order_confirmation_dialog(order: dict) -> None:
+                    render_manual_order_confirmation(order)
+
+            if st.button("Review Manual Order", use_container_width=True):
+                if not loaded_matches_request:
+                    st.error("Load the selected IBKR contract after choosing the symbol, side, expiry target, and strike.")
+                elif not manual_symbol or not manual_expiry or manual_strike <= 0:
+                    st.error("Enter symbol, expiry, and strike before reviewing the order.")
+                elif manual_order_type == "LIMIT" and manual_limit <= 0:
+                    st.error("Limit orders need a limit price greater than zero.")
+                else:
+                    st.session_state["manual_order_pending_popup"] = build_manual_order_payload()
+
+            if st.session_state.get("manual_order_last_status"):
+                st.success(st.session_state["manual_order_last_status"])
+            pending_popup_order = st.session_state.get("manual_order_pending_popup")
+            if isinstance(pending_popup_order, dict):
+                if dialog is not None:
+                    manual_order_confirmation_dialog(pending_popup_order)
+                else:
+                    with st.container(border=True):
+                        st.markdown("#### Confirm Manual Order")
+                        render_manual_order_confirmation(pending_popup_order)
+
+    if live_view == "Positions":
+        if st.button("Manage Open Positions Now", use_container_width=True):
+            try:
+                if not read_active_positions():
+                    st.info("No active positions to manage.")
+                else:
+                    ib = connect_ib(dashboard_ib_cfg(304))
+                    try:
+                        r = cfg["risk"]
+                        events = manage_open_positions(
+                            ib=ib,
+                            account=ib_cfg.account,
+                            stop_loss_pct=float(r.get("stop_loss_pct", 20.0)),
+                            take_profit_pct=float(r.get("take_profit_pct", 30.0)),
+                            breakeven_trigger_pct=float(r.get("breakeven_trigger_pct", 15.0)),
+                            trailing_trigger_pct=float(r.get("trailing_trigger_pct", 25.0)),
+                            trailing_stop_pct=float(r.get("trailing_stop_pct", 10.0)),
+                            force_exit_time=dtime(int(r.get("force_exit_hour", 15)), int(r.get("force_exit_minute", 55))),
+                            force_exit_enabled=bool(r.get("force_exit_enabled", True)),
+                            require_eod_exit_approval=bool(r.get("require_eod_exit_approval", True)),
+                            allow_live_orders=orders_unlocked_from_config(cfg),
+                            trailing_from_entry=bool(r.get("trailing_from_entry", True)),
+                            fixed_take_profit_enabled=bool(r.get("use_take_profit_with_trailing", False)),
+                        )
+                    finally:
+                        try:
+                            ib.disconnect()
+                        except Exception:
+                            pass
+                    st.dataframe(pd.DataFrame(events), use_container_width=True) if events else st.info("No active positions to manage.")
+            except Exception as e:
+                clean_ui_error("Position management failed", e)
 
 elif selected_page in ("📊 Performance & Trade Journal", "🤖 AI AUDIT"):
     if selected_page == "🤖 AI AUDIT":
-        st.subheader("AI AUDIT")
+        st.subheader("AI Audit")
     else:
-        st.subheader("Performance & Trade Journal")
+        st.subheader("Trade Journal")
 
     def _parse_dashboard_timestamps(values):
         try:

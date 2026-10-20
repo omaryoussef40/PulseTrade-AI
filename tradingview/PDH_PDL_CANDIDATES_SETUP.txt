@@ -1,0 +1,74 @@
+PDH / PDL CANDIDATE SCANNER
+
+INSTALL
+Paste pdh_pdl_candidates.pine into a NEW Pine Editor indicator, save it,
+and favorite it. Keep the earlier opening-gap scanner separately.
+Use standard daily (1D) charts to inspect this indicator.
+In Pine Screener choose your S&P 500 source and this indicator, then set 1D.
+The indicator reads completed 15-minute regular-session candles internally.
+
+FILTERS: USE ONLY ONE DIRECTION AT A TIME
+Bullish candidates: Bull status > 0. Leave all other filters unset.
+Bearish candidates: Bear status > 0. Leave all other filters unset.
+Clear automatically enabled bullish/bearish alert filters if present.
+Click Scan after changing inputs or filters.
+
+STATUS VALUES
+0: No setup meeting all configured requirements.
+1: Approaching. Latest completed close is inside/on yesterday's range and
+   within 0.25 daily ATR of the relevant level, on the correct side of VWAP.
+2: Break confirmed. A completed 15m candle closed beyond PDH/PDL. The setup
+   remains beyond the level, close enough to it, and within its validity window.
+3: Retest held. A LATER completed 15m candle revisited a +/- 0.05 daily ATR
+   band around the level and closed beyond it. The latest close still holds.
+   Wicks exceeding the far edge of the band are not accepted as retests.
+For only confirmed breaks/retests use status > 1. For retests only use > 2.
+Do not set Bull status > 0 and Bear status > 0 together.
+
+DEFAULTS
+Opening volume: >= 1.5x average first-15m volume over prior 20 sessions.
+Average daily shares: >= 1,000,000 over prior 20 completed sessions.
+Daily ATR percent: >= 1%; prior completed daily ATR(14) / previous close.
+Distance to level: <= 0.25 of prior completed daily ATR, either side.
+VWAP: bullish above, bearish below. Computed from regular-session 15m HLC3
+and volume; may differ from VWAP calculated using finer-resolution bars.
+Window: 09:45 through 11:30 America/New_York, today only.
+Break/retest validity: breakout candle plus four subsequent 15-minute bars.
+A later crossing can start a fresh setup after a close invalidates the old one.
+Gap openings can form a setup; the first completed bar must hold beyond the
+level. A later candle is required for retest status.
+
+SORTING / INTERPRETATION
+Sort Opening RVOL descending to find unusually active openings.
+For bullish names, stronger positive Strength vs SPY is preferable for ranking;
+for bearish names, more negative values show relative weakness.
+Strength compares stock and SPY returns from the regular-session open to the
+same completed 15-minute close, in percentage points. It is not a hard filter.
+Signed distance = (latest completed close - level) / prior daily ATR.
+Negative distance to PDH means below PDH; positive distance to PDL means above PDL.
+This version ranks opening RVOL; it does not calculate cumulative RVOL at time.
+These rules find candidates. They do not establish profitability or specify
+trade entry prices, stops, targets, or option contracts.
+
+EMPTY RESULTS
+Remove ALL filters, Scan, and inspect Data ready and Opening RVOL.
+Data ready = 0 indicates insufficient opening history or missing/stale data.
+Data ready = 1 with statuses zero means a setup/window/threshold was not met.
+The 09:45–11:30 window is enabled by default, so afternoon scans return no
+candidates. Disable the window input to scan later in the regular session.
+Before 09:45 no opening-volume confirmation is available.
+Only today's candidates is enabled; holidays and old-session data are excluded.
+During today's scan, a last completed candle 30 minutes or more old is excluded.
+Symbols missing the 09:30 bar are excluded. All 20 prior opening bars are required.
+Use suitable real-time exchange data; delayed data delays the scanner too.
+Pine Screener needs an explicit rescan to refresh its snapshot.
+
+VALIDATION
+Static checks completed for the script's request/plot limits and data gates.
+Not compiled or executed in TradingView in this session. Save/add it in Pine
+Editor to verify compilation, then compare a known symbol's levels and statuses.
+This is a new standalone indicator; no trading-engine settings were changed.
+
+OFFICIAL REFERENCES
+https://www.tradingview.com/support/solutions/43000742436-tradingview-pine-screener-key-features-and-requirements/
+https://www.tradingview.com/pine-script-docs/concepts/other-timeframes-and-data/

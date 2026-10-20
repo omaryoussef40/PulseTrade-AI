@@ -1,0 +1,11 @@
+{
+  "symbol": "NVDA",
+  "option_dte": 7,
+  "expiry": "20261021",
+  "strike": 222.5,
+  "right": "P",
+  "localSymbol": "NVDA  261021P00222500",
+  "conId": 932145307,
+  "tradingClass": "NVDA",
+  "multiplier": "100"
+}

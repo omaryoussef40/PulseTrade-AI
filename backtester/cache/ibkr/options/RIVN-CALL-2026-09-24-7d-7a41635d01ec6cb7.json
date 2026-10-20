@@ -1,0 +1,9 @@
+{
+  "symbol": "RIVN",
+  "option_dte": 7,
+  "expiry": "20261002",
+  "strike": 15.5,
+  "right": "C",
+  "localSymbol": "RIVN  261002C00015500",
+  "conId": 910578482
+}

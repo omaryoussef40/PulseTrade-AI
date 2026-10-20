@@ -1,0 +1,9 @@
+{
+  "symbol": "GME",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 25.5,
+  "right": "C",
+  "localSymbol": "GME   261016C00025500",
+  "conId": 926212410
+}

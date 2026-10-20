@@ -11,3 +11,5 @@ yfinance
 pyarrow
 fastapi
 uvicorn
+exchange-calendars>=4.5,<5
+keyring>=25,<26

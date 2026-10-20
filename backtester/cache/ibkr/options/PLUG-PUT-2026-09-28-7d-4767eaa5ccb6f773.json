@@ -1,0 +1,9 @@
+{
+  "symbol": "PLUG",
+  "option_dte": 7,
+  "expiry": "20261002",
+  "strike": 2.0,
+  "right": "P",
+  "localSymbol": "PLUG  261002P00002000",
+  "conId": 910598695
+}

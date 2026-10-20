@@ -1,0 +1,11 @@
+{
+  "symbol": "PLTR",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 187.5,
+  "right": "P",
+  "localSymbol": "PLTR  261023P00187500",
+  "conId": 920250171,
+  "tradingClass": "PLTR",
+  "multiplier": "100"
+}

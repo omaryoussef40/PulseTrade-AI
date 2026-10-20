@@ -7,8 +7,9 @@ backtester.controller so Streamlit reruns do not own the state of the backtest.
 """
 
 import calendar
+from copy import deepcopy
 import html
-from dataclasses import replace
+from dataclasses import replace, asdict
 from datetime import date, datetime
 from pathlib import Path
 import time as _time
@@ -26,6 +27,15 @@ except Exception:  # pragma: no cover
         "SPY", "QQQ", "IWM", "NVDA", "AAPL", "MSFT", "META", "AMZN", "GOOGL", "TSLA", "AMD", "PLTR", "COIN", "MSTR", "AVGO", "SMCI", "MU", "ARM", "TSM", "MRVL", "JPM", "GS", "BAC", "NFLX", "UBER", "XOM", "COST", "RBLX", "HOOD", "SOFI", "RKLB", "HIMS", "CRWD"
     ]
     save_config = None
+
+OPTIONS_VOLUME_TICKERS = [
+    "NVDA", "TSLA", "AAPL", "AMZN", "MSFT", "INTC", "MU", "PLTR", "META", "MSTR",
+    "AMD", "NFLX", "GOOGL", "SMCI", "SOFI", "MARA", "IREN", "SPCX", "ORCL", "AVGO",
+    "HOOD", "NOK", "COIN", "GOOG", "NBIS", "CRWV", "ONDS", "TSM", "BMNR", "BABA",
+    "SNDK", "MRVL", "GME", "ASTS", "HIMS", "WULF", "NOW", "BAC", "RKLB", "OPEN",
+    "RIVN", "MRNA", "WMT", "NKE", "F", "CRCL", "AI", "PFE", "AAL", "PYPL",
+]
+BACKTEST_PRESET_TICKERS = list(dict.fromkeys([*WATCHLIST, *OPTIONS_VOLUME_TICKERS]))
 
 try:
     from market_data import create_market_data_provider, available_market_data_sources
@@ -63,6 +73,16 @@ def _parse_symbols(text: str, max_symbols: int) -> list[str]:
 
 def _parse_extra_symbols(text: str) -> list[str]:
     return [s.strip().upper() for s in str(text).replace("\n", ",").split(",") if s.strip()]
+
+
+def _custom_backtest_symbols_changed():
+    text = st.session_state.get("sl_custom_symbols", "")
+    if text.strip():
+        st.session_state["sl_symbol_presets"] = list(dict.fromkeys(_parse_extra_symbols(text)))
+
+
+def _preset_backtest_symbols_changed():
+    st.session_state["sl_custom_symbols"] = ""
 
 
 def _chart_equity(trades: pd.DataFrame):
@@ -332,12 +352,37 @@ def _render_backtest_pnl_calendar(trades: pd.DataFrame, meta: dict) -> None:
     )
 
 
-def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbols: list[str], selected_strategies: list[str], period: str, interval: str, max_symbols: int, force_refresh: bool, data_source: str, orb_minutes: int, first_signal_minutes: int, min_session_bars: int, require_break_retest: bool, retest_tolerance_pct: float, retest_max_minutes: int, use_staged_timeline: bool, visual_updates: bool, option_dte_values: list[int], premium_pct_ui: float, slippage_pct: float, allow_same_symbol: bool, risk_overrides: dict | None = None, gap_settings: dict | None = None) -> None:
+def _save_strategy_lab_settings(
+    config: dict,
+    symbols: list[str],
+    selected_symbols: list[str],
+    selected_strategies: list[str],
+    period: str,
+    interval: str,
+    max_symbols: int,
+    force_refresh: bool,
+    data_source: str,
+    orb_minutes: int,
+    first_signal_minutes: int,
+    min_session_bars: int,
+    require_break_retest: bool,
+    retest_tolerance_pct: float,
+    retest_max_minutes: int,
+    breakout_follow_through: dict,
+    use_staged_timeline: bool,
+    visual_updates: bool,
+    option_dte_values: list[int],
+    premium_pct_ui: float,
+    slippage_pct: float,
+    allow_same_symbol: bool,
+    risk_overrides: dict | None = None,
+    gap_settings: dict | None = None,
+    symbol_universe: str = "watchlist",
+) -> None:
     config.setdefault("strategy_lab", {})
-    if "PMB" in {str(name).upper() for name in selected_strategies}:
-        config["watchlist"] = list(selected_symbols)
     config["strategy_lab"] = {
         "symbols": list(selected_symbols),
+        "symbol_universe": symbol_universe,
         "selected_strategies": list(selected_strategies),
         "period": str(period),
         "interval": str(interval),
@@ -350,6 +395,7 @@ def _save_strategy_lab_settings(config: dict, symbols: list[str], selected_symbo
         "require_break_retest": bool(require_break_retest),
         "retest_tolerance_pct": float(retest_tolerance_pct),
         "retest_max_minutes": int(retest_max_minutes),
+        "breakout_follow_through": dict(breakout_follow_through or {}),
         "use_staged_timeline": bool(use_staged_timeline),
         "visual_updates": bool(visual_updates),
         "option_dte_values": [int(v) for v in option_dte_values],
@@ -400,6 +446,7 @@ def _apply_strategy_lab_to_engine(config: dict, settings: StrategyLabSettings, s
         "require_break_retest": bool(settings.require_break_retest),
         "retest_tolerance_pct": float(settings.retest_tolerance_pct),
         "retest_max_minutes": int(settings.retest_max_minutes),
+        "breakout_follow_through": dict(settings.breakout_follow_through or {}),
     })
     config.setdefault("staged_trading_timeline", {})["enabled"] = bool(settings.use_staged_timeline)
     risk.update({
@@ -425,11 +472,16 @@ def _apply_strategy_lab_to_engine(config: dict, settings: StrategyLabSettings, s
     })
     if save_config is not None:
         save_config(config)
+    confirmation = settings.breakout_follow_through or {}
+    volume_enabled = bool(confirmation.get("volume_enabled", confirmation.get("enabled", False)))
+    follow_enabled = bool(confirmation.get("follow_through_enabled", confirmation.get("enabled", False)))
     return {
         "Strategy": str(selected_strategy).upper(),
         "Watchlist": len(selected_symbols),
         "Option DTE": option_dte,
         "ORB": int(settings.orb_minutes),
+        "Breakout volume": f"{float(confirmation.get('min_breakout_volume_ratio', 2.0)):g}×" if volume_enabled else "Off",
+        "Next-candle confirmation": "On" if follow_enabled else "Off",
         "Staged timeline": bool(settings.use_staged_timeline),
         "Max trades/day": int(settings.max_trades_per_day),
         "Max spend/trade": round(max_spend, 2),
@@ -452,7 +504,7 @@ def _render_orb_results_view(config: dict, default_symbols: list[str]) -> None:
     period_labels = {"1 month": "30d", "3 months": "90d", "6 months": "180d"}
     saved_period_label = next((label for label, value in period_labels.items() if value == saved_period), "3 months")
     saved_symbols = list(orb_cfg.get("symbols") or default_symbols or WATCHLIST[:30])
-    symbol_options = list(dict.fromkeys([*WATCHLIST, *saved_symbols]))
+    symbol_options = list(dict.fromkeys([*BACKTEST_PRESET_TICKERS, *saved_symbols]))
 
     settings_cols = st.columns([1.1, 1, 1, 2.6])
     with settings_cols[0]:
@@ -704,15 +756,16 @@ def _render_straddle_backtest_view(config: dict, default_symbols: list[str]) -> 
     saved = config.get("straddle_results", {})
     if not isinstance(saved, dict):
         saved = {}
-    period_labels = {"1 month": "30d", "3 months": "90d", "6 months": "180d"}
+    from .straddle_windows import PERIOD_LABELS,lookback_window,filter_window
+    period_labels = PERIOD_LABELS
     saved_period = str(saved.get("period", "30d"))
     saved_period_label = next((label for label, value in period_labels.items() if value == saved_period), "1 month")
     saved_symbols = list(saved.get("symbols") or default_symbols or WATCHLIST[:30])
-    symbol_options = list(dict.fromkeys([*WATCHLIST, *saved_symbols]))
+    symbol_options = list(dict.fromkeys([*BACKTEST_PRESET_TICKERS, *saved_symbols]))
 
     st.caption(
-        "One matched ATM CALL + PUT pair at 09:30. At 10:00, the completed ORB confirmation "
-        "closes the opposing leg; combined returns include both premiums, slippage, and commissions."
+        "Buy a matched ATM call and put, then use the stock breakout to choose which leg to keep. "
+        "Adjust entry, confirmation, filters and exits below. Research only; this does not enable live straddle trading."
     )
     setup_cols = st.columns([1.1, 0.8, 3.1])
     with setup_cols[0]:
@@ -787,6 +840,31 @@ def _render_straddle_backtest_view(config: dict, default_symbols: list[str]) -> 
             key="straddle_slippage",
         )
 
+    from .straddle_controls import render_controls
+    advanced=render_controls(saved)
+    period=period_labels.get(str(period_label),'30d')
+    fetch_period,window_start,window_end=lookback_window(period)
+    if period=='yesterday':st.caption(f'Previous completed trading session: {window_start} (New York). Weekends and exchange holidays are skipped.')
+    elif period in ('7d','14d'):st.caption(f'{window_start} to {window_end} New York · Calendar-day lookback, completed trading sessions only.')
+    try:
+        settings=StraddleResultsConfig(period=period,option_dte=int(option_dte),winner_stop_loss_pct=float(winner_stop),winner_target_pct=float(winner_target),trailing_trigger_pct=float(trailing_trigger),trailing_stop_pct=float(trailing_stop),slippage_pct=float(slippage),**advanced)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    confirmation_minutes=570+settings.orb_minutes+settings.confirmation_minutes
+    confirmation_clock=f'{confirmation_minutes//60:02d}:{confirmation_minutes%60:02d}'
+    st.caption(f'Entry {settings.entry_hour:02d}:{settings.entry_minute:02d} · Opening range {settings.orb_minutes} min · Decision {confirmation_clock} · Timed exit {settings.force_exit_hour:02d}:{settings.force_exit_minute:02d} New York · {settings.contracts_per_leg} contract(s) per leg')
+    settings_values={**asdict(settings),'symbols':list(symbols)}
+    def persist_settings():
+        config['straddle_results']=dict(settings_values)
+        if save_config is not None:
+            from bot_core import load_config
+            fresh=load_config()
+            fresh['straddle_results']=dict(settings_values)
+            save_config(fresh)
+    if st.button('Save straddle settings',key='straddle_save'):
+        persist_settings()
+        st.success('Straddle research settings saved. Live trading settings are unchanged.')
     action_cols = st.columns([1, 1, 4])
     with action_cols[0]:
         run_clicked = st.button(
@@ -797,32 +875,24 @@ def _render_straddle_backtest_view(config: dict, default_symbols: list[str]) -> 
             key="straddle_run",
         )
     with action_cols[1]:
-        force_refresh = st.checkbox("Refresh stock data", value=False, key="straddle_force_refresh")
+        force_refresh = st.checkbox("Refresh stock and option data", value=False, key="straddle_force_refresh", help="Bypass the straddle stock cache, both option-leg caches and cached option failures. Request fresh IBKR history; failed forced stock requests do not fall back to old bars.")
 
+    straddle_cache_dir=Path(__file__).resolve().parent / "cache" / "straddle" / "ibkr"
+    st.caption("This backtest uses its own stock and option cache. PMB cached data is separate.")
+    with st.expander("Straddle cached data"):
+        st.caption("Clearing removes cached stock history, option history and failed-request records for the selected tickers in this backtester only. Saved results remain available.")
+        if st.button("Clear selected straddle cache",key="straddle_clear_cache",disabled=not symbols):
+            cache_provider=None
+            try:
+                cache_provider=create_market_data_provider("IBKR",config,client_id_offset=204,readonly_override=True,cache_dir=straddle_cache_dir)
+                removed=sum(cache_provider.clear_cache(symbol) for symbol in symbols)
+                st.success(f"Cleared {removed} straddle cache files. The next run will request data again.")
+            except Exception as exc:
+                st.error(f"Could not clear straddle cache: {exc}")
+            finally:
+                if cache_provider is not None:cache_provider.disconnect()
     if run_clicked:
-        period = period_labels.get(str(period_label), "30d")
-        settings = StraddleResultsConfig(
-            period=period,
-            option_dte=int(option_dte),
-            winner_stop_loss_pct=float(winner_stop),
-            winner_target_pct=float(winner_target),
-            trailing_trigger_pct=float(trailing_trigger),
-            trailing_stop_pct=float(trailing_stop),
-            slippage_pct=float(slippage),
-        )
-        saved.update({
-            "period": period,
-            "symbols": list(symbols),
-            "option_dte": int(option_dte),
-            "winner_stop_loss_pct": float(winner_stop),
-            "winner_target_pct": float(winner_target),
-            "trailing_trigger_pct": float(trailing_trigger),
-            "trailing_stop_pct": float(trailing_stop),
-            "slippage_pct": float(slippage),
-        })
-        config["straddle_results"] = saved
-        if save_config is not None:
-            save_config(config)
+        persist_settings()
 
         progress = st.progress(0.0)
         status = st.empty()
@@ -839,19 +909,22 @@ def _render_straddle_backtest_view(config: dict, default_symbols: list[str]) -> 
                 config,
                 client_id_offset=204,
                 readonly_override=True,
+                cache_dir=straddle_cache_dir,
             )
             for number, symbol in enumerate(symbols, start=1):
                 status.info(f"Loading 5-minute stock candles: {symbol} ({number}/{len(symbols)})")
                 try:
                     bars = provider.load(
                         symbol,
-                        period=period,
+                        period=fetch_period,
                         interval="5m",
                         regular_hours_only=True,
                         force_refresh=bool(force_refresh),
+                        allow_cache_fallback=not bool(force_refresh),
                     )
+                    bars=filter_window(bars,window_start,window_end)
                     if bars is None or bars.empty:
-                        raise RuntimeError("No 5-minute stock candles returned")
+                        raise RuntimeError("No 5-minute stock candles returned for the selected dates")
                     stock_data[symbol] = bars
                     source = provider.last_load_source(symbol) if hasattr(provider, "last_load_source") else "unknown"
                     stock_sources.append({"symbol": symbol, "source": source, "bars": len(bars)})
@@ -868,6 +941,7 @@ def _render_straddle_backtest_view(config: dict, default_symbols: list[str]) -> 
                     underlying_price=kwargs["underlying_price"],
                     option_dte=kwargs["option_dte"],
                     reference_time=kwargs["reference_time"],
+                    force_refresh=bool(force_refresh),
                 )
                 put_info, put_bars = provider.historical_option_bars_for_contract(
                     symbol=kwargs["symbol"],
@@ -876,6 +950,7 @@ def _render_straddle_backtest_view(config: dict, default_symbols: list[str]) -> 
                     strike=float(call_info.get("strike")),
                     option_dte=kwargs["option_dte"],
                     reference_time=kwargs["reference_time"],
+                    force_refresh=bool(force_refresh),
                 )
                 return call_info, call_bars, put_info, put_bars
 
@@ -890,14 +965,21 @@ def _render_straddle_backtest_view(config: dict, default_symbols: list[str]) -> 
             data_ends = [frame.index.max() for frame in stock_data.values() if not frame.empty]
             meta = {
                 "status": "COMPLETE" if stock_data else "FAILED_NO_STOCK_DATA",
+                "cache_namespace": "straddle",
+                "cache_directory": str(straddle_cache_dir),
+                "force_refresh_stock_and_options": bool(force_refresh),
+                "stock_sources": stock_sources,
                 "started_at": started_at,
                 "completed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "period": period,
+                "window_start": window_start.isoformat() if window_start else None,
+                "window_end": window_end.isoformat() if window_end else None,
                 "symbols_requested": list(symbols),
                 "symbols_loaded": sorted(stock_data),
-                "entry_time": "09:30 ET",
-                "confirmation_time": "10:00 ET",
-                "contracts_per_session": "1 CALL + 1 PUT",
+                "entry_time": f"{settings.entry_hour:02d}:{settings.entry_minute:02d} ET",
+                "confirmation_time": confirmation_clock+" ET",
+                "contracts_per_session": f"{settings.contracts_per_leg} CALL + {settings.contracts_per_leg} PUT",
+                "settings": asdict(settings),
                 "option_dte": int(option_dte),
                 "winner_stop_loss_pct": float(winner_stop),
                 "winner_target_pct": float(winner_target),
@@ -947,7 +1029,7 @@ def _render_straddle_backtest_view(config: dict, default_symbols: list[str]) -> 
     metrics[4].metric("Average Return", f"{float(overall.get('Average Return %', 0)):,.2f}%")
     st.caption(
         f"Candles: {meta.get('data_start', 'N/A')} to {meta.get('data_end', 'N/A')} | "
-        "P/L is per one CALL + one PUT pair."
+        f"Position: {meta.get('contracts_per_session','1 CALL + 1 PUT')}."
     )
     st.dataframe(summary, use_container_width=True, hide_index=True)
     download_cols = st.columns([1, 1, 4])
@@ -965,8 +1047,8 @@ def _render_straddle_backtest_view(config: dict, default_symbols: list[str]) -> 
     trades_tab, coverage_tab = st.tabs(["Straddle Trades", "Data Coverage"])
     with trades_tab:
         columns = [column for column in [
-            "session_date", "symbol", "direction", "option_expiry", "option_strike",
-            "call_entry", "put_entry", "combined_entry_debit", "call_exit", "put_exit",
+            "session_date", "symbol", "direction", "decision_reason", "contracts_per_leg", "entry_time", "confirmation_time", "option_expiry", "option_strike",
+            "call_entry", "put_entry", "combined_entry_debit", "entry_cost", "call_exit", "put_exit",
             "winner_return_pct", "loser_return_pct", "realized_pnl", "combined_return_pct",
             "max_combined_return_pct", "exit_time", "exit_reason", "option_status",
         ] if column in results.columns]
@@ -991,8 +1073,15 @@ def _render_straddle_backtest_view(config: dict, default_symbols: list[str]) -> 
             st.success("No data-coverage errors were recorded in the last run.")
 
 
+def _copy_live_pmb_settings(config):
+    from modules.backtest_workspace import live_widget_values
+    values=live_widget_values(config)
+    st.session_state.update(values)
+    st.session_state['sl_copied_live']=True
+
+
 def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
-    st.subheader("Research Lab")
+    st.subheader("Backtesting")
     research_view = st.segmented_control(
         "Research module",
         options=["Backtest", "ORB Results", "Straddle Backtest"],
@@ -1008,15 +1097,31 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         return
     st.caption("Run selected strategies on historical candles and compare the results before paper/live trading.")
 
+    st.button("Use current live PMB settings",key="sl_use_live",on_click=_copy_live_pmb_settings,args=(config,))
+    st.caption("Copies settings into this backtest. Live settings change only through an explicit apply action.")
     strategy = config.get("strategy", {})
     risk = config.get("risk", {})
     lab_cfg = config.get("strategy_lab", {})
     gap_cfg = lab_cfg.get("gap", {}) if isinstance(lab_cfg.get("gap", {}), dict) else {}
+    breakout_follow_through = dict(strategy.get("breakout_follow_through") or {})
+    if isinstance(lab_cfg.get("breakout_follow_through"), dict):
+        lab_confirmation = lab_cfg["breakout_follow_through"]
+        if "enabled" in lab_confirmation:
+            # An old saved Lab setting overrides both inherited live toggles.
+            for control in ("volume_enabled", "follow_through_enabled"):
+                breakout_follow_through[control] = bool(lab_confirmation.get(control, lab_confirmation["enabled"]))
+        breakout_follow_through.update(lab_confirmation)
 
-    default_max_symbols = min(5, max(1, len(default_symbols))) if default_symbols else 5
+    default_max_symbols = len(WATCHLIST)
+    # Restore the preset universe when an old index selection is still saved
+    # or active in an already-open dashboard session.
+    if lab_cfg.get("symbol_universe") in {"sp500", "sp500_top100"} or st.session_state.get("sl_symbol_universe") in {"sp500", "sp500_top100"}:
+        st.session_state["sl_symbol_presets"] = list(WATCHLIST)
+        st.session_state["sl_max_symbols"] = len(WATCHLIST)
+    st.session_state["sl_symbol_universe"] = "watchlist"
 
-    current_max_symbols = int(st.session_state.get("sl_max_symbols", int(lab_cfg.get("max_symbols", default_max_symbols))))
-    saved_symbols = lab_cfg.get("symbols") or default_symbols
+    current_max_symbols = max(1, min(50, int(st.session_state.get("sl_max_symbols", int(lab_cfg.get("max_symbols", default_max_symbols))))))
+    saved_symbols = lab_cfg.get("symbols") or WATCHLIST
     default_text = ", ".join(saved_symbols) if saved_symbols else "SPY, QQQ, NVDA, TSLA, AMD"
     source_options = available_market_data_sources() if callable(available_market_data_sources) else ["IBKR", "Yahoo"]
     default_source = str(lab_cfg.get("data_source", "IBKR"))
@@ -1050,35 +1155,49 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
 
     with setting_cols[1]:
         with st.expander("📈 Symbols", expanded=False):
+            st.caption(f"Preset watchlist: {len(BACKTEST_PRESET_TICKERS)} tickers · Up to 50 per backtest")
             saved_symbol_set = set(_parse_extra_symbols(default_text))
             selected_presets = st.multiselect(
                 "Preset tickers",
-                WATCHLIST,
-                default=[ticker for ticker in WATCHLIST if ticker in saved_symbol_set],
+                list(dict.fromkeys([*BACKTEST_PRESET_TICKERS, *saved_symbols, *st.session_state.get("sl_symbol_presets", []), *_parse_extra_symbols(st.session_state.get("sl_custom_symbols", ""))])),
+                default=list(dict.fromkeys(saved_symbols)),
                 key="sl_symbol_presets",
+                on_change=_preset_backtest_symbols_changed,
             )
-            extra_default = ", ".join([s for s in saved_symbol_set if s not in set(WATCHLIST)])
-            extra_symbols_text = st.text_input("Add tickers", value=extra_default, key="sl_extra_symbols")
-            selected_all = selected_presets + [s for s in _parse_extra_symbols(extra_symbols_text) if s not in selected_presets]
-            st.session_state["sl_selected_all_symbols"] = selected_all
-            symbols = selected_all[:current_max_symbols]
+            custom_text = st.text_area(
+                "Custom ticker list (optional)",
+                value=default_text if any(ticker not in BACKTEST_PRESET_TICKERS for ticker in saved_symbol_set) else "",
+                key="sl_custom_symbols",
+                help="Editing this list replaces the selected tickers above. You can then remove tickers directly from the dropdown.",
+                on_change=_custom_backtest_symbols_changed,
+            )
+            selected_symbols = list(selected_presets)
+            st.session_state["sl_selected_all_symbols"] = selected_symbols
+            symbols = selected_symbols[:current_max_symbols]
             st.caption(f"Using {len(symbols)} of {current_max_symbols}")
 
     with setting_cols[2]:
         with st.expander("⚙️ Backtest", expanded=False):
             period_options = ["1d", "7d", "14d", "30d", "60d", "90d"]
-            interval_options = ["5m", "15m", "30m", "60m"]
+            fast_confirmation = bool(st.session_state.get("sl_next_candle_confirmation_enabled", breakout_follow_through.get("follow_through_enabled", breakout_follow_through.get("enabled", False)))) and int(st.session_state.get("sl_confirmation_minutes", breakout_follow_through.get("confirmation_minutes", 15))) == 5
+            interval_options = (["1m", "5m"] if fast_confirmation else ["1m", "5m", "15m"]) if "PMB" in selected_strategies else ["5m", "15m", "30m", "60m"]
+            staged_candles = "PMB" in selected_strategies and bool(st.session_state.get("sl_staged_timeline", lab_cfg.get("use_staged_timeline", False)))
+            if staged_candles:
+                st.session_state["sl_interval"] = "1m"
+            elif st.session_state.get("sl_interval", "5m") not in interval_options:
+                st.session_state["sl_interval"] = "5m"
             period = st.selectbox("Backtest Period", period_options, index=period_options.index(str(lab_cfg.get("period", "30d"))) if str(lab_cfg.get("period", "30d")) in period_options else 0, key="sl_period")
-            interval = st.selectbox("Candle interval", interval_options, index=interval_options.index(str(lab_cfg.get("interval", "5m"))) if str(lab_cfg.get("interval", "5m")) in interval_options else 0, key="sl_interval")
-            max_symbols = st.number_input("Max symbols", min_value=1, max_value=34, value=current_max_symbols, step=1, key="sl_max_symbols")
+            if "PMB" in selected_strategies:
+                st.caption("PMB automatically loads 7 extra calendar days before this period for prior-session baselines. Those extra days are excluded from backtest results.")
+            interval = st.selectbox("Historical candle interval", interval_options, index=interval_options.index(str(lab_cfg.get("interval", "5m"))) if str(lab_cfg.get("interval", "5m")) in interval_options else interval_options.index("5m"), key="sl_interval", disabled=staged_candles, help="Normal PMB signals use completed 15-minute candles. Finer history is retained for exits. 5-minute confirmation requires finer history; the staged opening scanner uses 1-minute history.")
+            max_symbols = st.number_input("Max symbols", min_value=1, max_value=50, value=current_max_symbols, step=1, key="sl_max_symbols")
             force_refresh = st.checkbox("Force data refresh (this run)", value=bool(lab_cfg.get("force_refresh", False)), key="sl_force_refresh")
             data_source = st.selectbox("Data source", source_options, index=default_source_index, key="sl_data_source")
 
     # Re-apply Max Symbols after Backtest Setup renders. If Max Symbols was changed,
     # Streamlit will rerun and the Symbols accordion will reflect the new value.
     max_symbols = int(st.session_state.get("sl_max_symbols", default_max_symbols))
-    selected_presets_state = list(st.session_state.get("sl_symbol_presets", []))
-    selected_all_symbols = selected_presets_state + [s for s in _parse_extra_symbols(st.session_state.get("sl_extra_symbols", "")) if s not in selected_presets_state]
+    selected_all_symbols = list(st.session_state.get("sl_selected_all_symbols", []))
     symbols = selected_all_symbols[:max_symbols]
     non_gap_selected = any(name != "GAP" for name in selected_strategies)
     if "GAP" in selected_strategies:
@@ -1114,6 +1233,9 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
                 value=bool(lab_cfg.get("use_staged_timeline", False)),
                 key="sl_staged_timeline",
             )
+            st.caption("Normal PMB analysis uses completed 15-minute candles, matching the live scanner.")
+            if use_staged_timeline:
+                st.caption("The opening stage uses 1-minute history and completed 5-minute analysis candles.")
             orb_minutes = st.number_input("ORB window minutes", min_value=5, max_value=90, value=int(lab_cfg.get("orb_minutes", strategy.get("orb_minutes", 15))), step=5, disabled=use_staged_timeline, key="sl_orb")
             first_signal_minutes = st.number_input("First scanner minute", min_value=5, max_value=120, value=int(lab_cfg.get("first_signal_minutes", strategy.get("first_signal_minutes", 20))), step=5, disabled=use_staged_timeline, key="sl_first_signal")
             min_session_bars = st.number_input("Minimum session bars", min_value=2, max_value=30, value=int(lab_cfg.get("min_session_bars", 7)), step=1, disabled=use_staged_timeline, key="sl_min_bars")
@@ -1140,6 +1262,54 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
                 step=5,
                 disabled=not require_break_retest or use_staged_timeline,
                 key="sl_retest_max_minutes",
+            )
+            breakout_follow_through["volume_enabled"] = st.checkbox(
+                "Require breakout volume",
+                value=bool(breakout_follow_through.get("volume_enabled", breakout_follow_through.get("enabled", False))),
+                help="Check the first breakout candle's volume without requiring another candle.",
+                key="sl_breakout_volume_enabled",
+            )
+            breakout_follow_through["follow_through_enabled"] = st.checkbox(
+                "Wait for the next candle to confirm the breakout",
+                value=bool(breakout_follow_through.get("follow_through_enabled", breakout_follow_through.get("enabled", False))),
+                help="Require the immediately next completed candle to hold beyond the opening range.",
+                key="sl_next_candle_confirmation_enabled",
+            )
+            confirmation_options = [5, 15]
+            saved_confirmation_minutes = int(breakout_follow_through.get("confirmation_minutes", 15))
+            breakout_follow_through["confirmation_minutes"] = st.selectbox(
+                "Confirmation candle",
+                confirmation_options,
+                index=confirmation_options.index(saved_confirmation_minutes) if saved_confirmation_minutes in confirmation_options else 1,
+                format_func=lambda value: f"{value} minutes",
+                disabled=not breakout_follow_through["follow_through_enabled"],
+                help="Choose the completed candle immediately after the breakout. Normal PMB analysis remains 15 minutes.",
+                key="sl_confirmation_minutes",
+            )
+            breakout_follow_through["enabled"] = breakout_follow_through["volume_enabled"] or breakout_follow_through["follow_through_enabled"]
+            breakout_volume_options = [1.5, 1.75, 2.0]
+            current_breakout_volume = float(breakout_follow_through.get("min_breakout_volume_ratio", 2.0))
+            if current_breakout_volume not in breakout_volume_options:
+                current_breakout_volume = min(
+                    breakout_volume_options,
+                    key=lambda value: abs(value - current_breakout_volume),
+                )
+            breakout_follow_through["min_breakout_volume_ratio"] = st.selectbox(
+                "Required breakout volume",
+                breakout_volume_options,
+                index=breakout_volume_options.index(current_breakout_volume),
+                format_func=lambda value: f"{value:g}× same-time baseline",
+                disabled=not breakout_follow_through["volume_enabled"],
+                key="sl_breakout_volume_ratio",
+            )
+            breakout_follow_through["min_volume_sessions"] = int(
+                breakout_follow_through.get("min_volume_sessions", 3)
+            )
+            breakout_follow_through["require_extension"] = st.checkbox(
+                "Require the next candle to extend the breakout",
+                value=bool(breakout_follow_through.get("require_extension", True)),
+                disabled=not breakout_follow_through["follow_through_enabled"],
+                key="sl_follow_through_require_extension",
             )
             visual_updates = st.checkbox("Show live replay progress", value=bool(lab_cfg.get("visual_updates", True)), key="sl_visual")
             if use_staged_timeline and interval != "5m":
@@ -1245,6 +1415,9 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
             if interval not in {"5m", "15m"}:
                 st.warning("GAP needs 5-minute or 15-minute candles for a precise 09:45 entry. Wider intervals will be rejected by the scanner audit.")
 
+    interval = "1m" if use_staged_timeline and "PMB" in selected_strategies else interval
+    if "PMB" in selected_strategies and breakout_follow_through.get("follow_through_enabled") and breakout_follow_through.get("confirmation_minutes") == 5 and interval == "15m":
+        interval = "5m"
     settings = StrategyLabSettings(
         symbols=symbols,
         period=period,
@@ -1256,7 +1429,7 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         require_break_retest=bool(require_break_retest),
         retest_tolerance_pct=float(retest_tolerance_pct),
         retest_max_minutes=int(retest_max_minutes),
-        breakout_follow_through=dict(strategy.get("breakout_follow_through") or {}),
+        breakout_follow_through=dict(breakout_follow_through),
         use_staged_timeline=bool(use_staged_timeline),
         min_score=float(strategy.get("min_score", 70)),
         min_confidence=float(strategy.get("min_confidence", 75)),
@@ -1320,80 +1493,91 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         gap_ibkr_request_delay_seconds=float(gap_ibkr_request_delay_seconds),
         gap_ibkr_max_retries=int(gap_ibkr_max_retries),
     )
-    _save_strategy_lab_settings(
-        config,
-        symbols,
-        selected_all_symbols,
-        selected_strategies,
-        period,
-        interval,
-        max_symbols,
-        force_refresh,
-        data_source,
-        orb_minutes,
-        first_signal_minutes,
-        min_session_bars,
-        require_break_retest,
-        retest_tolerance_pct,
-        retest_max_minutes,
-        use_staged_timeline,
-        visual_updates,
-        list(option_dte_values),
-        premium_pct_ui,
-        slippage_pct,
-        allow_same_symbol,
-        {
-            "account_size": float(starting_capital),
-            "max_trades_per_day": int(max_trades_per_day),
-            "sizing_method": "percent_equity" if sizing_model == "% of Equity" else "fixed_dollar",
-            "position_allocation_pct": float(allocation_pct),
-            "max_daily_exposure_pct": float(daily_exposure_pct),
-            "max_spend_per_trade": float(max_spend),
-            "max_daily_capital": float(max_daily_capital),
-            "max_contracts": int(max_contracts),
-            "recycle_capital_after_exit": bool(recycle_capital),
-            "reserve_capital_for_remaining_trades": bool(reserve_capital),
-            "stop_loss_pct": float(stop_loss),
-            "take_profit_pct": float(take_profit),
-            "breakeven_trigger_pct": float(breakeven_trigger),
-            "trailing_trigger_pct": float(trailing_trigger),
-            "trailing_stop_pct": float(trailing_stop),
-            "entry_cutoff_hour": int(entry_cutoff_hour),
-            "entry_cutoff_minute": int(entry_cutoff_minute),
-            "force_exit_enabled": bool(force_exit_enabled),
-            "force_exit_hour": int(force_exit_hour),
-            "force_exit_minute": int(force_exit_minute),
-            "max_consecutive_losses": int(max_consecutive_losses),
-            "max_daily_drawdown_pct": float(max_daily_drawdown_pct),
-        },
-        {
-            "price_min": float(gap_price_min),
-            "price_max": float(gap_price_max),
-            "min_abs_gap_pct": float(gap_min_abs_gap_pct),
-            "min_premarket_volume": int(gap_min_premarket_volume),
-            "min_premarket_rvol": float(gap_min_premarket_rvol),
-            "min_avg_daily_volume": int(gap_min_avg_daily_volume),
-            "allow_shorts": bool(gap_allow_shorts),
-            "risk_per_trade": float(gap_risk_per_trade),
-            "max_capital_per_trade": float(gap_max_capital_per_trade),
-            "max_daily_capital": float(gap_max_daily_capital),
-            "max_trades_per_day": int(gap_max_trades_per_day),
-            "stop_buffer_pct": float(gap_stop_buffer_pct),
-            "min_stop_distance_pct": float(gap_min_stop_distance_pct),
-            "max_stop_distance_pct": float(gap_max_stop_distance_pct),
-            "target_r": float(gap_target_r),
-            "force_exit_hour": int(gap_force_exit_hour),
-            "force_exit_minute": int(gap_force_exit_minute),
-            "slippage_pct": float(gap_slippage_pct),
-            "commission_per_share": float(gap_commission_per_share),
-            "minimum_order_commission": float(gap_minimum_order_commission),
-            "universe_max_symbols": int(gap_universe_max_symbols),
-            "ibkr_request_delay_seconds": float(gap_ibkr_request_delay_seconds),
-            "ibkr_max_retries": int(gap_ibkr_max_retries),
-        },
-    )
+    save_lab=st.button("Save backtest settings",key="sl_save_settings")
+    if save_lab or st.session_state.get("sl_run_requested"):
+        _save_strategy_lab_settings(
+            config,
+            symbols,
+            selected_all_symbols,
+            selected_strategies,
+            period,
+            interval,
+            max_symbols,
+            force_refresh,
+            data_source,
+            orb_minutes,
+            first_signal_minutes,
+            min_session_bars,
+            require_break_retest,
+            retest_tolerance_pct,
+            retest_max_minutes,
+            breakout_follow_through,
+            use_staged_timeline,
+            visual_updates,
+            list(option_dte_values),
+            premium_pct_ui,
+            slippage_pct,
+            allow_same_symbol,
+            {
+                "account_size": float(starting_capital),
+                "max_trades_per_day": int(max_trades_per_day),
+                "sizing_method": "percent_equity" if sizing_model == "% of Equity" else "fixed_dollar",
+                "position_allocation_pct": float(allocation_pct),
+                "max_daily_exposure_pct": float(daily_exposure_pct),
+                "max_spend_per_trade": float(max_spend),
+                "max_daily_capital": float(max_daily_capital),
+                "max_contracts": int(max_contracts),
+                "recycle_capital_after_exit": bool(recycle_capital),
+                "reserve_capital_for_remaining_trades": bool(reserve_capital),
+                "stop_loss_pct": float(stop_loss),
+                "take_profit_pct": float(take_profit),
+                "breakeven_trigger_pct": float(breakeven_trigger),
+                "trailing_trigger_pct": float(trailing_trigger),
+                "trailing_stop_pct": float(trailing_stop),
+                "entry_cutoff_hour": int(entry_cutoff_hour),
+                "entry_cutoff_minute": int(entry_cutoff_minute),
+                "force_exit_enabled": bool(force_exit_enabled),
+                "force_exit_hour": int(force_exit_hour),
+                "force_exit_minute": int(force_exit_minute),
+                "max_consecutive_losses": int(max_consecutive_losses),
+                "max_daily_drawdown_pct": float(max_daily_drawdown_pct),
+            },
+            {
+                "price_min": float(gap_price_min),
+                "price_max": float(gap_price_max),
+                "min_abs_gap_pct": float(gap_min_abs_gap_pct),
+                "min_premarket_volume": int(gap_min_premarket_volume),
+                "min_premarket_rvol": float(gap_min_premarket_rvol),
+                "min_avg_daily_volume": int(gap_min_avg_daily_volume),
+                "allow_shorts": bool(gap_allow_shorts),
+                "risk_per_trade": float(gap_risk_per_trade),
+                "max_capital_per_trade": float(gap_max_capital_per_trade),
+                "max_daily_capital": float(gap_max_daily_capital),
+                "max_trades_per_day": int(gap_max_trades_per_day),
+                "stop_buffer_pct": float(gap_stop_buffer_pct),
+                "min_stop_distance_pct": float(gap_min_stop_distance_pct),
+                "max_stop_distance_pct": float(gap_max_stop_distance_pct),
+                "target_r": float(gap_target_r),
+                "force_exit_hour": int(gap_force_exit_hour),
+                "force_exit_minute": int(gap_force_exit_minute),
+                "slippage_pct": float(gap_slippage_pct),
+                "commission_per_share": float(gap_commission_per_share),
+                "minimum_order_commission": float(gap_minimum_order_commission),
+                "universe_max_symbols": int(gap_universe_max_symbols),
+                "ibkr_request_delay_seconds": float(gap_ibkr_request_delay_seconds),
+                "ibkr_max_retries": int(gap_ibkr_max_retries),
+            },
+            symbol_universe="watchlist",
+        )
 
-    action_col, apply_col = st.columns([2, 1])
+        if save_lab:st.success("Backtest settings saved. Live settings are unchanged.")
+    from modules.backtest_workspace import comparison_rows
+    with st.expander("Compare with live PMB settings"):
+        st.dataframe(pd.DataFrame(comparison_rows(config,settings)),hide_index=True,width="stretch")
+        st.caption("This comparison covers the settings shown. Historical option fills and broker execution still differ.")
+
+    action_col = st.container()
+    apply_col = st.expander("Apply tested PMB settings to the trading engine",expanded=False)
     research_only_selection = any(name != "PMB" for name in selected_strategies)
     with action_col:
         button_clicked = st.button(
@@ -1478,6 +1662,13 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
         result = session_result
     else:
         result = controller.load_last_result()
+    result_meta = result.get("meta", {}) or {}
+    result_symbols = result_meta.get("symbols_requested", result_meta.get("symbols"))
+    if (any(name != "GAP" for name in selected_strategies)
+            and result_symbols is not None
+            and set(result_symbols) != set(symbols)):
+        st.info("Ticker selection changed. Run the backtest again to calculate trades and totals for only the selected stocks. Previous results are hidden because they used a different ticker selection.")
+        return
     replay = result.get("replay", pd.DataFrame())
     gap_universe = result.get("gap_universe", pd.DataFrame())
     gap_scanner = result.get("gap_scanner", pd.DataFrame())

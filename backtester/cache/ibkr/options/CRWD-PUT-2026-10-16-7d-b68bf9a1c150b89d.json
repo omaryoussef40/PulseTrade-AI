@@ -1,0 +1,11 @@
+{
+  "symbol": "CRWD",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 227.5,
+  "right": "P",
+  "localSymbol": "CRWD  261023P00227500",
+  "conId": 934420313,
+  "tradingClass": "CRWD",
+  "multiplier": "100"
+}

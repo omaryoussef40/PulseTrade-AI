@@ -1,0 +1,11 @@
+{
+  "symbol": "MSFT",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 522.5,
+  "right": "P",
+  "localSymbol": "MSFT  261016P00522500",
+  "conId": 931261545,
+  "tradingClass": "MSFT",
+  "multiplier": "100"
+}

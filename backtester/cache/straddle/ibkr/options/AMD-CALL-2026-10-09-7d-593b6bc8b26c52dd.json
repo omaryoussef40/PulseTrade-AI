@@ -1,0 +1,9 @@
+{
+  "symbol": "AMD",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 627.5,
+  "right": "C",
+  "localSymbol": "AMD   261016C00627500",
+  "conId": 931215107
+}

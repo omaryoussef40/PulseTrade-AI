@@ -614,7 +614,9 @@ def _simulate_single_trade(
         exit_pricing_components = _price_model_components(signal, entry_underlying, exit_underlying, entry_premium_mid, final_minutes_held, config)
         exit_premium_mid = float(exit_pricing_components["mark"])
     elif exit_reason in {"End-of-day forced exit", "Session close"} and uses_real_option_bars:
-        exit_premium_mid = round(float(price_bars.iloc[-1]["Close"]), 2)
+        # Use the candle at the chosen exit time, even when later session bars
+        # are available. A scheduled exit must not use a future closing price.
+        exit_premium_mid = round(float(price_bars.loc[exit_ts, "Close"]), 2)
 
     # Directional consistency guard for the Yahoo approximate pricing model.
     # In real options, a profitable trailing stop can sometimes fill before the

@@ -1,0 +1,52 @@
+OPENING GAP + FIRST 15-MINUTE VOLUME
+
+Designed for US stocks with a 09:30 America/New_York regular-session open.
+
+RULES
+Bullish: 09:30 open strictly above the previous trading day's regular-session high.
+Bearish: 09:30 open strictly below the previous trading day's regular-session low.
+Both: completed 09:30–09:45 volume >= 1.5 times the arithmetic mean of the
+same opening interval over the previous 20 trading sessions, excluding today.
+An open exactly at PDH/PDL does not qualify. A later breakout after opening
+inside yesterday's range does not qualify. There is no score or follow-through
+filter and no requirement to remain beyond PDH/PDL after opening.
+
+INSTALL
+1. Open TradingView Supercharts, then Pine Editor.
+2. Paste opening_gap_volume_scanner.pine into a new indicator and save.
+3. Use a standard daily (1D) chart to add/check it, and favorite the indicator.
+4. Open Products > Screeners > Pine.
+5. Select the watchlist or index you want to scan and choose this indicator.
+6. Set the study timeframe to 1D. This is intentional: it reads the 15-minute
+   opening candle internally and computes its average on daily history.
+7. Keep the inputs at 1.5 and 20.
+8. Bullish view: filter 'Above PDH match' equal to 1.
+9. Bearish view: remove the bullish filter and filter 'Below PDL match' equal
+   to 1. Do not require both filters simultaneously; they are mutually exclusive.
+10. Sort by 'Opening volume ratio' descending. Rescan after 09:45 New York,
+    allowing for your data feed's delay. Save two views if your UI supports it,
+    or switch between these two filters on the same indicator.
+
+SCOPE AND DATA
+Pine Screener scans one selected watchlist or index at a time; this file does
+not populate a market-wide stock universe. Cover your desired exchanges by
+supplying suitable watchlists or scanning multiple index sources in sequence.
+The script uses two request calls and ten output plots.
+The daily screener timeframe avoids relying on just 500 fifteen-minute chart
+bars for a 20-session baseline. Intrabar data must still be available from
+your TradingView feed/plan. Missing opening candles or fewer than 20 valid
+prior sessions produce Data ready = 0, not an approximate average.
+Today-only filtering suppresses old-session matches on holidays or suspended
+symbols. Before 09:45 there are no confirmed matches. Matches remain for the
+session even if the stock subsequently reverses. Disable today-only on a daily
+chart to inspect historical signals. No orders are placed by this indicator.
+
+VALIDATION STATUS
+Checked against TradingView's Pine v6 and Pine Screener documentation.
+Not compiled in TradingView or installed into your account in this session.
+Verify it in Pine Editor before relying on results. Compare the displayed
+09:30 open, first-15m shares and PDH/PDL with your feed on a known symbol.
+
+OFFICIAL REFERENCES
+https://www.tradingview.com/support/solutions/43000742436-tradingview-pine-screener-key-features-and-requirements/
+https://www.tradingview.com/pine-script-docs/concepts/other-timeframes-and-data/

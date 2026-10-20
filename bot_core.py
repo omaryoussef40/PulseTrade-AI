@@ -29,6 +29,10 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 from market_data import IBKRMarketDataProvider, MarketDataConfig, provider_from_ib
+from strategies.pmb.candles import (
+    candle_minutes, completed_live_bars, confirmation_minutes,
+    follow_through_enabled, prepare_live_analysis,
+)
 
 IB_IMPORT_ERROR = None
 try:
@@ -514,7 +518,16 @@ def scan_symbol_ib(
     parity. Confidence is returned only as a compatibility/debug field and is
     not used as a live trade blocker.
     """
-    intraday = fetch_ib_intraday(ib, symbol, duration=intraday_duration, bar_size=intraday_bar_size)
+    now = pd.Timestamp(datetime.now(EASTERN))
+    analysis_minutes = int(analysis_bar_minutes or candle_minutes(intraday_bar_size))
+    if follow_through_enabled(breakout_follow_through) and confirmation_minutes(breakout_follow_through, analysis_minutes) == 5 and candle_minutes(intraday_bar_size) > 5:
+        intraday_bar_size = "5 mins"
+    raw_intraday = fetch_ib_intraday(ib, symbol, duration=intraday_duration, bar_size=intraday_bar_size)
+    confirmation_source = completed_live_bars(raw_intraday, intraday_bar_size, None, now)
+    intraday = prepare_live_analysis(
+        raw_intraday, intraday_bar_size, analysis_minutes, now,
+        keep_source_bars=(analysis_minutes == 5 and candle_minutes(intraday_bar_size) == 1),
+    )
     daily = fetch_ib_daily(ib, symbol)
 
     if intraday.empty or len(intraday) < 50:
@@ -548,6 +561,9 @@ def scan_symbol_ib(
             retest_max_minutes=int(retest_max_minutes),
             analysis_bar_minutes=analysis_bar_minutes,
             breakout_follow_through=breakout_follow_through,
+            confirmation_intraday=confirmation_source if "confirmation_minutes" in (breakout_follow_through or {}) else None,
+            confirmation_source_minutes=candle_minutes(intraday_bar_size),
+            as_of=now,
         )
         session_date = _result_session_date(result)
         if session_date and session_date != datetime.now(EASTERN).date():
@@ -569,6 +585,9 @@ def scan_symbol_ib(
         retest_max_minutes=int(retest_max_minutes),
         analysis_bar_minutes=analysis_bar_minutes,
         breakout_follow_through=breakout_follow_through,
+        confirmation_intraday=confirmation_source if "confirmation_minutes" in (breakout_follow_through or {}) else None,
+        confirmation_source_minutes=candle_minutes(intraday_bar_size),
+        as_of=now,
     )
     session_date = _result_session_date(result)
     if session_date and session_date != datetime.now(EASTERN).date():
@@ -1107,13 +1126,23 @@ def calculate_contract_quantity(mid_price: float, max_spend_per_trade: float, ma
     return max(0, min(qty, max_contracts))
 
 
+def _option_risk_rows(frame):
+    """Keep legacy option rows, excluding explicitly identified stock fills."""
+    if 'sec_type' in frame.columns:
+        types=frame['sec_type'].fillna('').astype(str).str.upper().str.strip()
+        frame=frame.loc[types.isin(['','OPT','FOP'])]
+    if 'strategy_profile' in frame.columns:
+        frame=frame.loc[frame['strategy_profile'].fillna('')!='pine_stocks']
+    return frame
+
+
 def get_today_trade_stats() -> tuple[int, float]:
     """Read local trade log and return today's trade count and deployed capital."""
     if not os.path.exists(TRADE_LOG_FILE):
         return 0, 0.0
 
     try:
-        df = pd.read_csv(TRADE_LOG_FILE)
+        df = _option_risk_rows(pd.read_csv(TRADE_LOG_FILE))
         if df.empty or "timestamp" not in df.columns:
             return 0, 0.0
 
@@ -1179,7 +1208,7 @@ def get_today_traded_symbols() -> set[str]:
     if not os.path.exists(TRADE_LOG_FILE):
         return set()
     try:
-        df = pd.read_csv(TRADE_LOG_FILE)
+        df = _option_risk_rows(pd.read_csv(TRADE_LOG_FILE))
         if df.empty or "timestamp" not in df.columns or "symbol" not in df.columns:
             return set()
         timestamps = _parse_timestamps_utc(df["timestamp"])
@@ -2077,6 +2106,9 @@ def _broker_position_contract_key(contract) -> str:
 def broker_open_option_positions(ib: IB, account: str | None = None) -> list[dict]:
     """Return non-zero option positions currently visible at IBKR."""
     positions = []
+    from modules.pine_options import owned_contracts
+    from pathlib import Path
+    pine_ids=owned_contracts(Path(__file__).resolve().parent/'data'/'pine_stock_trades.sqlite',account)
     for broker_pos in ib.positions():
         if account and getattr(broker_pos, "account", None) != account:
             continue
@@ -2084,6 +2116,8 @@ def broker_open_option_positions(ib: IB, account: str | None = None) -> list[dic
         if contract is None:
             continue
         if str(getattr(contract, "secType", "") or "").upper() != "OPT":
+            continue
+        if getattr(contract,'conId',None) in pine_ids:
             continue
         try:
             qty = float(getattr(broker_pos, "position", 0) or 0)
@@ -2108,7 +2142,10 @@ def broker_open_option_positions(ib: IB, account: str | None = None) -> list[dic
 
 
 def broker_open_option_symbols(ib: IB, account: str | None = None) -> set[str]:
-    return {pos["symbol"] for pos in broker_open_option_positions(ib, account=account) if pos.get("symbol")}
+    # Pine-owned contracts stay outside PMB exits, but their underlyings still
+    # block a second strategy from accumulating the same option position.
+    return {str(p.contract.symbol).upper() for p in ib.positions() if (not account or p.account==account)
+        and getattr(p.contract,'secType','')=='OPT' and p.position!=0}
 
 
 def _trade_log_entry_lookup() -> dict[str, dict]:
@@ -2270,7 +2307,7 @@ def get_today_loss_stats() -> tuple[int, float]:
     if not os.path.exists(TRADE_LOG_FILE):
         return 0, 0.0
     try:
-        df = pd.read_csv(TRADE_LOG_FILE)
+        df = _option_risk_rows(pd.read_csv(TRADE_LOG_FILE))
         if df.empty or "timestamp" not in df.columns or "event" not in df.columns:
             return 0, 0.0
         df["timestamp"] = _parse_timestamps_utc(df["timestamp"])

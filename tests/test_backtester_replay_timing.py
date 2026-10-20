@@ -41,6 +41,7 @@ class ReplayTimingTests(unittest.TestCase):
             require_break_retest=True,
             retest_tolerance_pct=0.15,
             retest_max_minutes=30,
+            breakout_follow_through={"volume_enabled": True, "follow_through_enabled": False},
         )
 
         with patch("backtester.controller.scan_replay_history", return_value={"Signal": "WAIT"}) as scan:
@@ -50,6 +51,7 @@ class ReplayTimingTests(unittest.TestCase):
         self.assertTrue(scan.call_args.kwargs["require_retest"])
         self.assertEqual(scan.call_args.kwargs["retest_tolerance_pct"], 0.15)
         self.assertEqual(scan.call_args.kwargs["retest_max_minutes"], 30)
+        self.assertEqual(scan.call_args.kwargs["breakout_follow_through"], settings.breakout_follow_through)
 
     def test_fifteen_minute_confirmation_is_not_visible_at_0945(self):
         raw = _bars("2026-09-10 09:30", periods=2, frequency="15min")

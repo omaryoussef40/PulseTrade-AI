@@ -1,2 +1,2 @@
 Strategy,Instrument,DTE,Status,Trades,Win %,Avg R,Max DD,Profit Factor,Net P/L,Return %
-PMB,Option,7,Implemented,6,100.0,0.32,0.0,6150.9,6150.9,123.02
+PMB,Option,7,Implemented,30,66.7,0.1,-1835.6,4.47,19071.9,190.72

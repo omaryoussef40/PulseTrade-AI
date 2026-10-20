@@ -1,0 +1,9 @@
+{
+  "symbol": "XOM",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 165.0,
+  "right": "C",
+  "localSymbol": "XOM   261016C00165000",
+  "conId": 856558456
+}

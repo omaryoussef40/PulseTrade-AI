@@ -1,0 +1,11 @@
+{
+  "symbol": "NOK",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 10.0,
+  "right": "P",
+  "localSymbol": "NOK   261016P00010000",
+  "conId": 856319172,
+  "tradingClass": "NOK",
+  "multiplier": "100"
+}

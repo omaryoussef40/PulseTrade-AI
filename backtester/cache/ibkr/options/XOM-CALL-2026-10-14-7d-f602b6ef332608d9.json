@@ -1,0 +1,11 @@
+{
+  "symbol": "XOM",
+  "option_dte": 7,
+  "expiry": "20261023",
+  "strike": 175.0,
+  "right": "C",
+  "localSymbol": "XOM   261023C00175000",
+  "conId": 920309108,
+  "tradingClass": "XOM",
+  "multiplier": "100"
+}

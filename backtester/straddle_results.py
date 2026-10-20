@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 from typing import Any, Callable
 
@@ -26,6 +27,47 @@ class StraddleResultsConfig:
     commission_per_contract: float = 0.65
     force_exit_hour: int = 15
     force_exit_minute: int = 55
+    entry_hour: int = 9
+    entry_minute: int = 30
+    breakout_buffer_pct: float = 0.0
+    require_vwap: bool = False
+    require_volume: bool = False
+    min_confirmation_volume_ratio: float = 1.0
+    allowed_direction: str = "Both"
+    no_break_action: str = "Close both"
+    winner_stop_enabled: bool = True
+    winner_target_enabled: bool = True
+    trailing_enabled: bool = True
+    breakeven_enabled: bool = False
+    breakeven_trigger_pct: float = 20.0
+    contracts_per_leg: int = 1
+
+    def __post_init__(self):
+        for name in ('orb_minutes','confirmation_minutes','entry_hour','entry_minute','force_exit_hour','force_exit_minute','option_dte','contracts_per_leg'):
+            value=getattr(self,name)
+            if not isinstance(value,(int,float)) or not math.isfinite(value) or int(value)!=value:
+                raise ValueError(f'{name} must be a whole number.')
+        if not 5<=self.orb_minutes<=90 or self.orb_minutes%5 or not 5<=self.confirmation_minutes<=60 or self.confirmation_minutes%5:
+            raise ValueError('ORB and confirmation windows must be multiples of five minutes.')
+        if not 0<=self.entry_hour<=23 or not 0<=self.force_exit_hour<=23 or not 0<=self.entry_minute<=59 or not 0<=self.force_exit_minute<=59:
+            raise ValueError('Invalid entry or exit time.')
+        confirmation=570+self.orb_minutes+self.confirmation_minutes
+        if not 570<=self.entry_hour*60+self.entry_minute<confirmation or self.entry_minute%5:
+            raise ValueError('Entry must be on a five-minute boundary from 09:30 and before confirmation.')
+        if not confirmation<self.force_exit_hour*60+self.force_exit_minute<=960 or self.force_exit_minute%5:
+            raise ValueError('Timed exit must be on a five-minute boundary after confirmation and by 16:00.')
+        if not 0<=self.option_dte<=45 or not 1<=self.contracts_per_leg<=1000:
+            raise ValueError('Invalid option DTE or contract quantity.')
+        for name in ('winner_stop_loss_pct','winner_target_pct','trailing_trigger_pct','trailing_stop_pct','breakeven_trigger_pct','min_confirmation_volume_ratio'):
+            value=getattr(self,name)
+            if not math.isfinite(value) or value<=0:raise ValueError(f'Invalid {name}.')
+        if self.winner_stop_loss_pct>100 or self.trailing_stop_pct>100:
+            raise ValueError('Stop percentages cannot exceed 100%.')
+        for name in ('slippage_pct','commission_per_contract','breakout_buffer_pct'):
+            value=getattr(self,name)
+            if not math.isfinite(value) or value<0:raise ValueError(f'Invalid {name}.')
+        if self.slippage_pct>=100 or self.allowed_direction not in ('Both','CALL','PUT') or self.no_break_action not in ('Close both','Hold both to timed exit'):
+            raise ValueError('Invalid slippage, direction or no-break rule.')
 
 
 def scan_straddle_sessions(
@@ -33,8 +75,6 @@ def scan_straddle_sessions(
     config: StraddleResultsConfig | None = None,
 ) -> pd.DataFrame:
     settings = config or StraddleResultsConfig()
-    orb_bars_required = max(1, int(settings.orb_minutes) // 5)
-    confirmation_bars_required = max(1, int(settings.confirmation_minutes) // 5)
     rows: list[dict[str, Any]] = []
 
     for raw_symbol, raw_frame in data.items():
@@ -51,24 +91,43 @@ def scan_straddle_sessions(
             confirmation_time = orb_end + pd.Timedelta(minutes=int(settings.confirmation_minutes))
             opening = session[(session.index >= session_start) & (session.index < orb_end)]
             confirmation = session[(session.index >= orb_end) & (session.index < confirmation_time)]
-            if len(opening) < orb_bars_required or len(confirmation) < confirmation_bars_required:
+            expected_opening=pd.date_range(session_start,orb_end-pd.Timedelta(minutes=5),freq='5min')
+            expected_confirmation=pd.date_range(orb_end,confirmation_time-pd.Timedelta(minutes=5),freq='5min')
+            entry_time=session_start.normalize()+pd.Timedelta(hours=settings.entry_hour,minutes=settings.entry_minute)
+            if not opening.index.equals(expected_opening) or not confirmation.index.equals(expected_confirmation) or entry_time not in session.index:
                 continue
 
             orb_high = float(opening["High"].max())
             orb_low = float(opening["Low"].min())
             confirmation_close = float(confirmation.iloc[-1]["Close"])
-            direction = "CALL" if confirmation_close > orb_high else "PUT" if confirmation_close < orb_low else ""
+            buffer=float(settings.breakout_buffer_pct)/100
+            direction = "CALL" if confirmation_close > orb_high*(1+buffer) else "PUT" if confirmation_close < orb_low*(1-buffer) else ""
+            decision_reason='ORB breakout' if direction else 'No ORB break'
+            completed=session.loc[session.index<confirmation_time]
+            volume=completed['Volume']
+            vwap=float((((completed.High+completed.Low+completed.Close)/3)*volume).sum()/volume.sum()) if volume.notna().all() and (volume>=0).all() and volume.sum()>0 else None
+            average_opening_volume=float(opening.Volume.mean())
+            confirmation_volume_ratio=float(confirmation.Volume.mean())/average_opening_volume if average_opening_volume>0 and opening.Volume.notna().all() and confirmation.Volume.notna().all() and (opening.Volume>=0).all() and (confirmation.Volume>=0).all() else None
+            if direction and settings.allowed_direction not in ('Both',direction):
+                direction='';decision_reason='Breakout direction excluded'
+            if direction and settings.require_vwap and (vwap is None or not (confirmation_close>vwap if direction=='CALL' else confirmation_close<vwap)):
+                direction='';decision_reason='VWAP filter not met'
+            if direction and settings.require_volume and (confirmation_volume_ratio is None or confirmation_volume_ratio<settings.min_confirmation_volume_ratio):
+                direction='';decision_reason='Confirmation volume filter not met'
             rows.append({
                 "session_date": session_date.isoformat(),
                 "symbol": symbol,
-                "entry_time": session_start,
+                "entry_time": entry_time,
                 "confirmation_time": confirmation_time,
-                "entry_underlying": round(float(session.iloc[0]["Open"]), 4),
+                "entry_underlying": round(float(session.loc[entry_time,"Open"]), 4),
                 "orb_high": round(orb_high, 4),
                 "orb_low": round(orb_low, 4),
                 "confirmation_close": round(confirmation_close, 4),
                 "broke_orb": bool(direction),
                 "direction": direction,
+                "decision_reason": decision_reason,
+                "confirmation_vwap": vwap,
+                "confirmation_volume_ratio": confirmation_volume_ratio,
                 "option_status": "PENDING",
             })
     if not rows:
@@ -118,11 +177,13 @@ def _winner_exit(
     )
     observations: list[tuple[pd.Timestamp, float]] = []
     confirmation_index, confirmation_open = _open_at_or_after(bars, confirmation_time)
+    if confirmation_index!=confirmation_time:
+        raise RuntimeError('Winner option price at confirmation is unavailable')
     observations.append((confirmation_index, confirmation_open))
     future = bars[(bars.index >= confirmation_index) & (bars.index < force_exit)]
     for index, row in future.iterrows():
         close = row.get("Close")
-        if pd.notna(close) and float(close) > 0:
+        if pd.notna(close) and float(close) > 0 and pd.Timestamp(index)+pd.Timedelta(minutes=5)<=force_exit:
             observations.append((pd.Timestamp(index) + pd.Timedelta(minutes=5), float(close)))
     if not observations:
         raise RuntimeError("No winner prices after ORB confirmation")
@@ -131,27 +192,36 @@ def _winner_exit(
     target = entry_paid * (1.0 + float(settings.winner_target_pct) / 100.0)
     trailing_trigger = entry_paid * (1.0 + float(settings.trailing_trigger_pct) / 100.0)
     peak = max(entry_paid, observations[0][1])
-    trailing_active = peak >= trailing_trigger
+    trailing_active = settings.trailing_enabled and peak >= trailing_trigger
     trailing_level = peak * (1.0 - float(settings.trailing_stop_pct) / 100.0) if trailing_active else 0.0
 
     for timestamp, mark in observations:
         peak = max(peak, mark)
-        if peak >= trailing_trigger:
+        if settings.trailing_enabled and peak >= trailing_trigger:
             trailing_active = True
             trailing_level = max(trailing_level, peak * (1.0 - float(settings.trailing_stop_pct) / 100.0))
-        if mark <= initial_stop:
-            return timestamp, initial_stop, "Winner stop loss", peak
+        breakeven_active=settings.breakeven_enabled and peak>=entry_paid*(1+settings.breakeven_trigger_pct/100)
+        stop=entry_paid if breakeven_active else initial_stop
+        if (settings.winner_stop_enabled or breakeven_active) and mark<=stop:
+            return timestamp, mark, "Winner breakeven stop" if breakeven_active else "Winner stop loss", peak
         if trailing_active and mark <= trailing_level:
-            return timestamp, trailing_level, "Winner trailing stop", peak
-        if mark >= target:
+            return timestamp, mark, "Winner trailing stop", peak
+        if settings.winner_target_enabled and mark >= target:
             return timestamp, target, "Winner target", peak
 
-    final_rows = bars[bars.index <= force_exit]
-    if final_rows.empty:
-        raise RuntimeError("No option price available for the end-of-day exit")
-    final_row = final_rows.iloc[-1]
-    final_mid = float(final_row.get("Close") or final_row.get("Open"))
+    final_mid=_timed_exit_price(bars,force_exit)
     return force_exit, final_mid, "End-of-day exit", max(peak, final_mid)
+
+
+def _timed_exit_price(bars,cutoff):
+    """Use the cutoff bar's open, never its still-future closing price."""
+    if cutoff in bars.index:
+        value=bars.loc[cutoff].get('Open')
+        if pd.notna(value) and float(value)>0:return float(value)
+    completed=bars.loc[(bars.index.normalize()==cutoff.normalize()) & (bars.index+pd.Timedelta(minutes=5)<=cutoff)]
+    valid=completed.loc[pd.to_numeric(completed.Close,errors='coerce')>0]
+    if valid.empty:raise RuntimeError('No completed option price available for the timed exit')
+    return float(valid.iloc[-1].Close)
 
 
 def simulate_straddles(
@@ -195,39 +265,52 @@ def simulate_straddles(
 
             entry_time = pd.Timestamp(session["entry_time"])
             confirmation_time = pd.Timestamp(session["confirmation_time"])
-            _, call_entry_mid = _open_at_or_after(call_bars, entry_time)
-            _, put_entry_mid = _open_at_or_after(put_bars, entry_time)
+            call_entry_time, call_entry_mid = _open_at_or_after(call_bars, entry_time)
+            put_entry_time, put_entry_mid = _open_at_or_after(put_bars, entry_time)
+            if call_entry_time!=entry_time or put_entry_time!=entry_time:
+                raise RuntimeError('Matched option prices at the configured entry time are unavailable')
             call_entry = call_entry_mid * (1.0 + slip)
             put_entry = put_entry_mid * (1.0 + slip)
             entry_debit = call_entry + put_entry
-            entry_cost = entry_debit * 100.0 + 2.0 * commission
+            quantity=int(settings.contracts_per_leg)
+            entry_cost = quantity*(entry_debit * 100.0 + 2.0 * commission)
 
             direction = str(session.get("direction") or "")
             if direction:
                 winner_bars = call_bars if direction == "CALL" else put_bars
                 loser_bars = put_bars if direction == "CALL" else call_bars
-                _, loser_mid = _open_at_or_after(loser_bars, confirmation_time)
+                loser_time, loser_mid = _open_at_or_after(loser_bars, confirmation_time)
+                if loser_time!=confirmation_time:
+                    raise RuntimeError('Opposing-leg price at confirmation is unavailable')
                 loser_exit = loser_mid * (1.0 - slip)
                 winner_entry = call_entry if direction == "CALL" else put_entry
                 winner_exit_time, winner_exit_mid, exit_reason, winner_peak = _winner_exit(
                     winner_bars, confirmation_time, winner_entry, settings
                 )
                 winner_exit = winner_exit_mid * (1.0 - slip)
-                exit_credit = (loser_exit + winner_exit) * 100.0 - 2.0 * commission
-                max_exit_credit = (loser_exit + winner_peak * (1.0 - slip)) * 100.0 - 2.0 * commission
+                exit_credit = quantity*((loser_exit + winner_exit) * 100.0 - 2.0 * commission)
+                max_exit_credit = quantity*((loser_exit + winner_peak * (1.0 - slip)) * 100.0 - 2.0 * commission)
                 call_exit = winner_exit if direction == "CALL" else loser_exit
                 put_exit = winner_exit if direction == "PUT" else loser_exit
                 loser_return = ((loser_exit / (put_entry if direction == "CALL" else call_entry)) - 1.0) * 100.0
                 winner_return = ((winner_exit / winner_entry) - 1.0) * 100.0
             else:
-                _, call_exit_mid = _open_at_or_after(call_bars, confirmation_time)
-                _, put_exit_mid = _open_at_or_after(put_bars, confirmation_time)
+                if settings.no_break_action=='Hold both to timed exit':
+                    pair_exit_time=confirmation_time.normalize()+pd.Timedelta(hours=settings.force_exit_hour,minutes=settings.force_exit_minute)
+                    call_exit_mid=_timed_exit_price(call_bars,pair_exit_time)
+                    put_exit_mid=_timed_exit_price(put_bars,pair_exit_time)
+                else:
+                    pair_exit_time=confirmation_time
+                    call_time, call_exit_mid = _open_at_or_after(call_bars, confirmation_time)
+                    put_time, put_exit_mid = _open_at_or_after(put_bars, confirmation_time)
+                    if call_time!=confirmation_time or put_time!=confirmation_time:
+                        raise RuntimeError('Matched option prices at confirmation are unavailable')
                 call_exit = call_exit_mid * (1.0 - slip)
                 put_exit = put_exit_mid * (1.0 - slip)
-                exit_credit = (call_exit + put_exit) * 100.0 - 2.0 * commission
+                exit_credit = quantity*((call_exit + put_exit) * 100.0 - 2.0 * commission)
                 max_exit_credit = exit_credit
-                winner_exit_time = confirmation_time
-                exit_reason = "No ORB break; both legs closed"
+                winner_exit_time = pair_exit_time
+                exit_reason = "No ORB break; both legs closed" if settings.no_break_action=="Close both" else "No ORB break; both legs held to timed exit"
                 loser_return = None
                 winner_return = None
 
@@ -235,6 +318,8 @@ def simulate_straddles(
             rows.append({
                 **base,
                 "option_status": "AVAILABLE",
+                "contracts_per_leg": quantity,
+                "actual_entry_time": call_entry_time,
                 "option_expiry": call_expiry,
                 "option_strike": call_strike,
                 "call_local_symbol": call_info.get("localSymbol"),

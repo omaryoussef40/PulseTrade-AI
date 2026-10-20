@@ -1,0 +1,9 @@
+{
+  "symbol": "BAC",
+  "option_dte": 7,
+  "expiry": "20261002",
+  "strike": 57.0,
+  "right": "P",
+  "localSymbol": "BAC   261002P00057000",
+  "conId": 910516712
+}

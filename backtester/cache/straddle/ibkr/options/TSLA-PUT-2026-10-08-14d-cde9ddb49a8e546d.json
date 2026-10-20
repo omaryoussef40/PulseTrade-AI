@@ -1,0 +1,9 @@
+{
+  "symbol": "TSLA",
+  "option_dte": 14,
+  "expiry": "20261023",
+  "strike": 375.0,
+  "right": "P",
+  "localSymbol": "TSLA  261023P00375000",
+  "conId": 920292085
+}

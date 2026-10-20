@@ -1,0 +1,9 @@
+{
+  "symbol": "LLY",
+  "option_dte": 7,
+  "expiry": "20261016",
+  "strike": 1172.5,
+  "right": "C",
+  "localSymbol": "LLY   261016C01172500",
+  "conId": 931232072
+}
