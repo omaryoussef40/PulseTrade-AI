@@ -94,8 +94,10 @@ def render_strategy_cards(config,health,stock_status=None):
         pct=allocation.get('pmb_pct',80) if combined else display.get('risk',{}).get('max_daily_capital_pct',0)
         st.write(f'{pct:g}% capital cap' if pct else money(display.get('risk',{}).get('max_daily_capital'))+' capital cap')
         strategy=config.get('strategy',{})
-        confirmation=strategy.get('breakout_follow_through',{}).get('confirmation_minutes',15)
-        st.caption(f"ORB {strategy.get('orb_minutes',15)} min · Confirmation {confirmation} min · Score ≥ {strategy.get('min_score',70)}")
+        from strategies.pmb.candles import CONFIRMATION_MODES, confirmation_mode, follow_through_enabled
+        follow=strategy.get('breakout_follow_through',{})
+        confirmation=CONFIRMATION_MODES[confirmation_mode(follow)] if follow_through_enabled(follow) else 'Off'
+        st.caption(f"ORB {strategy.get('orb_minutes',15)} min · Confirmation: {confirmation} · Score ≥ {strategy.get('min_score',70)}")
         st.caption(f"Last scan: {health.get('last_scan_finish') or 'Awaiting first scan'}")
     with right,st.container(border=True):
         stock=display.get('pine_stocks',{}).get('settings',{})

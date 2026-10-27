@@ -1,5 +1,6 @@
 """Copy and compare live PMB settings without changing live configuration."""
 from copy import deepcopy
+from strategies.pmb.candles import confirmation_mode
 
 MAPPING={
  'sl_orb':('strategy','orb_minutes',15),'sl_first_signal':('strategy','first_signal_minutes',20),
@@ -26,6 +27,7 @@ def live_widget_values(config):
         sl_capital=float(cfg.get('risk',{}).get('account_size',1000)),sl_staged_timeline=bool(cfg.get('staged_trading_timeline',{}).get('enabled',False)),
         sl_breakout_volume_enabled=bool(follow.get('volume_enabled',follow.get('enabled',False))),
         sl_next_candle_confirmation_enabled=bool(follow.get('follow_through_enabled',follow.get('enabled',False))),
+        sl_confirmation_mode=confirmation_mode(follow),sl_fresh_breakout_enabled=bool(follow.get("fresh_breakout_enabled",False)),
         sl_confirmation_minutes=int(follow.get('confirmation_minutes',15)),sl_breakout_volume_ratio=float(follow.get('min_breakout_volume_ratio',1.5)),
         sl_follow_through_require_extension=bool(follow.get('require_extension',False)))
     risk=cfg.get('risk',{})
@@ -48,6 +50,8 @@ def comparison_rows(config,settings):
         ('ORB minutes',cfg['strategy'].get('orb_minutes',15),settings.orb_minutes),
         ('Minimum session bars',cfg['strategy'].get('min_session_bars',7),settings.min_session_bars),
         ('Break and retest',cfg['strategy'].get('require_break_retest',False),settings.require_break_retest),
+        ('Confirmation sequence',confirmation_mode(cfg['strategy'].get('breakout_follow_through',{})),confirmation_mode(settings.breakout_follow_through)),
+        ('Fresh breakout reset',cfg['strategy'].get('breakout_follow_through',{}).get('fresh_breakout_enabled',False),(settings.breakout_follow_through or {}).get('fresh_breakout_enabled',False)),
         ('Confirmation minutes',cfg['strategy'].get('breakout_follow_through',{}).get('confirmation_minutes',15),(settings.breakout_follow_through or {}).get('confirmation_minutes',15)),
         ('Trades per day',cfg['risk'].get('max_trades_per_day',2),settings.max_trades_per_day),
         ('Contract cap',cfg['risk'].get('max_contracts',5),settings.max_contracts),

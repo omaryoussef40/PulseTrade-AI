@@ -11,7 +11,7 @@ from datetime import time as dtime, timedelta
 from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
-from .candles import confirmation_minutes
+from .candles import confirmation_minutes, direct_confirmation, explicit_confirmation
 
 EASTERN = ZoneInfo("America/New_York")
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
@@ -302,10 +302,11 @@ def evaluate_breakout_follow_through(
     confirmation_source_minutes: int | None = None,
     as_of: pd.Timestamp | None = None,
 ) -> dict:
-    """Apply independent volume and next-candle checks to the first ORB break.
+    """Apply volume and the selected confirmation sequence to an ORB attempt.
 
     Legacy ``enabled`` settings activate both checks. Explicit per-check settings
-    override that flag. Only the next-candle check imposes its freshness window.
+    override that flag. Fresh attempts require a completed analysis close inside
+    the range; otherwise the first breakout in each direction remains the anchor.
     """
     cfg = {**DEFAULT_BREAKOUT_FOLLOW_THROUGH, **(config or {})}
     volume_required = bool(cfg.get("volume_enabled", cfg["enabled"]))
@@ -343,8 +344,24 @@ def evaluate_breakout_follow_through(
         result["reason"] = "Waiting for the first close beyond the opening range"
         return result
 
+    analysis_minutes = _bar_minutes(today_data.index, fallback=15)
     breakout_time = crossed.index[0]
-    breakout = crossed.iloc[0]
+    if bool(cfg.get("fresh_breakout_enabled", False)):
+        # Rebuild attempts from closed history, so restarts and replay agree.
+        # A completed close inside BOTH boundaries is required to re-arm.
+        source = today_data
+        source_minutes = analysis_minutes
+        for candidate_time in crossed.index[1:]:
+            reset_start = breakout_time + pd.Timedelta(minutes=analysis_minutes)
+            candidate_end = candidate_time + pd.Timedelta(minutes=analysis_minutes)
+            resets = source[(source.index + pd.Timedelta(minutes=source_minutes) > reset_start)
+                            & (source.index + pd.Timedelta(minutes=source_minutes) <= candidate_end)]
+            if as_of is not None:
+                resets = resets[resets.index + pd.Timedelta(minutes=source_minutes) <= pd.Timestamp(as_of)]
+            inside = (resets["Close"] >= orb_low) & (resets["Close"] <= orb_high)
+            if inside.any():
+                breakout_time = candidate_time
+    breakout = today_data.loc[breakout_time]
     result["breakout_time"] = breakout_time
     result["breakout_volume"] = float(breakout["Volume"])
     if volume_required:
@@ -371,8 +388,23 @@ def evaluate_breakout_follow_through(
         result["reason"] = "Breakout volume confirmed; next-candle confirmation disabled"
         return result
 
-    analysis_minutes = _bar_minutes(today_data.index, fallback=15)
-    if "confirmation_minutes" in (config or {}):
+    if direct_confirmation(cfg):
+        end = breakout_time + pd.Timedelta(minutes=analysis_minutes)
+        source = confirmation_intraday if confirmation_intraday is not None else today_data
+        source_minutes = int(confirmation_source_minutes or analysis_minutes)
+        current = pd.Timestamp(as_of) if as_of is not None else source.index[-1] + pd.Timedelta(minutes=source_minutes)
+        result.update(confirmation_minutes=analysis_minutes, follow_through_time=breakout_time,
+                      confirmation_closed_at=end, confirmation_close=float(breakout["Close"]))
+        if current < end:
+            result["reason"] = "Waiting for the completed ORB confirmation candle"
+        elif current.floor(f"{source_minutes}min") > end:
+            result["reason"] = "Follow-through confirmation is stale"
+        else:
+            result.update(confirmed=True, follow_through_confirmed=True,
+                          reason="Breakout candle closed beyond the opening range")
+        return result
+
+    if explicit_confirmation(config):
         minutes = confirmation_minutes(cfg, analysis_minutes)
         source = confirmation_intraday if confirmation_intraday is not None else today_data
         if source.empty:
@@ -707,7 +739,7 @@ def scan_dataframe(
             if follow_through["volume_required"]:
                 components.append(f"Breakout volume {float(follow_through['volume_ratio']):.2f}x baseline: passed")
             if follow_through["follow_through_required"]:
-                components.append("Immediate follow-through: passed")
+                components.append("Selected breakout confirmation: passed")
         else:
             signal = "WAIT"
             reasons = list(reasons) + [str(follow_through.get("reason") or "Breakout follow-through not confirmed")]
@@ -797,6 +829,9 @@ def scan_dataframe(
         "Breakout Volume Baseline": round(float(follow_through["volume_baseline"]), 2) if follow_through.get("volume_baseline") is not None else None,
         "Breakout Volume Ratio": round(float(follow_through["volume_ratio"]), 2) if follow_through.get("volume_ratio") is not None else None,
         "Breakout Follow-through Time": follow_through.get("follow_through_time").strftime("%Y-%m-%d %H:%M %Z") if hasattr(follow_through.get("follow_through_time"), "strftime") else None,
+        "Confirmation Breakout Time": str(follow_through.get("breakout_time") or ""),
+        "Confirmation Mode": (breakout_follow_through or {}).get("confirmation_mode", "legacy_next"),
+        "Fresh Breakout Enabled": bool((breakout_follow_through or {}).get("fresh_breakout_enabled", False)),
         "Confirmation Candle Minutes": follow_through.get("confirmation_minutes"),
         "Confirmation Closed At": follow_through.get("confirmation_closed_at").strftime("%Y-%m-%d %H:%M %Z") if hasattr(follow_through.get("confirmation_closed_at"), "strftime") else None,
         "PDH Break": pdh_break,

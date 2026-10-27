@@ -39,6 +39,9 @@ from strategies.pmb.candles import (
     OPENING_ANALYSIS_MINUTES,
     candle_minutes,
     confirmation_minutes,
+    confirmation_analysis_minutes,
+    confirmation_mode,
+    explicit_confirmation,
     follow_through_enabled,
     prepare_replay_inputs,
 )
@@ -290,7 +293,7 @@ def _scan_strategy_replay(strategy_name: str, symbol: str, history: pd.DataFrame
     """
     strategy_name = str(strategy_name).strip().upper()
     if strategy_name == "PMB":
-        analysis_minutes = OPENING_ANALYSIS_MINUTES if opening_stage else NORMAL_ANALYSIS_MINUTES
+        analysis_minutes = confirmation_analysis_minutes(settings.breakout_follow_through, OPENING_ANALYSIS_MINUTES if opening_stage else NORMAL_ANALYSIS_MINUTES)
         live_history, confirmation_source = prepare_replay_inputs(
             history, settings.interval, analysis_minutes, keep_source_bars=opening_stage
         )
@@ -318,7 +321,7 @@ def _scan_strategy_replay(strategy_name: str, symbol: str, history: pd.DataFrame
             retest_max_minutes=int(settings.retest_max_minutes),
             breakout_follow_through=settings.breakout_follow_through,
             analysis_bar_minutes=analysis_minutes,
-            confirmation_intraday=confirmation_source if "confirmation_minutes" in (settings.breakout_follow_through or {}) else None,
+            confirmation_intraday=confirmation_source if explicit_confirmation(settings.breakout_follow_through) else None,
             confirmation_source_minutes=candle_minutes(settings.interval),
             as_of=history.index[-1] if not history.empty else None,
         )
@@ -598,7 +601,7 @@ class StrategyLabController:
                 event_settings = staged_settings or settings
                 scanner_allowed = staged_settings is not None and _staged_event_scanner_allowed(event, timeline_stage)
             if "PMB" in selected_strategies:
-                analysis_minutes = OPENING_ANALYSIS_MINUTES if timeline_stage == "opening_orb_5m" else NORMAL_ANALYSIS_MINUTES
+                analysis_minutes = confirmation_analysis_minutes(event_settings.breakout_follow_through, OPENING_ANALYSIS_MINUTES if timeline_stage == "opening_orb_5m" else NORMAL_ANALYSIS_MINUTES)
                 evaluation_minutes = min(analysis_minutes, confirmation_minutes(event_settings.breakout_follow_through, analysis_minutes)) if follow_through_enabled(event_settings.breakout_follow_through) else analysis_minutes
                 scanner_allowed = bool(scanner_allowed and event.timestamp.minute % evaluation_minutes == 0)
             row = {
@@ -958,7 +961,9 @@ class StrategyLabController:
             "data_end": data_end,
             "replay_events": int(len(replay)),
             "bar_timestamp_semantics": "completed_at_close",
-            "pmb_analysis_minutes": NORMAL_ANALYSIS_MINUTES,
+            "pmb_analysis_minutes": confirmation_analysis_minutes(settings.breakout_follow_through, NORMAL_ANALYSIS_MINUTES),
+            "pmb_confirmation_mode": confirmation_mode(settings.breakout_follow_through),
+            "pmb_fresh_breakout_enabled": bool((settings.breakout_follow_through or {}).get("fresh_breakout_enabled", False)),
             "pmb_confirmation_minutes": confirmation_minutes(settings.breakout_follow_through),
             "pmb_warmup_days": 7 if "PMB" in selected_strategies else 0,
             "pmb_opening_analysis_minutes": OPENING_ANALYSIS_MINUTES if settings.use_staged_timeline else None,

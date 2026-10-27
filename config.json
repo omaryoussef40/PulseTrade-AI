@@ -76,17 +76,19 @@
     "retest_tolerance_pct": 0.1,
     "retest_max_minutes": 45,
     "breakout_follow_through": {
-      "enabled": false,
+      "enabled": true,
       "min_breakout_volume_ratio": 1.5,
       "min_volume_sessions": 3,
       "require_extension": false,
       "volume_enabled": false,
-      "follow_through_enabled": false,
-      "confirmation_minutes": 15
+      "follow_through_enabled": true,
+      "confirmation_minutes": 5,
+      "confirmation_mode": "orb_5",
+      "fresh_breakout_enabled": true
     }
   },
   "risk": {
-    "account_size": 3500.0,
+    "account_size": 3000.0,
     "use_ibkr_buying_power": true,
     "max_trades_per_day": 3,
     "allow_same_symbol_same_day": false,
@@ -94,8 +96,8 @@
     "reserve_capital_for_remaining_trades": true,
     "max_spend_per_trade_pct": 65.0,
     "max_daily_capital_pct": 95.0,
-    "max_spend_per_trade": 2275.0,
-    "max_daily_capital": 3325.0,
+    "max_spend_per_trade": 1950.0,
+    "max_daily_capital": 2850.0,
     "max_contracts": 20,
     "entry_cutoff_hour": 15,
     "entry_cutoff_minute": 0,
@@ -321,7 +323,7 @@
       "PMB"
     ],
     "period": "30d",
-    "interval": "15m",
+    "interval": "5m",
     "max_symbols": 34,
     "force_refresh": false,
     "data_source": "IBKR",
@@ -332,13 +334,15 @@
     "retest_tolerance_pct": 0.1,
     "retest_max_minutes": 45,
     "breakout_follow_through": {
-      "enabled": false,
+      "enabled": true,
       "min_breakout_volume_ratio": 1.5,
       "min_volume_sessions": 3,
       "require_extension": false,
       "volume_enabled": false,
-      "follow_through_enabled": false,
-      "confirmation_minutes": 15
+      "follow_through_enabled": true,
+      "confirmation_minutes": 5,
+      "confirmation_mode": "orb_5",
+      "fresh_breakout_enabled": true
     },
     "use_staged_timeline": false,
     "visual_updates": false,
@@ -373,13 +377,13 @@
       "ibkr_request_delay_seconds": 0.25,
       "ibkr_max_retries": 2
     },
-    "account_size": 100000.0,
+    "account_size": 3000.0,
     "max_trades_per_day": 3,
     "sizing_method": "percent_equity",
     "position_allocation_pct": 65.0,
     "max_daily_exposure_pct": 95.0,
-    "max_spend_per_trade": 65000.0,
-    "max_daily_capital": 95000.0,
+    "max_spend_per_trade": 1950.0,
+    "max_daily_capital": 2850.0,
     "max_contracts": 0,
     "recycle_capital_after_exit": true,
     "reserve_capital_for_remaining_trades": true,
@@ -394,7 +398,9 @@
     "force_exit_hour": 15,
     "force_exit_minute": 45,
     "max_consecutive_losses": 2,
-    "max_daily_drawdown_pct": 6.0
+    "max_daily_drawdown_pct": 6.0,
+    "applied_to_engine_at": "2026-10-27T12:14:24",
+    "last_applied_strategy": "PMB"
   },
   "dashboard": {
     "auto_start_engines": true,

@@ -1,1 +1,28 @@
-[]
+[
+  {
+    "id": "SMCI-20261030-37.0-CALL-20261027002433",
+    "symbol": "SMCI",
+    "signal": "CALL",
+    "option": "SMCI  261030C00037000",
+    "expiry": "20261030",
+    "strike": 37.0,
+    "con_id": 922494483,
+    "quantity": 5,
+    "entry_price": 1.95,
+    "underlying_entry_price": null,
+    "current_stop_price": null,
+    "take_profit_price": null,
+    "take_profit_pct": 20.0,
+    "highest_price": 1.95,
+    "breakeven_active": false,
+    "trailing_active": false,
+    "trailing_from_entry": false,
+    "entry_time": "2026-10-27T00:24:33.327370-04:00",
+    "entry_status": "Filled via IBKR sync",
+    "source": "IBKR_POSITION_SYNC",
+    "entry_source": null,
+    "management_mode": "monitor_only",
+    "software_control_enabled": false,
+    "protective_orders_status": "Monitor only - no PulseTrade exit orders"
+  }
+]

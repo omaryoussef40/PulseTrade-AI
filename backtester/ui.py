@@ -15,6 +15,7 @@ from pathlib import Path
 import time as _time
 
 import pandas as pd
+from strategies.pmb.candles import CONFIRMATION_MODES, confirmation_mode, confirmation_minutes, direct_confirmation
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -481,7 +482,8 @@ def _apply_strategy_lab_to_engine(config: dict, settings: StrategyLabSettings, s
         "Option DTE": option_dte,
         "ORB": int(settings.orb_minutes),
         "Breakout volume": f"{float(confirmation.get('min_breakout_volume_ratio', 2.0)):g}×" if volume_enabled else "Off",
-        "Next-candle confirmation": "On" if follow_enabled else "Off",
+        "Confirmation": CONFIRMATION_MODES[confirmation_mode(confirmation)] if follow_enabled else "Off",
+        "Fresh breakout reset": bool(confirmation.get("fresh_breakout_enabled", False)),
         "Staged timeline": bool(settings.use_staged_timeline),
         "Max trades/day": int(settings.max_trades_per_day),
         "Max spend/trade": round(max_spend, 2),
@@ -1179,7 +1181,7 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
     with setting_cols[2]:
         with st.expander("⚙️ Backtest", expanded=False):
             period_options = ["1d", "7d", "14d", "30d", "60d", "90d"]
-            fast_confirmation = bool(st.session_state.get("sl_next_candle_confirmation_enabled", breakout_follow_through.get("follow_through_enabled", breakout_follow_through.get("enabled", False)))) and int(st.session_state.get("sl_confirmation_minutes", breakout_follow_through.get("confirmation_minutes", 15))) == 5
+            fast_confirmation = bool(st.session_state.get("sl_next_candle_confirmation_enabled", breakout_follow_through.get("follow_through_enabled", breakout_follow_through.get("enabled", False)))) and confirmation_minutes({**breakout_follow_through, "confirmation_mode": st.session_state.get("sl_confirmation_mode", confirmation_mode(breakout_follow_through)), "confirmation_minutes": st.session_state.get("sl_confirmation_minutes", breakout_follow_through.get("confirmation_minutes", 15))}) == 5
             interval_options = (["1m", "5m"] if fast_confirmation else ["1m", "5m", "15m"]) if "PMB" in selected_strategies else ["5m", "15m", "30m", "60m"]
             staged_candles = "PMB" in selected_strategies and bool(st.session_state.get("sl_staged_timeline", lab_cfg.get("use_staged_timeline", False)))
             if staged_candles:
@@ -1233,7 +1235,7 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
                 value=bool(lab_cfg.get("use_staged_timeline", False)),
                 key="sl_staged_timeline",
             )
-            st.caption("Normal PMB analysis uses completed 15-minute candles, matching the live scanner.")
+            st.caption("PMB uses completed candles: 5-minute analysis for direct 5-minute confirmation, otherwise the default 15-minute analysis.")
             if use_staged_timeline:
                 st.caption("The opening stage uses 1-minute history and completed 5-minute analysis candles.")
             orb_minutes = st.number_input("ORB window minutes", min_value=5, max_value=90, value=int(lab_cfg.get("orb_minutes", strategy.get("orb_minutes", 15))), step=5, disabled=use_staged_timeline, key="sl_orb")
@@ -1270,21 +1272,37 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
                 key="sl_breakout_volume_enabled",
             )
             breakout_follow_through["follow_through_enabled"] = st.checkbox(
-                "Wait for the next candle to confirm the breakout",
+                "Require breakout confirmation",
                 value=bool(breakout_follow_through.get("follow_through_enabled", breakout_follow_through.get("enabled", False))),
-                help="Require the immediately next completed candle to hold beyond the opening range.",
+                help="Require the selected completed candle sequence to close beyond the opening range.",
                 key="sl_next_candle_confirmation_enabled",
             )
-            confirmation_options = [5, 15]
-            saved_confirmation_minutes = int(breakout_follow_through.get("confirmation_minutes", 15))
-            breakout_follow_through["confirmation_minutes"] = st.selectbox(
-                "Confirmation candle",
-                confirmation_options,
-                index=confirmation_options.index(saved_confirmation_minutes) if saved_confirmation_minutes in confirmation_options else 1,
-                format_func=lambda value: f"{value} minutes",
+            breakout_follow_through["confirmation_mode"] = st.selectbox(
+                "Confirmation sequence",
+                list(CONFIRMATION_MODES),
+                index=list(CONFIRMATION_MODES).index(confirmation_mode(breakout_follow_through)),
+                format_func=CONFIRMATION_MODES.get,
                 disabled=not breakout_follow_through["follow_through_enabled"],
-                help="Choose the completed candle immediately after the breakout. Normal PMB analysis remains 15 minutes.",
-                key="sl_confirmation_minutes",
+                key="sl_confirmation_mode",
+                help="For a 15-minute ORB: earliest confirmation is 09:50, 10:00, or 10:05 ET. Score, minimum session bars, and trading windows still apply. The direct 5-minute choice uses 5-minute analysis; the other new choices use 15-minute analysis.",
+            )
+            if confirmation_mode(breakout_follow_through) == "legacy_next":
+                confirmation_options = [5, 15]
+                saved_confirmation_minutes = int(breakout_follow_through.get("confirmation_minutes", 15))
+                breakout_follow_through["confirmation_minutes"] = st.selectbox(
+                    "Confirmation candle after breakout (legacy)", confirmation_options,
+                    index=confirmation_options.index(saved_confirmation_minutes) if saved_confirmation_minutes in confirmation_options else 1,
+                    format_func=lambda value: f"{value} minutes",
+                    disabled=not breakout_follow_through["follow_through_enabled"],
+                    key="sl_confirmation_minutes",
+                )
+            else:
+                breakout_follow_through["confirmation_minutes"] = confirmation_minutes(breakout_follow_through)
+            breakout_follow_through["fresh_breakout_enabled"] = st.checkbox(
+                "Allow a fresh breakout after price closes back inside the ORB",
+                value=bool(breakout_follow_through.get("fresh_breakout_enabled", False)),
+                help="A completed analysis candle inside the opening range resets the attempt (5 minutes for direct 5-minute confirmation, otherwise 15 minutes). A later breakout gets its own volume check and confirmation sequence.",
+                key="sl_fresh_breakout_enabled",
             )
             breakout_follow_through["enabled"] = breakout_follow_through["volume_enabled"] or breakout_follow_through["follow_through_enabled"]
             breakout_volume_options = [1.5, 1.75, 2.0]
@@ -1308,7 +1326,7 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
             breakout_follow_through["require_extension"] = st.checkbox(
                 "Require the next candle to extend the breakout",
                 value=bool(breakout_follow_through.get("require_extension", True)),
-                disabled=not breakout_follow_through["follow_through_enabled"],
+                disabled=not breakout_follow_through["follow_through_enabled"] or direct_confirmation(breakout_follow_through),
                 key="sl_follow_through_require_extension",
             )
             visual_updates = st.checkbox("Show live replay progress", value=bool(lab_cfg.get("visual_updates", True)), key="sl_visual")
@@ -1416,7 +1434,7 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
                 st.warning("GAP needs 5-minute or 15-minute candles for a precise 09:45 entry. Wider intervals will be rejected by the scanner audit.")
 
     interval = "1m" if use_staged_timeline and "PMB" in selected_strategies else interval
-    if "PMB" in selected_strategies and breakout_follow_through.get("follow_through_enabled") and breakout_follow_through.get("confirmation_minutes") == 5 and interval == "15m":
+    if "PMB" in selected_strategies and breakout_follow_through.get("follow_through_enabled") and confirmation_minutes(breakout_follow_through) == 5 and interval == "15m":
         interval = "5m"
     settings = StrategyLabSettings(
         symbols=symbols,

@@ -30,7 +30,7 @@ import plotly.graph_objects as go
 import requests
 from market_data import IBKRMarketDataProvider, MarketDataConfig, provider_from_ib
 from strategies.pmb.candles import (
-    candle_minutes, completed_live_bars, confirmation_minutes,
+    candle_minutes, completed_live_bars, confirmation_minutes, confirmation_analysis_minutes, explicit_confirmation,
     follow_through_enabled, prepare_live_analysis,
 )
 
@@ -519,7 +519,7 @@ def scan_symbol_ib(
     not used as a live trade blocker.
     """
     now = pd.Timestamp(datetime.now(EASTERN))
-    analysis_minutes = int(analysis_bar_minutes or candle_minutes(intraday_bar_size))
+    analysis_minutes = confirmation_analysis_minutes(breakout_follow_through, int(analysis_bar_minutes or candle_minutes(intraday_bar_size)))
     if follow_through_enabled(breakout_follow_through) and confirmation_minutes(breakout_follow_through, analysis_minutes) == 5 and candle_minutes(intraday_bar_size) > 5:
         intraday_bar_size = "5 mins"
     raw_intraday = fetch_ib_intraday(ib, symbol, duration=intraday_duration, bar_size=intraday_bar_size)
@@ -559,9 +559,9 @@ def scan_symbol_ib(
             require_retest=bool(require_retest),
             retest_tolerance_pct=float(retest_tolerance_pct),
             retest_max_minutes=int(retest_max_minutes),
-            analysis_bar_minutes=analysis_bar_minutes,
+            analysis_bar_minutes=analysis_minutes,
             breakout_follow_through=breakout_follow_through,
-            confirmation_intraday=confirmation_source if "confirmation_minutes" in (breakout_follow_through or {}) else None,
+            confirmation_intraday=confirmation_source if explicit_confirmation(breakout_follow_through) else None,
             confirmation_source_minutes=candle_minutes(intraday_bar_size),
             as_of=now,
         )
@@ -583,9 +583,9 @@ def scan_symbol_ib(
         require_retest=bool(require_retest),
         retest_tolerance_pct=float(retest_tolerance_pct),
         retest_max_minutes=int(retest_max_minutes),
-        analysis_bar_minutes=analysis_bar_minutes,
+        analysis_bar_minutes=analysis_minutes,
         breakout_follow_through=breakout_follow_through,
-        confirmation_intraday=confirmation_source if "confirmation_minutes" in (breakout_follow_through or {}) else None,
+        confirmation_intraday=confirmation_source if explicit_confirmation(breakout_follow_through) else None,
         confirmation_source_minutes=candle_minutes(intraday_bar_size),
         as_of=now,
     )

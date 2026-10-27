@@ -16,8 +16,8 @@ commissions are applied to that exit price.
 Normal PMB replay evaluates completed **15-minute candles**, matching the live
 normal scanner's EMA, ATR, VWAP, scoring, and breakout confirmation inputs.
 The historical candle interval controls data granularity for replay and exits;
-1-minute and 5-minute history are aggregated into complete 15-minute analysis
-candles. Signal timestamps record when the analysis candle closes. The shared
+1-minute and 5-minute history are aggregated into complete analysis candles
+(default 15 minutes; 5 minutes for direct 5-minute confirmation). Signal timestamps record when the analysis candle closes. The shared
 strategy receives the same start-labeled candles as the live scanner.
 
 Both live and replay exclude unfinished source and analysis candles. Replay
@@ -33,48 +33,74 @@ The dashboard selects the required 1-minute historical interval automatically.
 Finer historical stock candles and historical option candles remain available
 for exits. This alignment does not change exit, sizing, or risk settings.
 
-## Selectable confirmation candle
+## Selectable confirmation sequence
 
-Live **Breakout Confirmation** and Strategy Lab **Scanner** expose
-**Confirmation candle: 5 minutes / 15 minutes**. The selection is stored in
-`breakout_follow_through.confirmation_minutes` and is copied by **Apply to
-Trading Engine**. Existing normal PMB behavior defaults to 15 minutes.
+Live **Breakout Confirmation** and Strategy Lab **Scanner** share the optional
+**Require breakout confirmation** control and **Confirmation sequence** selector:
 
-Normal PMB opening range, breakout detection, indicators, and score remain on
-completed 15-minute candles. The chosen confirmation candle starts immediately
-after the breakout candle closes. A 09:45–10:00 breakout can qualify at 10:05
-with 5-minute confirmation or 10:15 with 15-minute confirmation. It must close
-outside the opening range; the optional extension rule checks its high/low
-against the breakout candle. Volume still checks the original breakout candle.
+| Choice (`confirmation_mode`) | Analysis | Earliest confirmation with a 09:30–09:45 ORB |
+| --- | --- | --- |
+| `orb_5`: 5-minute candle after the ORB | 5 minutes | 09:50 |
+| `orb_15`: 15-minute candle after the ORB | 15 minutes | 10:00 |
+| `breakout_5`: 15-minute breakout, then 5-minute confirmation | 15 minutes | 10:05 |
+| `legacy_next`: next candle after the breakout | Existing scanner timeframe | Existing behavior |
 
-Live scanning automatically fetches finer history for 5-minute confirmation.
-Live scan spacing is also capped at the selected confirmation duration, so a
-saved 15-minute polling interval cannot skip a 5-minute confirmation window.
-Strategy Lab automatically switches 15-minute history to 5-minute history when
-needed. Neither path uses an unfinished analysis or confirmation candle. Missing
-confirmation bars cannot qualify, and later confirmations are stale. The entry
-underlying price uses the completed confirmation candle's close, while the
-score and indicators remain those of the completed analysis candles.
+Direct modes use the first completed candle closing outside the ORB as the
+confirmation itself, without waiting for another candle. If the initial candle
+does not break out, the first later closing breakout can qualify. CALLs close
+above ORB high; PUTs close below ORB low. The 5-minute direct choice calculates
+score and indicators on 5-minute analysis; the other new choices use 15-minute
+analysis. The opening range retains its configured duration.
 
-The setting also applies to the staged opening scanner's 5-minute analysis:
-confirmation starts at the opening breakout's close and lasts the chosen
-5 or 15 minutes. The staged timeline still controls whether that stage can enter.
-When next-candle confirmation is disabled, this duration does not delay entries.
+`breakout_5` checks the immediately following 5-minute candle after a completed
+15-minute breakout. It must close outside the ORB; the optional extension check
+also requires a new directional high/low. Extension does not apply to direct
+confirmation because there is no extra candle. Volume, when enabled, checks the
+breakout candle against prior sessions' same-time volume on its analysis timeframe.
+
+Existing configurations without `confirmation_mode` retain `legacy_next` behavior
+and the saved `confirmation_minutes` choice (5 or 15). Saving either UI preserves
+the mode and reset control; Apply to Trading Engine and Copy Live Settings carry
+both. No saved live setting is changed just by upgrading the code.
+
+Five-minute choices automatically request finer live/replay history. Live polling
+is capped at the selected duration. All modes use completed candles, reject stale
+confirmation, and cannot qualify from missing source candles. Entry price uses
+the confirmation close. Other filters, minimum session bars, first-signal time,
+and staged trading windows still apply and can postpone or prevent entry. For
+example, seven minimum 15-minute session bars will block a 10:00/10:05 entry;
+use two if you want those early opportunities considered. Direct 5-minute analysis
+needs four session bars for a 15-minute ORB plus its first confirmation.
+
+## Fresh breakout attempts
+
+**Allow a fresh breakout after price closes back inside the ORB** is independent
+and defaults off (`fresh_breakout_enabled`). When enabled, a completed analysis
+candle closing inside the inclusive ORB boundaries re-arms the attempt. The next
+closing breakout in either direction starts a fresh volume check and selected
+confirmation sequence. Reset uses the analysis timeframe, rather than whichever
+finer history interval was downloaded, so live and replay agree. Continuous
+closes outside the range, or an intrabar touch inside, do not reset it.
+
+Attempts are reconstructed from closed session history on every scan, including
+after a restart. Trade limits, existing-position restrictions, and other filters
+continue to apply. With reset disabled, each direction remains anchored to its
+first breakout of the session.
 
 ## Independent breakout confirmation controls
 
 Live settings and Strategy Lab expose two separate checkboxes:
 
 - **Require breakout volume** (`breakout_follow_through.volume_enabled`): check
-  the first opening-range breakout candle against its historical same-time
+  the active opening-range breakout candle against its historical same-time
   volume baseline. This does not wait for the next candle.
-- **Wait for the next candle to confirm the breakout**
-  (`breakout_follow_through.follow_through_enabled`): require the immediately
-  next completed candle to hold beyond the opening range. The optional
+- **Require breakout confirmation**
+  (`breakout_follow_through.follow_through_enabled`): require the selected
+  completed confirmation sequence to close beyond the opening range. The optional
   `require_extension` setting also requires a new directional extreme.
 
-Both checks can be enabled independently. The volume check still examines the
-first breakout; disabling next-candle confirmation removes its timing window
+Both checks can be enabled independently. The volume check examines the
+active breakout; disabling next-candle confirmation removes its timing window
 but does not introduce a new breakout or pullback entry rule. Score and risk
 filters still apply. Old configs with only `enabled` retain their behavior:
 true enables both checks, false disables both. Explicit toggles take precedence.

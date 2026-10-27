@@ -937,6 +937,7 @@ def apply_trading_style_preset(config: dict, preset_name: str) -> dict:
 
 
 def render_platform_settings(section="Advanced"):
+    from strategies.pmb.candles import CONFIRMATION_MODES, confirmation_mode, confirmation_minutes, direct_confirmation
     original = load_config()
     cfg = deepcopy(original)
     preset_locked = cfg.get("dashboard", {}).get("trading_style_mode", cfg.get("dashboard", {}).get("trading_style_preset", "Manual")) != "Manual"
@@ -1239,20 +1240,36 @@ def render_platform_settings(section="Advanced"):
             help="The first breakout candle must meet the volume threshold for that time of day. This check does not require another candle.",
         )
         breakout_confirmation["follow_through_enabled"] = st.checkbox(
-            "Wait for the next candle to confirm the breakout",
+            "Require breakout confirmation",
             value=bool(breakout_confirmation.get("follow_through_enabled", breakout_confirmation.get("enabled", False))),
-            help="Wait for the next completed candle to hold beyond the opening range. Later confirmation is rejected as stale.",
+            help="Require the selected completed candle sequence to close beyond the opening range.",
         )
-        confirmation_options = [5, 15]
-        saved_confirmation_minutes = int(breakout_confirmation.get("confirmation_minutes", 15))
-        breakout_confirmation["confirmation_minutes"] = st.selectbox(
-            "Confirmation candle",
-            confirmation_options,
-            index=confirmation_options.index(saved_confirmation_minutes) if saved_confirmation_minutes in confirmation_options else 1,
-            format_func=lambda value: f"{value} minutes",
+        breakout_confirmation["confirmation_mode"] = st.selectbox(
+            "Confirmation sequence",
+            list(CONFIRMATION_MODES),
+            index=list(CONFIRMATION_MODES).index(confirmation_mode(breakout_confirmation)),
+            format_func=CONFIRMATION_MODES.get,
             disabled=not breakout_confirmation["follow_through_enabled"],
-            help="Choose the completed candle immediately after the breakout. Normal PMB analysis remains 15 minutes.",
-            key="live_confirmation_minutes",
+            key="live_confirmation_mode",
+            help="For a 15-minute ORB: earliest confirmation is 09:50, 10:00, or 10:05 ET. Score, minimum session bars, and trading windows still apply. The direct 5-minute choice uses 5-minute analysis; the other new choices use 15-minute analysis.",
+        )
+        if confirmation_mode(breakout_confirmation) == "legacy_next":
+            confirmation_options = [5, 15]
+            saved_confirmation_minutes = int(breakout_confirmation.get("confirmation_minutes", 15))
+            breakout_confirmation["confirmation_minutes"] = st.selectbox(
+                "Confirmation candle after breakout (legacy)", confirmation_options,
+                index=confirmation_options.index(saved_confirmation_minutes) if saved_confirmation_minutes in confirmation_options else 1,
+                format_func=lambda value: f"{value} minutes",
+                disabled=not breakout_confirmation["follow_through_enabled"],
+                key="live_confirmation_minutes",
+            )
+        else:
+            breakout_confirmation["confirmation_minutes"] = confirmation_minutes(breakout_confirmation)
+        breakout_confirmation["fresh_breakout_enabled"] = st.checkbox(
+            "Allow a fresh breakout after price closes back inside the ORB",
+            value=bool(breakout_confirmation.get("fresh_breakout_enabled", False)),
+            help="A completed analysis candle inside the opening range resets the attempt (5 minutes for direct 5-minute confirmation, otherwise 15 minutes). A later breakout gets its own volume check and confirmation sequence.",
+            key="live_fresh_breakout_enabled",
         )
         breakout_confirmation["enabled"] = breakout_confirmation["volume_enabled"] or breakout_confirmation["follow_through_enabled"]
         breakout_volume_options = [1.5, 1.75, 2.0]
@@ -1277,11 +1294,11 @@ def render_platform_settings(section="Advanced"):
         breakout_confirmation["require_extension"] = st.checkbox(
             "Require the next candle to extend the breakout",
             value=bool(breakout_confirmation.get("require_extension", True)),
-            disabled=not breakout_confirmation["follow_through_enabled"],
+            disabled=not breakout_confirmation["follow_through_enabled"] or direct_confirmation(breakout_confirmation),
         )
         if breakout_confirmation["follow_through_enabled"]:
-            st.caption("Only the candle immediately after the first opening-range break can confirm. Later moves are rejected as stale.")
-            st.caption(f"Live scan spacing is capped at {breakout_confirmation['confirmation_minutes']} minutes to check the confirmation window.")
+            st.caption("Confirmation uses completed candles only. Enable fresh breakouts to retry after a completed close inside the ORB.")
+            st.caption(f"Live scan spacing is capped at {confirmation_minutes(breakout_confirmation)} minutes to check the confirmation window.")
         if not s["use_rvol_filter"]:
             st.caption("RVOL is informational only and will not block trades.")
         if s["use_sr_filter"]:

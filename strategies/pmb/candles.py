@@ -44,8 +44,40 @@ def completed_live_bars(
     return result
 
 
+# Keep the legacy choice when loading a configuration saved before modes existed.
+CONFIRMATION_MODES = {
+    'orb_5': '5-minute candle after the ORB',
+    'orb_15': '15-minute candle after the ORB',
+    'breakout_5': '15-minute breakout, then 5-minute confirmation',
+    'legacy_next': 'Legacy: next candle after the breakout',
+}
+
+
+def confirmation_mode(config: dict | None) -> str:
+    mode = (config or {}).get('confirmation_mode', 'legacy_next')
+    if mode not in CONFIRMATION_MODES:
+        raise ValueError('Unknown breakout confirmation mode.')
+    return mode
+
+
+def confirmation_analysis_minutes(config: dict | None, fallback: int = 15) -> int:
+    if not follow_through_enabled(config):
+        return fallback
+    mode = confirmation_mode(config)
+    return 5 if mode == 'orb_5' else 15 if mode in {'orb_15', 'breakout_5'} else fallback
+
+
+def direct_confirmation(config: dict | None) -> bool:
+    return follow_through_enabled(config) and confirmation_mode(config) in {'orb_5', 'orb_15'}
+
+
+def explicit_confirmation(config: dict | None) -> bool:
+    return 'confirmation_minutes' in (config or {}) or 'confirmation_mode' in (config or {})
+
+
 def confirmation_minutes(config: dict | None, analysis_minutes: int = 15) -> int:
-    value = int((config or {}).get('confirmation_minutes', analysis_minutes))
+    mode = confirmation_mode(config)
+    value = 5 if mode in {'orb_5', 'breakout_5'} else 15 if mode == 'orb_15' else int((config or {}).get('confirmation_minutes', analysis_minutes))
     if value not in {5, 15}:
         raise ValueError('Confirmation candle must be 5 or 15 minutes.')
     return value
