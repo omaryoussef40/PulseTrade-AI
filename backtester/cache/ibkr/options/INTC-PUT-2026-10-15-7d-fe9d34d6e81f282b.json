@@ -1,0 +1,11 @@
+{
+  "symbol": "INTC",
+  "option_dte": 7,
+  "expiry": "20261030",
+  "strike": 92.0,
+  "right": "P",
+  "localSymbol": "INTC  261030P00092000",
+  "conId": 922469654,
+  "tradingClass": "INTC",
+  "multiplier": "100"
+}

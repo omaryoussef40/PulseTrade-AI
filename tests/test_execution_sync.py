@@ -12,6 +12,36 @@ from bot_core import EASTERN, sync_today_executions_to_trade_log
 
 
 class ExecutionSyncTests(TestCase):
+    def test_delayed_fee_report_is_not_published_as_final_net_profit(self):
+        contract = SimpleNamespace(symbol="RKLB", secType="OPT", conId=935120198,
+            multiplier="100", lastTradeDateOrContractMonth="20261106", strike=56.,
+            right="C", localSymbol="RKLB  261106C00056000")
+        fills = []
+        for exec_id, qty, price, report in [
+            ("SELL-1", 2, 3.60, SimpleNamespace(execId="SELL-1", commission=1., realizedPNL=90.)),
+            ("SELL-2", 3, 3.62, SimpleNamespace(execId="", commission=0., realizedPNL=0.)),
+        ]:
+            execution = SimpleNamespace(side="SLD", shares=qty, price=price,
+                time=datetime(2026,10,27,11,4,tzinfo=EASTERN), execId=exec_id,
+                acctNumber="", orderId=1, permId=2, clientId=121)
+            fills.append(SimpleNamespace(contract=contract, execution=execution, commissionReport=report))
+        ib = Mock()
+        ib.reqExecutions.return_value = fills
+        ib.fills.return_value = fills
+        with tempfile.TemporaryDirectory() as tmp:
+            path = tmp + "/trades.csv"
+            with patch("bot_core.TRADE_LOG_FILE", path):
+                sync_today_executions_to_trade_log(ib, target_date=date(2026,10,27))
+                first = pd.read_csv(path).iloc[0]
+                self.assertEqual(first["pnl_basis"], "pending_broker")
+                fills[1].commissionReport = SimpleNamespace(execId="SELL-2", commission=2., realizedPNL=143.02)
+                sync_today_executions_to_trade_log(ib, target_date=date(2026,10,27))
+                settled = pd.read_csv(path)
+        self.assertEqual(len(settled), 1)
+        self.assertEqual(settled.iloc[0]["pnl_basis"], "broker_net")
+        self.assertAlmostEqual(settled.iloc[0]["exit_price"], 3.612)
+        self.assertAlmostEqual(settled.iloc[0]["realized_pnl"], 233.02)
+
     def test_split_entries_use_complete_source_and_broker_net_pnl(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = f"{temp_dir}/trade_log.csv"
@@ -25,7 +55,7 @@ class ExecutionSyncTests(TestCase):
 
             contract = SimpleNamespace(symbol="BAC", secType="OPT", conId=914580381, multiplier="100", lastTradeDateOrContractMonth="20260918", strike=59.0, right="C", localSymbol="BAC   260918C00059000")
             execution = SimpleNamespace(side="SLD", shares=11.0, price=1.08, time=datetime(2026, 9, 15, 14, 16, 17, tzinfo=EASTERN), execId="EXIT-1", acctNumber="", orderId=1, permId=2, clientId=3, orderRef="", liquidation=0)
-            commission = SimpleNamespace(commission=7.543963, realizedPNL=48.571737)
+            commission = SimpleNamespace(execId="EXIT-1", commission=7.543963, realizedPNL=48.571737)
             ib = Mock()
             fill = SimpleNamespace(contract=contract, execution=execution, commissionReport=commission)
             ib.reqExecutions.return_value = [fill]

@@ -105,7 +105,8 @@
     "take_profit_pct": 20.0,
     "breakeven_trigger_pct": 10.0,
     "trailing_from_entry": false,
-    "trailing_trigger_pct": 10.0,
+    "exit_evaluation_mode": "five_minute_close",
+    "trailing_trigger_pct": 15.0,
     "trailing_stop_pct": 5.0,
     "use_take_profit_with_trailing": false,
     "force_exit_enabled": true,
@@ -322,7 +323,7 @@
     "selected_strategies": [
       "PMB"
     ],
-    "period": "30d",
+    "period": "14d",
     "interval": "5m",
     "max_symbols": 34,
     "force_refresh": false,
@@ -398,9 +399,7 @@
     "force_exit_hour": 15,
     "force_exit_minute": 45,
     "max_consecutive_losses": 2,
-    "max_daily_drawdown_pct": 6.0,
-    "applied_to_engine_at": "2026-10-27T12:14:24",
-    "last_applied_strategy": "PMB"
+    "max_daily_drawdown_pct": 6.0
   },
   "dashboard": {
     "auto_start_engines": true,

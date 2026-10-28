@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import requests
+from modules.option_candle_exits import CANDLE_CLOSE_MODE, completed_option_closes, evaluate_close
 from market_data import IBKRMarketDataProvider, MarketDataConfig, provider_from_ib
 from strategies.pmb.candles import (
     candle_minutes, completed_live_bars, confirmation_minutes, confirmation_analysis_minutes, explicit_confirmation,
@@ -205,8 +206,9 @@ def format_position_closed_telegram_message(event: dict) -> str:
     pnl = _number_or_none(event.get("P/L $"))
     if pnl is None:
         pnl = _number_or_none(event.get("realized_pnl"))
-    pnl = float(pnl or 0.0)
-    pnl_label = f"+${pnl:,.2f}" if pnl > 0 else f"-${abs(pnl):,.2f}" if pnl < 0 else "$0.00"
+    pnl_label = "Pending broker confirmation"
+    if pnl is not None and math.isfinite(pnl):
+        pnl_label = f"+${pnl:,.2f}" if pnl > 0 else f"-${abs(pnl):,.2f}" if pnl < 0 else "$0.00"
 
     entry = _number_or_none(event.get("Entry") or event.get("entry_price"))
     exit_price = _number_or_none(event.get("Current") or event.get("exit_price"))
@@ -228,6 +230,8 @@ def format_position_closed_telegram_message(event: dict) -> str:
         lines.append(f"Exit: <b>${float(exit_price):,.2f}</b>")
     if status:
         lines.append(f"Status: {status}")
+    if event.get("pnl_basis") == "broker_net":
+        lines.append("P/L includes broker-reported fees.")
     return "\n".join(lines)
 
 
@@ -239,7 +243,7 @@ def send_position_closed_telegram_message(cfg: TelegramConfig, event: dict) -> b
         "Position not found at IBKR" in reason
         or "no broker position exists" in status
     )
-    if action not in {"EXIT", "EXTERNAL_CLOSE"} and not is_broker_closed:
+    if action not in {"EXIT", "EXTERNAL_CLOSE"} and not is_broker_closed and not event.get("Close Confirmed"):
         return False
     return send_telegram_message(cfg, format_position_closed_telegram_message(event))
 
@@ -1597,6 +1601,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             "broker_liquidation_flags": [],
             "commission": 0.0,
             "broker_realized_pnl": None,
+            "broker_realized_quantity": 0.0,
         })
         row["quantity"] += shares
         row["value"] += shares * price
@@ -1604,11 +1609,14 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
         commission_report = getattr(fill, "commissionReport", None)
         commission = _number_or_none(getattr(commission_report, "commission", None))
         broker_realized = _number_or_none(getattr(commission_report, "realizedPNL", None))
-        if commission is not None and abs(commission) < 1e100:
+        report_exec_id = str(getattr(commission_report, "execId", "") or "")
+        report_matches = bool(report_exec_id) and report_exec_id == str(getattr(execution, "execId", "") or "")
+        if commission is not None and abs(commission) < 1e100 and report_matches:
             row["commission"] -= abs(float(commission))
             if event == "EXIT" and broker_realized is not None and abs(broker_realized) < 1e100:
                 current_realized = row.get("broker_realized_pnl")
                 row["broker_realized_pnl"] = float(current_realized or 0.0) + float(broker_realized)
+                row["broker_realized_quantity"] += shares
         for source_attr, target_key in [
             ("orderId", "broker_order_ids"),
             ("permId", "broker_perm_ids"),
@@ -1699,6 +1707,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
     rows = []
     entry_price_by_contract = {}
     for key, item in grouped.items():
+        net_complete = item["event"] == "EXIT" and item["broker_realized_quantity"] >= item["quantity"]
         avg_price = item["value"] / item["quantity"] if item["quantity"] else 0.0
         if item["event"] == "ENTRY":
             entry_price_by_contract[_contract_lookup_key(key[0])] = (avg_price, float(item.get("multiplier") or 1.0))
@@ -1720,6 +1729,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
             "broker_order_refs": ",".join(item.get("broker_order_refs") or []),
             "broker_liquidation_flags": ",".join(item.get("broker_liquidation_flags") or []),
             "exit_reason": "IBKR sell execution imported" if item["event"] == "EXIT" else None,
+            "pnl_basis": "broker_net" if net_complete else "pending_broker" if item["event"] == "EXIT" else None,
         })
 
     for row in rows:
@@ -1758,7 +1768,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
         if row["external_id"] in existing_ids:
             matching = existing.index[existing["external_id"].fillna("").astype(str).eq(str(row["external_id"]))]
             if len(matching):
-                row_values = {k: v for k, v in row.items() if k not in {"value", "broker_realized_pnl"} and v is not None}
+                row_values = {k: v for k, v in row.items() if k not in {"value", "broker_realized_pnl", "broker_realized_quantity"} and v is not None}
                 for column, value in row_values.items():
                     if column not in existing.columns:
                         existing[column] = None
@@ -1776,7 +1786,7 @@ def sync_today_executions_to_trade_log(ib: IB, account: str | None = None, targe
         )
         if trade_key in existing_trade_keys:
             continue
-        new_rows.append({k: v for k, v in row.items() if k not in {"value", "broker_realized_pnl"}})
+        new_rows.append({k: v for k, v in row.items() if k not in {"value", "broker_realized_pnl", "broker_realized_quantity"}})
         imported += 1
         existing_ids.add(row["external_id"])
         existing_trade_keys.add(trade_key)
@@ -1809,7 +1819,7 @@ def write_active_positions(positions: list[dict]):
 
 def is_filled_order_status(status: str) -> bool:
     """Return True only when an entry order created a real broker position."""
-    return str(status or "").strip().lower() in {"filled", "partiallyfilled", "partially filled"}
+    return str(status or "").strip().lower() in {"filled", "filled via ibkr sync", "partiallyfilled", "partially filled"}
 
 
 def _number_or_none(value) -> float | None:
@@ -2186,6 +2196,7 @@ def sync_active_positions_from_broker(
     trailing_from_entry: bool = False,
     fixed_take_profit_enabled: bool = True,
     submit_protection: bool = False,
+    exit_evaluation_mode: str = "snapshot",
 ) -> list[dict]:
     """Add missing local active-position records for filled IBKR option positions.
 
@@ -2262,14 +2273,15 @@ def sync_active_positions_from_broker(
             "breakeven_active": False,
             "trailing_active": False if monitor_only else bool(trailing_from_entry),
             "trailing_from_entry": False if monitor_only else bool(trailing_from_entry),
-            "entry_time": datetime.now(EASTERN).isoformat(),
-            "entry_status": "Filled via IBKR sync",
+            "entry_time": str(log_row.get("timestamp") or datetime.now(EASTERN).isoformat()),
+            "entry_status": "Filled",
             "source": "IBKR_POSITION_SYNC",
             "entry_source": log_row.get("source") if log_row is not None else None,
             "management_mode": POSITION_MANAGEMENT_MONITOR_ONLY if monitor_only else POSITION_MANAGEMENT_AUTOMATED,
             "software_control_enabled": not monitor_only,
             "protective_orders_status": "Monitor only - no PulseTrade exit orders" if monitor_only else "Not checked",
         }
+        configure_option_exit_mode(position, exit_evaluation_mode, stop_loss_pct)
         if submit_protection and not monitor_only:
             protection_events = ensure_protective_orders(
                 ib,
@@ -2452,7 +2464,40 @@ def _open_sell_trades_for_position(ib: IB, pos: dict) -> list:
     return matches
 
 
-def ensure_protective_orders(
+def configure_option_exit_mode(pos: dict, mode: str, stop_loss_pct: float) -> None:
+    if is_monitor_only_position(pos):
+        return
+    if mode == CANDLE_CLOSE_MODE and pos.get("exit_evaluation_mode") != mode:
+        emergency = round(float(pos["entry_price"]) * (1 - float(stop_loss_pct) / 100), 2)
+        pos.update(emergency_stop_price=emergency, current_stop_price=emergency,
+                   highest_price=float(pos["entry_price"]), breakeven_active=False,
+                   trailing_active=False, trailing_from_entry=False)
+        pos.pop("last_exit_candle_at", None)
+        pos.pop("option_candle_checked_through", None)
+    pos["exit_evaluation_mode"] = mode
+
+
+def ensure_protective_orders(ib: IB, pos: dict, account: str | None = None,
+                             stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
+                             take_profit_pct: float = DEFAULT_TAKE_PROFIT_PCT,
+                             fixed_take_profit_enabled: bool = True) -> list[dict]:
+    if pos.get("exit_evaluation_mode") != CANDLE_CLOSE_MODE or is_monitor_only_position(pos):
+        return _ensure_protective_orders(ib, pos, account, stop_loss_pct, take_profit_pct,
+                                         fixed_take_profit_enabled)
+    # Virtual profit protection must never become an intrabar broker stop.
+    protection = dict(pos)
+    protection["current_stop_price"] = pos["emergency_stop_price"]
+    protection["trailing_active"] = True
+    events = _ensure_protective_orders(ib, protection, account, stop_loss_pct,
+                                      take_profit_pct, False)
+    for key, value in protection.items():
+        if key not in {"current_stop_price", "highest_price", "trailing_active", "take_profit_price"}:
+            pos[key] = value
+    pos["emergency_stop_price"] = protection["current_stop_price"]
+    return events
+
+
+def _ensure_protective_orders(
     ib: IB,
     pos: dict,
     account: str | None = None,
@@ -2597,7 +2642,13 @@ def ensure_protective_orders(
                     continue
                 order_id = _order_id(order)
                 old_stop = float(getattr(order, "auxPrice", 0) or 0)
-                _broker_price_is_manual_override("stop", order_id, old_stop, stop_price, "current_stop_price")
+                manual = _broker_price_is_manual_override("stop", order_id, old_stop, stop_price, "current_stop_price")
+                if not manual and pos.get("exit_evaluation_mode") == CANDLE_CLOSE_MODE and abs(old_stop - stop_price) > price_tolerance:
+                    order.auxPrice = stop_price
+                    ib.placeOrder(contract, order)
+                    ib.sleep(0.2)
+                    _remember_protective_price("stop", order_id, stop_price)
+                    events.append({"Symbol": pos.get("symbol"), "Action": "UPDATE_EMERGENCY_STOP", "Stop": stop_price})
             if want_take_profit:
                 for trade in open_sell_trades:
                     order = getattr(trade, "order", None)
@@ -2626,6 +2677,23 @@ def ensure_protective_orders(
                         "TP": take_profit_price,
                         "Order ID": order_id,
                     })
+            elif pos.get("exit_evaluation_mode") == CANDLE_CLOSE_MODE:
+                # Remove old bot profit targets when migrating chunked positions.
+                # Explicit manual broker changes remain authoritative.
+                remaining_targets = []
+                for trade in open_sell_trades:
+                    order = getattr(trade, "order", None)
+                    if str(getattr(order, "orderType", "")).upper() != "LMT":
+                        continue
+                    order_id = _order_id(order)
+                    old_target = float(getattr(order, "lmtPrice", 0) or 0)
+                    if _broker_price_is_manual_override("take_profit", order_id, old_target, take_profit_price, "take_profit_price"):
+                        remaining_targets.append(order_id)
+                        continue
+                    ib.cancelOrder(order)
+                    ib.sleep(0.2)
+                    events.append({"Symbol": pos.get("symbol"), "Action": "CANCEL_TP_FOR_CANDLE_CLOSE", "Order ID": order_id})
+                pos["ibkr_take_profit_order_ids"] = remaining_targets
             if events:
                 pos["protective_orders_status"] = "Updated"
                 return events
@@ -2764,7 +2832,7 @@ def ensure_protective_orders(
         old_stop = float(getattr(stop_order, "auxPrice", 0) or 0)
         if _broker_price_is_manual_override("stop", stop_order_id, old_stop, stop_price, "current_stop_price"):
             pass
-        elif stop_price > old_stop + price_tolerance:
+        elif stop_price > old_stop + price_tolerance or (pos.get("exit_evaluation_mode") == CANDLE_CLOSE_MODE and abs(stop_price - old_stop) > price_tolerance):
             stop_order.auxPrice = stop_price
             if account:
                 stop_order.account = account
@@ -2898,7 +2966,9 @@ def _latest_logged_exit_for_position(pos: dict) -> dict:
     if df.empty or "event" not in df.columns:
         return {}
 
-    exits = df[df["event"].fillna("").astype(str).str.upper().isin(["EXIT", "EXTERNAL_CLOSE"])].copy()
+    exits = df[df["event"].fillna("").astype(str).str.upper().eq("EXIT")].copy()
+    if "source" in exits.columns:
+        exits = exits[exits["source"].fillna("").astype(str).str.upper().isin(["IBKR_EXECUTION", "IBKR_FLEX"])]
     if exits.empty:
         return {}
 
@@ -2909,7 +2979,9 @@ def _latest_logged_exit_for_position(pos: dict) -> dict:
     if option and "option" in exits.columns:
         mask = mask | exits["option"].fillna("").astype(str).eq(option)
     if con_id and "con_id" in exits.columns:
-        mask = mask | exits["con_id"].fillna("").astype(str).eq(con_id)
+        numeric_id = _finite_number(con_id)
+        if numeric_id is not None:
+            mask = mask | pd.to_numeric(exits["con_id"], errors="coerce").eq(numeric_id)
     if not option and not con_id and symbol and "symbol" in exits.columns:
         mask = mask | exits["symbol"].fillna("").astype(str).str.upper().eq(symbol)
 
@@ -2983,11 +3055,20 @@ def reconcile_active_positions_with_broker(ib: IB, account: str | None = None, l
             exit_price = _finite_number(logged_exit.get("exit_price"))
             entry_price = _finite_number(pos.get("entry_price"))
             realized_pnl = _finite_number(logged_exit.get("realized_pnl"))
-            if realized_pnl is None and exit_price is not None and entry_price is not None:
-                realized_pnl = round((float(exit_price) - float(entry_price)) * max(local_qty, 0) * 100, 2)
-            close_reason = str(logged_exit.get("exit_reason") or "").strip()
-            if not close_reason:
-                close_reason = _infer_broker_close_reason(pos, exit_price, "Position not found at IBKR")
+            basis = str(logged_exit.get("pnl_basis") or "")
+            if str(logged_exit.get("source") or "").upper() == "IBKR_FLEX":
+                basis = "broker_net"
+            if exit_price is None or realized_pnl is None or basis != "broker_net":
+                reconciled.append(pos)
+                pos["exit_pending"] = True
+                events.append({"Symbol": pos.get("symbol"), "Action": "CLOSE_PENDING", "Status": "Awaiting broker execution and fee confirmation"})
+                continue
+            close_reason = str(pos.get("pending_exit_reason") or logged_exit.get("exit_reason") or "Broker position closed").strip()
+            stop_ids = set(_coerce_order_ids(pos.get("ibkr_stop_order_ids")))
+            stop_ids.update(_coerce_order_ids(pos.get("ibkr_stop_order_id")))
+            filled_ids = set(_coerce_order_ids(logged_exit.get("broker_order_ids")))
+            if not pos.get("pending_exit_reason") and stop_ids & filled_ids:
+                close_reason = "Emergency stop filled" if pos.get("exit_evaluation_mode") == CANDLE_CLOSE_MODE else "Protective stop filled"
             matched_source = str(logged_exit.get("source") or "").strip()
             matched_external_id = str(logged_exit.get("external_id") or "").strip()
             close_classification = "external_close"
@@ -3005,6 +3086,8 @@ def reconcile_active_positions_with_broker(ib: IB, account: str | None = None, l
                 "Current": exit_price,
                 "P/L $": round(float(realized_pnl or 0.0), 2),
                 "Status": "Closed manually or no broker position exists",
+                "Close Confirmed": True,
+                "pnl_basis": "broker_net",
             })
             if log_closures:
                 log_trade({
@@ -3018,6 +3101,7 @@ def reconcile_active_positions_with_broker(ib: IB, account: str | None = None, l
                     "entry_price": pos.get("entry_price"),
                     "exit_price": exit_price,
                     "realized_pnl": round(float(realized_pnl or 0.0), 2),
+                    "pnl_basis": "broker_net",
                     "status": "Closed manually or removed during broker reconciliation",
                     "source": "BROKER_RECONCILIATION",
                     "matched_exit_external_id": matched_external_id or None,
@@ -3042,6 +3126,10 @@ def reconcile_active_positions_with_broker(ib: IB, account: str | None = None, l
                 "Local Qty": local_qty,
                 "Broker Qty": int(abs(broker_qty)),
             })
+        if pos.get("exit_pending") and not pos.get("pending_exit_order_ids") and not pos.get("pending_exit_reason"):
+            # A transient empty broker-position snapshot must not freeze a
+            # position that the next broker refresh confirms is still open.
+            pos.pop("exit_pending", None)
         reconciled.append(pos)
 
     if len(reconciled) != len(local_positions) or events:
@@ -3072,17 +3160,49 @@ def submit_exit_order(
 
     cancel_protective_orders(ib, pos)
     trades = []
+    pos["exit_pending"] = True
+    pos["pending_exit_reason"] = reason
+    pos["pending_exit_order_ids"] = []
+    pos["pending_exit_requested_quantity"] = qty
+    pos["pending_exit_submitted_quantity"] = 0
     for chunk_qty in _order_chunks(qty):
         order = MarketOrder("SELL", chunk_qty) if use_market else LimitOrder("SELL", chunk_qty, round(float(exit_price), 2))
         if account:
             order.account = account
-        trade = ib.placeOrder(contract, order)
+        try:
+            trade = ib.placeOrder(contract, order)
+        except Exception:
+            if not trades:
+                pos.pop("exit_pending", None)
+                pos.pop("pending_exit_reason", None)
+                for key in list(pos):
+                    if key.startswith("ibkr_stop_order") or key.startswith("ibkr_take_profit_order"):
+                        pos.pop(key, None)
+            raise
         trades.append(trade)
+        pos["pending_exit_submitted_quantity"] += chunk_qty
+        order_id = _order_id(getattr(trade, "order", None))
+        if order_id is not None:
+            pos["pending_exit_order_ids"].append(order_id)
         ib.sleep(1)
 
+    # Submission is not settlement. Retain the position until execution sync
+    # supplies the weighted fill and complete broker net P/L (including fees).
+    pos["exit_pending"] = True
+    pos["pending_exit_reason"] = reason
+    pos["pending_exit_order_ids"] = [
+        _order_id(getattr(trade, "order", None)) for trade in trades
+        if _order_id(getattr(trade, "order", None)) is not None
+    ]
     entry_price = float(pos.get("entry_price", 0))
-    mark = float(exit_price or entry_price)
-    realized_pnl = round((mark - entry_price) * qty * 100, 2)
+    details = [trade_fill_details(trade, chunk) for trade, chunk in zip(trades, _order_chunks(qty))]
+    filled_qty = sum(float(detail["filled_qty"]) for detail in details)
+    priced = [detail for detail in details if detail["filled_qty"] and detail["avg_fill_price"]]
+    priced_qty = sum(float(detail["filled_qty"]) for detail in priced)
+    mark = None
+    if filled_qty and priced_qty == filled_qty:
+        mark = sum(float(detail["avg_fill_price"]) * float(detail["filled_qty"]) for detail in priced) / filled_qty
+    realized_pnl = None
 
     log_trade({
         "timestamp": datetime.now(EASTERN).isoformat(),
@@ -3093,10 +3213,13 @@ def submit_exit_order(
         "quantity": qty,
         "exit_reason": reason,
         "entry_price": entry_price,
-        "exit_price": round(mark, 2),
+        "exit_price": round(mark, 4) if mark is not None else None,
         "realized_pnl": realized_pnl,
+        "filled_quantity": filled_qty,
+        "pnl_basis": "pending_broker",
         "status": ", ".join(str(getattr(trade.orderStatus, "status", "")) for trade in trades),
         "source": "PULSE_EXIT_ORDER",
+        "con_id": pos.get("con_id"),
         "broker_order_ids": ",".join(str(_order_id(getattr(trade, "order", None))) for trade in trades if _order_id(getattr(trade, "order", None)) is not None),
         "broker_perm_ids": ",".join(
             str(getattr(getattr(trade, "order", None), "permId", ""))
@@ -3111,6 +3234,72 @@ def submit_exit_order(
         "close_classification": "pulse_exit_order",
     })
     return trades[-1], realized_pnl
+
+
+def manage_candle_close_position(ib, pos, contract, now_et, *, account,
+                                 stop_loss_pct, breakeven_trigger_pct,
+                                 trailing_trigger_pct, trailing_stop_pct,
+                                 force_exit_enabled, force_exit_time,
+                                 require_eod_exit_approval, allow_live_orders):
+    """Evaluate virtual protection at completed closes, execute at today's market."""
+    events = []
+    if pos.get("exit_pending"):
+        events.append({"Symbol": pos.get("symbol"), "Action": "EXIT_PENDING", "Status": "Exit submitted; awaiting broker confirmation"})
+        return events
+    reason = None
+    if force_exit_enabled and now_et.time() >= force_exit_time:
+        reason = "End-of-day forced exit"
+    else:
+        try:
+            closes = completed_option_closes(ib, contract, pos, now_et)
+        except Exception as exc:
+            events.append({"Symbol": pos.get("symbol"), "Action": "CANDLE_DATA_UNAVAILABLE", "Status": str(exc)})
+            return events
+        for timestamp, close in closes:
+            reason = evaluate_close(pos, close, timestamp,
+                                    breakeven_trigger_pct=breakeven_trigger_pct,
+                                    trailing_trigger_pct=trailing_trigger_pct,
+                                    trailing_stop_pct=trailing_stop_pct)
+            events.append({"Symbol": pos.get("symbol"), "Action": "OPTION_CANDLE_CLOSE", "Candle Close": timestamp.isoformat(), "Option Close": close, "Stop": pos["current_stop_price"], "Emergency Stop": pos["emergency_stop_price"], "Reason": reason})
+            if reason:
+                break
+    if reason == "End-of-day forced exit" and require_eod_exit_approval:
+        events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "EXIT_APPROVAL_REQUIRED", "Reason": reason, "Quantity": pos.get("quantity"), "Entry": pos.get("entry_price"), "Current": pos.get("current_price"), "Position": dict(pos)})
+    elif reason and allow_live_orders:
+        submit_exit_order(ib, pos, None, reason, account=account, use_market=True)
+        events.append({"Symbol": pos.get("symbol"), "Action": "EXIT_PENDING", "Reason": reason, "Status": "Awaiting broker execution and fees"})
+    elif reason:
+        events.append({"Symbol": pos.get("symbol"), "Action": "EXIT_SIGNAL", "Reason": reason, "Status": "Trading disabled"})
+    else:
+        events.append({"Symbol": pos.get("symbol"), "Action": "HOLD", "Stop": pos["current_stop_price"], "Emergency Stop": pos["emergency_stop_price"]})
+    return events
+
+
+def exit_order_still_pending(ib, pos):
+    """Avoid duplicate sells; permit protection to resume after a rejected exit."""
+    if not pos.get("exit_pending"):
+        return False
+    wanted = set(_coerce_order_ids(pos.get("pending_exit_order_ids")))
+    trades = [t for t in ib.trades() if _order_id(getattr(t, "order", None)) in wanted] if wanted else []
+    terminal = {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
+    if len(trades) == len(wanted) and wanted:
+        statuses = [str(t.orderStatus.status) for t in trades]
+        filled = sum(float(getattr(t.orderStatus, "filled", 0) or 0) for t in trades)
+        requested = float(pos.get("pending_exit_requested_quantity") or pos["quantity"])
+        incomplete_submission = float(pos.get("pending_exit_submitted_quantity") or requested) < requested
+        broker_remaining_confirmed = float(pos["quantity"]) <= requested - filled
+        if all(s in terminal for s in statuses) and broker_remaining_confirmed and (any(s != "Filled" for s in statuses) or incomplete_submission):
+            pos.pop("exit_pending", None)
+            pos.pop("pending_exit_order_ids", None)
+            pos.pop("pending_exit_reason", None)
+            pos.pop("pending_exit_requested_quantity", None)
+            pos.pop("pending_exit_submitted_quantity", None)
+            # Our own cancellation is not a manual cancellation to preserve.
+            for key in list(pos):
+                if key.startswith("ibkr_stop_order") or key.startswith("ibkr_take_profit_order"):
+                    pos.pop(key, None)
+            return False
+    return True
 
 
 def add_active_position_from_entry(
@@ -3128,6 +3317,7 @@ def add_active_position_from_entry(
     fixed_take_profit_enabled: bool = True,
     entry_source: str | None = None,
     management_mode: str | None = None,
+    exit_evaluation_mode: str = "snapshot",
 ):
     if not is_filled_order_status(trade_status):
         return None
@@ -3168,6 +3358,7 @@ def add_active_position_from_entry(
         "software_control_enabled": not monitor_only,
         "protective_orders_status": "Monitor only - no PulseTrade exit orders" if monitor_only else "Not checked",
     }
+    configure_option_exit_mode(position, exit_evaluation_mode, stop_loss_pct)
     if ib is not None and not monitor_only:
         ensure_protective_orders(
             ib,
@@ -3196,6 +3387,7 @@ def manage_open_positions(
     require_eod_exit_approval: bool = True,
     trailing_from_entry: bool = False,
     fixed_take_profit_enabled: bool = True,
+    exit_evaluation_mode: str = "snapshot",
 ) -> list[dict]:
     """Manage active option positions across Streamlit refresh cycles."""
     positions = read_active_positions()
@@ -3218,6 +3410,11 @@ def manage_open_positions(
     for pos in positions:
         try:
             monitor_only = is_monitor_only_position(pos)
+            configure_option_exit_mode(pos, exit_evaluation_mode, stop_loss_pct)
+            if not monitor_only and exit_order_still_pending(ib, pos):
+                still_active.append(pos)
+                events.append({"Symbol": pos.get("symbol"), "Action": "EXIT_PENDING", "Status": "Awaiting broker execution and fee confirmation"})
+                continue
             if monitor_only:
                 if account:
                     pos["account"] = account
@@ -3250,6 +3447,15 @@ def manage_open_positions(
                 if portfolio_market:
                     market = {**market, **portfolio_market}
             current_price = record_position_market_snapshot(pos, market, now_et)
+            if not monitor_only and exit_evaluation_mode == CANDLE_CLOSE_MODE:
+                events.extend(manage_candle_close_position(
+                    ib, pos, contract, now_et, account=account, stop_loss_pct=stop_loss_pct,
+                    breakeven_trigger_pct=breakeven_trigger_pct, trailing_trigger_pct=trailing_trigger_pct,
+                    trailing_stop_pct=trailing_stop_pct, force_exit_enabled=force_exit_enabled,
+                    force_exit_time=force_exit_time, require_eod_exit_approval=require_eod_exit_approval,
+                    allow_live_orders=allow_live_orders))
+                still_active.append(pos)
+                continue
             if current_price is None:
                 still_active.append(pos)
                 events.append({"Symbol": pos.get("symbol"), "Status": "No option price available", "Action": "Hold"})
@@ -3291,7 +3497,7 @@ def manage_open_positions(
 
             # Initial hard stop.
             elif current_price <= stop_price:
-                reason = "Stop loss hit"
+                reason = "Trailing stop hit" if pos.get("trailing_active") else "Breakeven stop hit" if pos.get("breakeven_active") else "Stop loss hit"
 
             # At +15%, move stop to breakeven.
             elif pnl_pct >= breakeven_trigger_pct and not bool(pos.get("breakeven_active", False)):
@@ -3341,8 +3547,13 @@ def manage_open_positions(
                     })
                     continue
                 if allow_live_orders:
+                    if pos.get("exit_pending"):
+                        still_active.append(pos)
+                        continue
                     trade, realized = submit_exit_order(ib, pos, current_price, reason, account=account, use_market=True)
-                    status = str(trade.orderStatus.status)
+                    still_active.append(pos)
+                    events.append({"Symbol": pos.get("symbol"), "Action": "EXIT_PENDING", "Reason": reason, "Status": str(trade.orderStatus.status)})
+                    continue
                 else:
                     realized = round((current_price - entry_price) * int(pos.get("quantity", 0)) * 100, 2)
                     status = "Exit signal only / trading disabled"

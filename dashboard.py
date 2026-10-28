@@ -1186,6 +1186,14 @@ def render_platform_settings(section="Advanced"):
         r["stop_loss_pct"] = st.number_input("Option stop loss %", value=float(r.get("stop_loss_pct", 20.0)), min_value=1.0, max_value=90.0, step=1.0, disabled=preset_locked)
         r["take_profit_pct"] = st.number_input("Option take profit %", value=float(r.get("take_profit_pct", 30.0)), min_value=1.0, max_value=300.0, step=1.0, disabled=preset_locked)
         r["breakeven_trigger_pct"] = st.number_input("Move stop to breakeven at +%", value=float(r.get("breakeven_trigger_pct", 15.0)), min_value=1.0, max_value=200.0, step=1.0, disabled=preset_locked)
+        r["exit_evaluation_mode"] = st.selectbox(
+            "Option exit decisions", ["five_minute_close", "snapshot"],
+            index=0 if r.get("exit_evaluation_mode") == "five_minute_close" else 1,
+            format_func=lambda value: "At completed five-minute candles" if value == "five_minute_close" else "At each live price check",
+            disabled=preset_locked,
+        )
+        if r["exit_evaluation_mode"] == "five_minute_close":
+            st.caption("Breakeven and trailing exits use completed option candles. The initial broker stop remains active between closes; live exits use the available market price. Trail-from-entry and fixed profit targets do not apply in this mode.")
         r["trailing_from_entry"] = st.checkbox("Trail from entry", value=bool(r.get("trailing_from_entry", True)), disabled=preset_locked)
         r["trailing_trigger_pct"] = st.number_input("Activate trailing stop at +%", value=float(r.get("trailing_trigger_pct", 25.0)), min_value=1.0, max_value=300.0, step=1.0, disabled=preset_locked)
         r["trailing_stop_pct"] = st.number_input("Trailing stop distance %", value=float(r.get("trailing_stop_pct", 10.0)), min_value=1.0, max_value=90.0, step=1.0, disabled=preset_locked)
@@ -2265,6 +2273,7 @@ def render_live_positions_fragment(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig
                 trailing_stop_pct=float(r.get("trailing_stop_pct", 10.0)),
                 trailing_from_entry=bool(r.get("trailing_from_entry", True)),
                 fixed_take_profit_enabled=bool(r.get("use_take_profit_with_trailing", False)),
+                exit_evaluation_mode=str(r.get("exit_evaluation_mode", "snapshot")),
             )
             reconciled_events = reconcile_active_positions_with_broker(sync_ib, account=ib_cfg_snapshot.account, log_closures=True)
             sync_events = restored_events + reconciled_events
@@ -2332,7 +2341,11 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
         protection_status = str(position.get("protective_orders_status") or "Unknown")
         stop_display = "Disabled" if monitor_only else _fmt_money_cell(position.get("current_stop_price"))
         take_profit_display = "Disabled" if monitor_only else _fmt_money_cell(position.get("take_profit_price"))
-        close_disabled = monitor_only or not orders_unlocked or readonly
+        stop_label = "Stop"
+        if not monitor_only and position.get("exit_evaluation_mode") == "five_minute_close":
+            stop_label = "5m close stop"
+            take_profit_display = "Off"
+        close_disabled = monitor_only or not orders_unlocked or readonly or bool(position.get("exit_pending"))
 
         with st.container(key=f"bot-position-card-{pnl_tone}-{idx}"):
             row_cols = st.columns([2.0, 3.0, 2.6, 1.4])
@@ -2340,6 +2353,10 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
                 st.markdown(f"**{position.get('symbol', 'N/A')} {position.get('signal', '')}**")
                 st.caption(str(position.get("option") or ""))
                 st.caption(f"Qty {position.get('quantity', 'N/A')} | Entry {_fmt_money_cell(position.get('entry_price'))}")
+                if not monitor_only and position.get("exit_evaluation_mode") == "five_minute_close":
+                    st.caption(f"Stop checked at five-minute closes. Emergency broker stop: {_fmt_money_cell(position.get('emergency_stop_price'))}.")
+                if position.get("exit_pending"):
+                    st.caption("Exit pending: waiting for broker execution and fees.")
                 if underlying_entry is not None:
                     underlying_text = f"Underlying {_fmt_money_cell(underlying_entry)}"
                     if underlying_current is not None:
@@ -2354,7 +2371,7 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Value</div><div style="font-weight:800;">{_fmt_money_cell(market_value)}</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">P/L</div><div style="color:{pnl_color};font-weight:800;">{_fmt_money_cell(unrealized_pnl)} ({_fmt_pct_cell(unrealized_pct)})</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Premium</div><div style="font-weight:800;">{_fmt_pct_cell(premium_change_pct)}</div></div>
-                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Stop</div><div style="font-weight:800;">{stop_display}</div></div>
+                        <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">{stop_label}</div><div style="font-weight:800;">{stop_display}</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">TP</div><div style="font-weight:800;">{take_profit_display}</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Bid / Ask</div><div style="font-weight:800;">{_fmt_money_cell(position.get("current_bid"))} / {_fmt_money_cell(position.get("current_ask"))}</div></div>
                         <div><div style="color:#6b7280;font-weight:700;font-size:.78rem;">Delta</div><div style="font-weight:800;">{_fmt_pct_cell((_number_or_none(position.get("current_delta")) or 0) * 100) if _number_or_none(position.get("current_delta")) is not None else "N/A"}</div></div>
@@ -2417,24 +2434,11 @@ def render_bot_managed_positions(cfg_snapshot: dict, ib_cfg_snapshot: IBConfig) 
                             same_id = bool(position.get("id")) and str(pos.get("id") or "") == position_id
                             same_contract = bool(closed_keys) and bool(_active_position_keys(pos) & closed_keys)
                             if same_id or same_contract:
+                                remaining_positions.append(position)
                                 continue
                             remaining_positions.append(pos)
                         write_active_positions(remaining_positions)
-                        st.success(
-                            f"Market close submitted for {position.get('symbol')} | "
-                            f"status {getattr(trade.orderStatus, 'status', 'Submitted')} | est P/L ${realized:,.2f}"
-                        )
-                        send_position_closed_telegram_message(tg_cfg, {
-                            "Symbol": position.get("symbol"),
-                            "Option": position.get("option"),
-                            "Action": "EXIT",
-                            "Reason": "Dashboard market close",
-                            "Quantity": position.get("quantity"),
-                            "Entry": position.get("entry_price"),
-                            "Current": exit_price,
-                            "P/L $": realized,
-                            "Status": str(getattr(trade.orderStatus, "status", "Submitted")),
-                        })
+                        st.success(f"Exit submitted for {position.get('symbol')}. Final fill and P/L will follow after broker confirmation.")
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Market close failed: {display_exception_message(exc)}")
@@ -4998,6 +5002,7 @@ elif selected_page == "💼 Positions":
                             allow_live_orders=orders_unlocked_from_config(cfg),
                             trailing_from_entry=bool(r.get("trailing_from_entry", True)),
                             fixed_take_profit_enabled=bool(r.get("use_take_profit_with_trailing", False)),
+                            exit_evaluation_mode=str(r.get("exit_evaluation_mode", "snapshot")),
                         )
                     finally:
                         try:

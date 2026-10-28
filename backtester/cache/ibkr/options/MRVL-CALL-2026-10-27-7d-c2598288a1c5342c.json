@@ -1,0 +1,11 @@
+{
+  "symbol": "MRVL",
+  "option_dte": 7,
+  "expiry": "20261106",
+  "strike": 242.5,
+  "right": "C",
+  "localSymbol": "MRVL  261106C00242500",
+  "conId": 936277172,
+  "tradingClass": "MRVL",
+  "multiplier": "100"
+}

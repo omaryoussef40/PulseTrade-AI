@@ -1396,6 +1396,7 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
             trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
             trailing_from_entry=trailing_from_entry,
             fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+            exit_evaluation_mode=str(risk.get("exit_evaluation_mode", "snapshot")),
             entry_source=str(order.get("source") or "") or None,
             management_mode=management_mode,
         )
@@ -1897,6 +1898,7 @@ def run_opening_orb_trade_cycle(
                     trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
                     trailing_from_entry=False,
                     fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+                    exit_evaluation_mode=str(risk.get("exit_evaluation_mode", "snapshot")),
                     entry_source=OPENING_ORB_SOURCE,
                 )
             state = update_opening_orb_trade_state(
@@ -2038,6 +2040,7 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
             trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
             trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
             fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+            exit_evaluation_mode=str(risk.get("exit_evaluation_mode", "snapshot")),
             submit_protection=orders_unlocked_from_config(cfg) and market_open,
         )
         if sync_events:
@@ -2073,6 +2076,7 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
         allow_live_orders=can_trade,
         trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
         fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+        exit_evaluation_mode=str(risk.get("exit_evaluation_mode", "snapshot")),
     )
     if management_events:
         app_log(f"Managed open positions | events={len(management_events)}")
@@ -2790,6 +2794,7 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
                     trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
                     trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
                     fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+                    exit_evaluation_mode=str(risk.get("exit_evaluation_mode", "snapshot")),
                 )
             submitted += 1
             remaining_trades -= 1
@@ -2935,6 +2940,7 @@ def run_broker_sync_cycle() -> None:
             trailing_stop_pct=float(risk.get("trailing_stop_pct", 10.0)),
             trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
             fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+            exit_evaluation_mode=str(risk.get("exit_evaluation_mode", "snapshot")),
             submit_protection=orders_unlocked_from_config(cfg) and market_open,
         )
         if automation.get("scan_only_market_hours", True) and not market_open:
@@ -2966,6 +2972,7 @@ def run_broker_sync_cycle() -> None:
             allow_live_orders=orders_unlocked_from_config(cfg),
             trailing_from_entry=bool(risk.get("trailing_from_entry", True)),
             fixed_take_profit_enabled=bool(risk.get("use_take_profit_with_trailing", False)),
+            exit_evaluation_mode=str(risk.get("exit_evaluation_mode", "snapshot")),
         )
         sync_events = list(added_events or []) + list(position_events or [])
         exit_approval_events = request_eod_exit_approvals(tg_cfg, sync_events, mode)
