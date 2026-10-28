@@ -237,6 +237,34 @@ class IBKRMarketDataProvider:
     def daily_bars(self, symbol: str, duration: str = "20 D", use_rth: bool = True) -> pd.DataFrame:
         return self.historical_bars(symbol=symbol, duration=duration, bar_size="1 day", use_rth=use_rth)
 
+    async def subscribe_prepared_stock(self, symbol: str):
+        """Seed a persistent five-minute stream and cache daily levels once.
+
+        This is read-only market data. The consumer must wait for completed
+        bars; keepUpToDate includes an unfinished final candle.
+        """
+        ib = self.ib
+        contract = Stock(symbol.replace(".", " ").replace("-", " "), "SMART", "USD")
+        qualified = await ib.qualifyContractsAsync(contract)
+        if not qualified:
+            raise RuntimeError(f"Could not qualify {symbol}")
+        contract = qualified[0]
+        self._stock_contract_cache[symbol] = contract
+        daily = await ib.reqHistoricalDataAsync(
+            contract, endDateTime="", durationStr="20 D", barSizeSetting="1 day",
+            whatToShow="TRADES", useRTH=True, formatDate=2, keepUpToDate=False, timeout=10,
+        )
+        bars = await ib.reqHistoricalDataAsync(
+            contract, endDateTime="", durationStr="5 D", barSizeSetting="5 mins",
+            whatToShow="TRADES", useRTH=True, formatDate=2, keepUpToDate=True, timeout=10,
+        )
+        if not bars or not daily:
+            if bars:
+                ib.cancelHistoricalData(bars)
+            raise RuntimeError(f"Missing preparation history for {symbol}")
+        ticker = ib.reqMktData(contract, "", snapshot=False, regulatorySnapshot=False)
+        return bars, self._bars_to_ohlcv(daily), ticker
+
     def snapshot_quote(self, symbol: str) -> dict[str, Any]:
         ib = self.connect()
         contract = self.qualify_stock(symbol)

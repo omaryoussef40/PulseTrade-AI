@@ -1000,7 +1000,14 @@ def render_platform_settings(section="Advanced"):
             f"5m ORB | score {float(opening_cfg['min_score']):g}+ | "
             f"RVOL {float(opening_cfg['min_rvol']):g}+ | 5% option stop | max 50% capital"
         )
-        cfg["automation"]["scan_interval_seconds"] = st.number_input("Engine scan interval seconds", value=int(cfg["automation"].get("scan_interval_seconds", 900)), min_value=10, max_value=3600, step=10, disabled=bool(timeline_cfg["enabled"]))
+        cfg["automation"]["scan_interval_seconds"] = st.number_input("Engine scan interval seconds", value=int(cfg["automation"].get("scan_interval_seconds", 900)), min_value=10, max_value=3600, step=10, disabled=bool(timeline_cfg["enabled"]) or bool(cfg["automation"].get("scan_preparation", {}).get("enabled")))
+        preparation = cfg["automation"].setdefault("scan_preparation", {})
+        preparation["enabled"] = st.checkbox(
+            "Prepare PMB candidates before candle close", value=bool(preparation.get("enabled", False)),
+            disabled=bool(timeline_cfg["enabled"]),
+        )
+        if preparation["enabled"]:
+            st.caption("Preparation starts three minutes before each five-minute close. PDH/PDL crossing and completed five-minute confirmation remain required. Stock data and option discovery run separately; live option quotes and risk checks are refreshed before ordering.")
         cfg["automation"]["align_scans_to_interval"] = st.checkbox(
             "Align scans to candle boundaries",
             value=bool(cfg["automation"].get("align_scans_to_interval", True)),

@@ -25,6 +25,12 @@
     "first_scan_hour": 9,
     "first_scan_minute": 51,
     "live_sync_interval_seconds": 15,
+    "scan_preparation": {
+      "enabled": true,
+      "lead_seconds": 180,
+      "confirmation_window_seconds": 90,
+      "option_workers": 2
+    },
     "market_timezone": "America/New_York",
     "scan_only_market_hours": true,
     "backtester_cache_warmup_max_symbols": 34

@@ -15,6 +15,12 @@ from datetime import datetime, time as dtime, timedelta
 from html import escape
 from pathlib import Path
 from modules.strategy_controls import effective_config, check_automated_option_entry, verified_account_equity
+from modules.pmb_scan_preparation import (
+    enabled as scan_preparation_enabled, read_snapshot as read_prepared_scan,
+    valid_snapshot as valid_prepared_scan, fingerprint as preparation_fingerprint,
+    mandatory_confirmation,
+    claim_entry as claim_prepared_entry,
+)
 
 import pandas as pd
 import requests
@@ -1969,8 +1975,10 @@ def run_opening_orb_trade_cycle(
     return state
 
 
-def run_cycle(*, opening_trade_only: bool = False) -> None:
+def run_cycle(*, opening_trade_only: bool = False, prepared_scan: dict | None = None) -> None:
     cfg = effective_config(load_config())
+    if prepared_scan is not None and not scan_preparation_enabled(cfg):
+        return
     if cfg.get("pine_stocks", {}).get("enabled", False) and not cfg.get("_concurrent_strategies"):
         if cfg.get("automation", {}).get("enabled", False) and not opening_trade_only:
             from modules.pine_stock_engine import run_pine_cycle
@@ -1987,8 +1995,17 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
     telegram = cfg.get("telegram", {})
     automation = cfg.get("automation", {})
     watchlist = combined_watchlist(cfg)
+    if not opening_trade_only and scan_preparation_enabled(cfg):
+        prepared_scan = prepared_scan or read_prepared_scan(cfg, watchlist, datetime.now(EASTERN))
+        if not prepared_scan or not valid_prepared_scan(prepared_scan, cfg, watchlist, datetime.now(EASTERN)):
+            write_health(last_status="Waiting for fresh prepared five-minute confirmation")
+            return
+        # Missing/stale data never falls back to a slow, unprepared entry scan.
+        watchlist = [s for s in watchlist if prepared_scan.get("results", {}).get(s)]
+        app_log(f"Prepared PMB confirmation | candle={prepared_scan['candle_close']} | symbols={len(watchlist)} | options_ready={len(prepared_scan.get('options', {}))} | pending={len(prepared_scan.get('pending_symbols', []))} | data_errors={len(prepared_scan.get('errors', {}))}")
     approval_mode = approval_mode_from_config(cfg)
-    scan_id = datetime.now(EASTERN).strftime("%Y%m%d%H%M%S")
+    scan_id = (datetime.fromisoformat(prepared_scan["candle_close"]).strftime("%Y%m%d%H%M%S")
+               if prepared_scan is not None else datetime.now(EASTERN).strftime("%Y%m%d%H%M%S"))
 
     # Safety gate: the engine can run 24/7, but it will not connect, scan, alert,
     # or trade unless automation is enabled in config.json/dashboard.
@@ -2048,7 +2065,7 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
     except Exception as exc:
         app_log(f"IBKR position sync failed: {exc}", "WARN")
 
-    if should_auto_build(cfg):
+    if prepared_scan is None and should_auto_build(cfg):
         try:
             payload = build_premarket_watchlist(cfg, ib)
             watchlist = combined_watchlist(cfg)
@@ -2221,7 +2238,7 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
     fresh_scan_seen = False
     for symbol in watchlist:
         try:
-            result = scan_symbol_ib(
+            result = prepared_scan["results"].get(symbol) if prepared_scan is not None else scan_symbol_ib(
                 ib,
                 symbol,
                 bool(strategy.get("use_rvol_score", False)),
@@ -2237,6 +2254,10 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
             )
             if not result:
                 log_engine_decision(symbol=symbol, decision="SCAN_NO_RESULT", reason="IBKR scan returned no PMB result")
+                continue
+            if prepared_scan is not None and not mandatory_confirmation(result, datetime.fromisoformat(prepared_scan["candle_close"])):
+                log_engine_decision(symbol=symbol, row=result, decision="FILTER_REJECT",
+                                    reason="Completed five-minute confirmation beyond PDH/PDL is mandatory")
                 continue
             session_date = scan_result_session_date(result)
             today_et = datetime.now(EASTERN).date()
@@ -2457,6 +2478,11 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
         try:
             option_filters = dict(cfg.get("option_filters", {}) or {})
             option_filters["_max_contract_cost"] = spend_limit
+            prepared_option = prepared_scan.get("options", {}).get(symbol) if prepared_scan is not None else None
+            if prepared_scan is not None and prepared_option is None:
+                log_engine_decision(symbol=symbol, row=row, decision="WAIT_OPTION_PREPARATION",
+                                    reason="Confirmed signal; waiting for read-only option discovery")
+                continue
             option_full = recommend_option_ib(
                 ib,
                 symbol,
@@ -2464,6 +2490,7 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
                 float(row["Price"]),
                 int(strategy.get("option_dte", 7)),
                 option_filters,
+                **({"prepared_option": prepared_option} if prepared_scan is not None else {}),
             )
         except Exception as exc:
             app_log(f"{symbol}: option pricing error: {exc}", "ERROR")
@@ -2603,6 +2630,23 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
             )
             continue
         selected_count += 1
+
+        if can_trade and prepared_scan is not None:
+            current_cfg = effective_config(load_config())
+            fresh_preparation = read_prepared_scan(current_cfg, combined_watchlist(current_cfg), datetime.now(EASTERN))
+            if not fresh_preparation or fresh_preparation["candle_close"] != prepared_scan["candle_close"]:
+                log_engine_decision(symbol=symbol, row=row, decision="SKIP_STALE_PREPARATION",
+                                    reason="Prepared confirmation expired or settings changed before order submission")
+                continue
+            latest_result = fresh_preparation.get("results", {}).get(symbol) or {}
+            if latest_result.get("Signal") != row["Signal"] or not mandatory_confirmation(latest_result, datetime.fromisoformat(prepared_scan["candle_close"])):
+                log_engine_decision(symbol=symbol, row=row, decision="SKIP_CHANGED_CONFIRMATION",
+                                    reason="Latest completed candle no longer confirms this PDH/PDL direction")
+                continue
+            if not claim_prepared_entry(prepared_scan["candle_close"], symbol, row["Signal"]):
+                log_engine_decision(symbol=symbol, row=row, decision="SKIP_PREPARED_DUPLICATE",
+                                    reason="An order or approval was already attempted for this five-minute confirmation")
+                continue
 
         if telegram.get("send_alerts", False):
             ok = send_telegram_message(tg_cfg, make_alert_message(row.to_dict(), option_clean))
@@ -2815,6 +2859,10 @@ def run_cycle(*, opening_trade_only: bool = False) -> None:
                 remaining_trades=remaining_trades,
             ))
             app_log(f"{symbol}: order submitted | qty={qty} | status={status}")
+            if prepared_scan is not None:
+                submitted_at = datetime.now(EASTERN)
+                latency = (submitted_at - datetime.fromisoformat(prepared_scan["candle_close"])).total_seconds()
+                app_log(f"Prepared PMB entry timing | symbol={symbol} | candle={prepared_scan['candle_close']} | submitted_at={submitted_at.isoformat()} | latency_seconds={latency:.2f}")
             log_engine_decision(
                 symbol=symbol,
                 row=row,
@@ -3018,6 +3066,37 @@ def run_broker_sync_cycle() -> None:
 
 
 _STOCK_WORKER = None
+_PREPARATION_WORKER = None
+_PREPARATION_SIGNATURE = None
+
+
+def stop_preparation_worker():
+    global _PREPARATION_WORKER, _PREPARATION_SIGNATURE
+    if _PREPARATION_WORKER is not None and _PREPARATION_WORKER.poll() is None:
+        _PREPARATION_WORKER.terminate()
+        try:
+            _PREPARATION_WORKER.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _PREPARATION_WORKER.kill()
+            _PREPARATION_WORKER.wait(timeout=5)
+    _PREPARATION_WORKER = None
+    _PREPARATION_SIGNATURE = None
+
+
+def ensure_preparation_worker(cfg):
+    global _PREPARATION_WORKER, _PREPARATION_SIGNATURE
+    if not scan_preparation_enabled(cfg) or not cfg.get("automation", {}).get("enabled"):
+        stop_preparation_worker()
+        return
+    signature = preparation_fingerprint(cfg, combined_watchlist(cfg))
+    if signature != _PREPARATION_SIGNATURE:
+        stop_preparation_worker()
+    if _PREPARATION_WORKER is None or _PREPARATION_WORKER.poll() is not None:
+        _PREPARATION_WORKER = subprocess.Popen(
+            [sys.executable, "-m", "modules.pmb_scan_worker", "--parent-pid", str(os.getpid())],
+            cwd=str(BASE_DIR), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        _PREPARATION_SIGNATURE = signature
 
 
 def stop_stock_worker():
@@ -3042,6 +3121,7 @@ def ensure_stock_worker(cfg):
 
 
 atexit.register(stop_stock_worker)
+atexit.register(stop_preparation_worker)
 
 
 def main() -> None:
@@ -3055,10 +3135,12 @@ def main() -> None:
     next_scan_at: datetime | None = None
     previous_scan_interval = 0
     previous_schedule_stage = ""
+    last_prepared_generation = None
     while True:
         try:
             cfg = effective_config(load_config())
             ensure_stock_worker(cfg)
+            ensure_preparation_worker(cfg)
             automation = cfg.get("automation", {})
             scan_interval = max(10, int(automation.get("scan_interval_seconds", 60)))
             strategy = cfg.get("strategy", {})
@@ -3106,6 +3188,18 @@ def main() -> None:
                 next_scan_at = None
                 previous_scan_interval = scan_interval
                 next_scan = 5.0
+            elif scan_preparation_enabled(cfg):
+                # The data worker streams the full watchlist while the parent
+                # continues position checks. Only final prepared candidates
+                # reach the order engine after the confirmation close.
+                now_wall = datetime.now(EASTERN)
+                prepared = read_prepared_scan(cfg, combined_watchlist(cfg), now_wall)
+                generation = (prepared["candle_close"], prepared["fingerprint"], prepared["generation"]) if prepared else None
+                if prepared and now_wall.time() >= first_scan_time and generation != last_prepared_generation:
+                    run_cycle(prepared_scan=prepared)
+                    last_prepared_generation = generation
+                    last_scan = time.monotonic()
+                next_scan = 1.0
             elif align_scans and scan_interval >= 60 and scan_interval % 60 == 0:
                 now_wall = datetime.now(EASTERN)
                 if next_scan_at is None or previous_scan_interval != scan_interval:

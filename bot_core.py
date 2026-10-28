@@ -514,6 +514,8 @@ def scan_symbol_ib(
     intraday_bar_size: str = "5 mins",
     analysis_bar_minutes: int | None = None,
     breakout_follow_through: dict | None = None,
+    prepared_data: tuple[pd.DataFrame, pd.DataFrame] | None = None,
+    as_of: datetime | None = None,
 ) -> dict | None:
     """Run the active scanner strategy on IBKR historical bars.
 
@@ -522,17 +524,17 @@ def scan_symbol_ib(
     parity. Confidence is returned only as a compatibility/debug field and is
     not used as a live trade blocker.
     """
-    now = pd.Timestamp(datetime.now(EASTERN))
+    now = pd.Timestamp(as_of or datetime.now(EASTERN))
     analysis_minutes = confirmation_analysis_minutes(breakout_follow_through, int(analysis_bar_minutes or candle_minutes(intraday_bar_size)))
     if follow_through_enabled(breakout_follow_through) and confirmation_minutes(breakout_follow_through, analysis_minutes) == 5 and candle_minutes(intraday_bar_size) > 5:
         intraday_bar_size = "5 mins"
-    raw_intraday = fetch_ib_intraday(ib, symbol, duration=intraday_duration, bar_size=intraday_bar_size)
+    raw_intraday = prepared_data[0] if prepared_data is not None else fetch_ib_intraday(ib, symbol, duration=intraday_duration, bar_size=intraday_bar_size)
     confirmation_source = completed_live_bars(raw_intraday, intraday_bar_size, None, now)
     intraday = prepare_live_analysis(
         raw_intraday, intraday_bar_size, analysis_minutes, now,
         keep_source_bars=(analysis_minutes == 5 and candle_minutes(intraday_bar_size) == 1),
     )
-    daily = fetch_ib_daily(ib, symbol)
+    daily = prepared_data[1] if prepared_data is not None else fetch_ib_daily(ib, symbol)
 
     if intraday.empty or len(intraday) < 50:
         return None
@@ -570,7 +572,7 @@ def scan_symbol_ib(
             as_of=now,
         )
         session_date = _result_session_date(result)
-        if session_date and session_date != datetime.now(EASTERN).date():
+        if session_date and session_date != now.date():
             return None
         return result
 
@@ -594,7 +596,7 @@ def scan_symbol_ib(
         as_of=now,
     )
     session_date = _result_session_date(result)
-    if session_date and session_date != datetime.now(EASTERN).date():
+    if session_date and session_date != now.date():
         return None
     return result
 
@@ -770,6 +772,8 @@ def get_snapshot_mid(ib: IB, contract) -> dict:
         "Ask": ask,
         "Last": last,
         "Mid": mid,
+        "Market Data Type": getattr(ticker, "marketDataType", None),
+        "Quote Time": getattr(ticker, "time", None),
         "Model Price": getattr(greeks, "optPrice", np.nan) if greeks else np.nan,
         "Spread %": spread_pct,
         "Volume": ticker.volume if ticker.volume else 0,
@@ -960,12 +964,33 @@ def _option_quality_score(option: dict, filters: dict) -> tuple[int, str]:
     return min(score, 100), " | ".join(notes)
 
 
-def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dte_target=7, option_filters: dict | None = None) -> dict | None:
+def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dte_target=7, option_filters: dict | None = None, *, prepared_option: dict | None = None, include_alternatives: bool = False) -> dict | None:
     if signal not in ["CALL", "PUT"]:
         return None
 
     filters = option_filters_from_config({"option_filters": option_filters or {}})
-    chain_candidates = _option_chain_candidates(ib, symbol, dte_target)
+    if prepared_option is not None:
+        # Only reuse contract discovery. Prices, spread, Greeks, volume, and
+        # affordability are validated again below against a fresh IBKR quote.
+        if prepared_option.get("Type") != signal:
+            return None
+        chain_candidates = []
+        seen_prepared = set()
+        for candidate in [prepared_option] + list(prepared_option.get("Prepared Alternatives", []))[:2]:
+            if candidate.get("Type") != signal:
+                continue
+            expiry = str(candidate.get("Expiry") or "")
+            if len(expiry) != 8 or expiry < datetime.now(EASTERN).strftime("%Y%m%d"):
+                continue
+            key = (expiry, float(candidate["Strike"]), candidate.get("Trading Class", ""))
+            if key in seen_prepared:
+                continue
+            seen_prepared.add(key)
+            chain_candidates.append({"expiry": expiry, "strikes": [key[1]],
+                                     "multiplier": "100", "exchange": "SMART",
+                                     "tradingClass": key[2]})
+    else:
+        chain_candidates = _option_chain_candidates(ib, symbol, dte_target)
     if not chain_candidates:
         return None
 
@@ -1018,6 +1043,11 @@ def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dt
             contract = qualified[0]
             market_checks += 1
             market = get_snapshot_mid(ib, contract)
+            if prepared_option is not None:
+                quote_time = market.get("Quote Time")
+                if market.get("Market Data Type") != 1 or not isinstance(quote_time, datetime) or quote_time.tzinfo is None or not 0 <= (datetime.now(EASTERN) - quote_time).total_seconds() <= 15:
+                    reject("fresh live option quote required")
+                    continue
             mid = _finite_number(market.get("Mid"))
             bid = _finite_number(market.get("Bid"))
             ask = _finite_number(market.get("Ask"))
@@ -1069,6 +1099,7 @@ def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dt
 
             row = {
                 "Contract": contract,
+                "ConId": getattr(contract, "conId", None),
                 "Option": f"{symbol} {expiry} {strike:g} {option_type}",
                 "Expiry": expiry,
                 "Strike": strike,
@@ -1112,6 +1143,11 @@ def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dt
         na_position="last",
     )
     best = df.iloc[0].to_dict()
+    if include_alternatives:
+        best["Prepared Alternatives"] = [
+            {key: value for key, value in row.items() if key != "Contract"}
+            for row in df.iloc[1:3].to_dict("records")
+        ]
     if rejects:
         best["Reject Summary"] = "; ".join(f"{reason}: {count}" for reason, count in sorted(rejects.items()))
     return best

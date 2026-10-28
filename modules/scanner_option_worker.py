@@ -52,6 +52,7 @@ def main():
                 payload["price"],
                 payload["dte"],
                 payload["filters"],
+                **({"include_alternatives": True} if payload.get("prepare_only") else {}),
             )
             clean = {key: value for key, value in option.items() if key != "Contract"} if option else None
         print(json.dumps({"option": clean}, default=str))
