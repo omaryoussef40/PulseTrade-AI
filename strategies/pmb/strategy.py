@@ -312,6 +312,9 @@ def evaluate_breakout_follow_through(
     volume_required = bool(cfg.get("volume_enabled", cfg["enabled"]))
     follow_required = bool(cfg.get("follow_through_enabled", cfg["enabled"]))
     required = volume_required or follow_required
+    freshness_minutes = int(cfg.get("freshness_minutes", 5))
+    if freshness_minutes not in (5, 10, 15):
+        raise ValueError("ORB freshness must be 5, 10, or 15 minutes")
     direction = str(direction or "").upper()
     result = {
         "required": required,
@@ -397,11 +400,16 @@ def evaluate_breakout_follow_through(
                       confirmation_closed_at=end, confirmation_close=float(breakout["Close"]))
         if current < end:
             result["reason"] = "Waiting for the completed ORB confirmation candle"
-        elif current.floor(f"{source_minutes}min") > end:
+        elif current >= end + pd.Timedelta(minutes=freshness_minutes):
             result["reason"] = "Follow-through confirmation is stale"
         else:
-            result.update(confirmed=True, follow_through_confirmed=True,
-                          reason="Breakout candle closed beyond the opening range")
+            latest = source[(source.index + pd.Timedelta(minutes=source_minutes) <= current)]
+            if latest.empty or not (float(latest.iloc[-1]["Close"]) > level if is_call else float(latest.iloc[-1]["Close"]) < level):
+                result["reason"] = "Latest completed candle closed back inside the opening range"
+            else:
+                result.update(confirmed=True, follow_through_confirmed=True,
+                              evaluated_close_at=latest.index[-1] + pd.Timedelta(minutes=source_minutes),
+                              reason="Breakout candle closed beyond the opening range")
         return result
 
     if explicit_confirmation(config):
@@ -423,7 +431,7 @@ def evaluate_breakout_follow_through(
         if current < end or not window.index.equals(expected):
             result["reason"] = f"Waiting for the completed {minutes}-minute confirmation candle"
             return result
-        if current.floor(f"{source_minutes}min") > end:
+        if current >= end + pd.Timedelta(minutes=freshness_minutes):
             result["reason"] = "Follow-through confirmation is stale"
             return result
         follow = pd.Series({"Close": window.iloc[-1]["Close"], "High": window["High"].max(), "Low": window["Low"].min()})
@@ -439,7 +447,7 @@ def evaluate_breakout_follow_through(
         result["follow_through_time"] = next_bars.index[0]
         result["confirmation_minutes"] = analysis_minutes
         result["confirmation_closed_at"] = next_bars.index[0] + pd.Timedelta(minutes=analysis_minutes)
-        if today_data.index[-1] != next_bars.index[0]:
+        if today_data.index[-1] + pd.Timedelta(minutes=analysis_minutes) >= result["confirmation_closed_at"] + pd.Timedelta(minutes=int(cfg.get("freshness_minutes", analysis_minutes))):
             result["reason"] = "Follow-through confirmation is stale"
             return result
     result["confirmation_close"] = float(follow["Close"])
@@ -831,6 +839,8 @@ def scan_dataframe(
         "Breakout Follow-through Time": follow_through.get("follow_through_time").strftime("%Y-%m-%d %H:%M %Z") if hasattr(follow_through.get("follow_through_time"), "strftime") else None,
         "Confirmation Breakout Time": str(follow_through.get("breakout_time") or ""),
         "Confirmation Mode": (breakout_follow_through or {}).get("confirmation_mode", "legacy_next"),
+        "ORB Freshness Minutes": int((breakout_follow_through or {}).get("freshness_minutes", 5)),
+        "Confirmation Evaluated Close At": str(follow_through.get("evaluated_close_at") or ""),
         "Fresh Breakout Enabled": bool((breakout_follow_through or {}).get("fresh_breakout_enabled", False)),
         "Confirmation Candle Minutes": follow_through.get("confirmation_minutes"),
         "Confirmation Closed At": follow_through.get("confirmation_closed_at").strftime("%Y-%m-%d %H:%M %Z") if hasattr(follow_through.get("confirmation_closed_at"), "strftime") else None,

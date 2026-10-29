@@ -483,6 +483,7 @@ def _apply_strategy_lab_to_engine(config: dict, settings: StrategyLabSettings, s
         "ORB": int(settings.orb_minutes),
         "Breakout volume": f"{float(confirmation.get('min_breakout_volume_ratio', 2.0)):g}×" if volume_enabled else "Off",
         "Confirmation": CONFIRMATION_MODES[confirmation_mode(confirmation)] if follow_enabled else "Off",
+        "ORB freshness window (minutes)": int(confirmation.get("freshness_minutes", 5)),
         "Fresh breakout reset": bool(confirmation.get("fresh_breakout_enabled", False)),
         "Staged timeline": bool(settings.use_staged_timeline),
         "Max trades/day": int(settings.max_trades_per_day),
@@ -1298,6 +1299,13 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
                 )
             else:
                 breakout_follow_through["confirmation_minutes"] = confirmation_minutes(breakout_follow_through)
+            breakout_follow_through["freshness_minutes"] = st.selectbox(
+                "ORB freshness window", [5, 10, 15],
+                index=[5, 10, 15].index(int(breakout_follow_through.get("freshness_minutes", 5))),
+                format_func=lambda value: f"{value} minutes",
+                help="Entry window after the ORB confirmation candle closes. At the end of this window the attempt expires. PDH/PDL and completed candle requirements still apply.",
+                key="sl_freshness_minutes",
+            )
             breakout_follow_through["fresh_breakout_enabled"] = st.checkbox(
                 "Allow a fresh breakout after price closes back inside the ORB",
                 value=bool(breakout_follow_through.get("fresh_breakout_enabled", False)),

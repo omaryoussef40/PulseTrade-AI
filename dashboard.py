@@ -1280,6 +1280,13 @@ def render_platform_settings(section="Advanced"):
             )
         else:
             breakout_confirmation["confirmation_minutes"] = confirmation_minutes(breakout_confirmation)
+        breakout_confirmation["freshness_minutes"] = st.selectbox(
+            "ORB freshness window", [5, 10, 15],
+            index=[5, 10, 15].index(int(breakout_confirmation.get("freshness_minutes", 5))),
+            format_func=lambda value: f"{value} minutes",
+            help="Entry window after the ORB confirmation candle closes. At the end of this window the attempt expires. PDH/PDL and completed candle requirements still apply.",
+            key="live_freshness_minutes",
+        )
         breakout_confirmation["fresh_breakout_enabled"] = st.checkbox(
             "Allow a fresh breakout after price closes back inside the ORB",
             value=bool(breakout_confirmation.get("fresh_breakout_enabled", False)),

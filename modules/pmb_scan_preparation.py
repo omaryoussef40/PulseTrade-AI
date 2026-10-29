@@ -76,7 +76,7 @@ def mandatory_confirmation(result, close_at):
         return False
     try:
         # PMB displays completed confirmation times in exchange-local minutes.
-        raw = str(result.get("Confirmation Closed At") or result.get("ORB Confirmation Time") or "")
+        raw = str(result.get("Confirmation Evaluated Close At") or result.get("Confirmation Closed At") or result.get("ORB Confirmation Time") or "")
         confirmed = datetime.strptime(raw[:16], "%Y-%m-%d %H:%M").replace(tzinfo=close_at.tzinfo)
     except ValueError:
         return False

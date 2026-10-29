@@ -90,7 +90,8 @@
       "follow_through_enabled": true,
       "confirmation_minutes": 5,
       "confirmation_mode": "orb_5",
-      "fresh_breakout_enabled": true
+      "fresh_breakout_enabled": true,
+      "freshness_minutes": 5
     }
   },
   "risk": {
@@ -349,7 +350,8 @@
       "follow_through_enabled": true,
       "confirmation_minutes": 5,
       "confirmation_mode": "orb_5",
-      "fresh_breakout_enabled": true
+      "fresh_breakout_enabled": true,
+      "freshness_minutes": 5
     },
     "use_staged_timeline": false,
     "visual_updates": false,

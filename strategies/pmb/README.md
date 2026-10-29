@@ -165,3 +165,17 @@ Breakout candle quality      10
 ATR movement quality         15
 Optional RVOL bonus           5
 ```
+
+## ORB freshness window
+
+Live settings and Strategy Lab each have an independent **ORB freshness window**
+with choices of 5, 10, or 15 minutes (`breakout_follow_through.freshness_minutes`).
+The default is 5. In direct five-minute mode the clock starts when the breakout
+candle closes: a close at 11:55 with a 10-minute window permits evaluations at
+11:55 and 12:00, and expires exactly at 12:05. The latest completed candle must
+still close beyond the ORB; PDH/PDL and all other entry filters still apply.
+This does not change the five-minute confirmation candle length or scan interval.
+For next-candle modes the clock starts at the selected confirmation's close;
+legacy configurations without this setting retain their analysis-bar window.
+Changing a Lab setting does not change live settings unless explicitly applied
+to the engine. Backtest run metadata records the selected freshness window.

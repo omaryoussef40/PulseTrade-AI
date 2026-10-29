@@ -963,6 +963,7 @@ class StrategyLabController:
             "bar_timestamp_semantics": "completed_at_close",
             "pmb_analysis_minutes": confirmation_analysis_minutes(settings.breakout_follow_through, NORMAL_ANALYSIS_MINUTES),
             "pmb_confirmation_mode": confirmation_mode(settings.breakout_follow_through),
+            "pmb_freshness_minutes": int((settings.breakout_follow_through or {}).get("freshness_minutes", 5)),
             "pmb_fresh_breakout_enabled": bool((settings.breakout_follow_through or {}).get("fresh_breakout_enabled", False)),
             "pmb_confirmation_minutes": confirmation_minutes(settings.breakout_follow_through),
             "pmb_warmup_days": 7 if "PMB" in selected_strategies else 0,
