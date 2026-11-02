@@ -154,7 +154,7 @@ def test_missing_final_stock_candle_cannot_be_used():
 
 def test_cached_stock_scan_does_no_network_fetch_and_excludes_unfinished_candle():
     raw=source_bars()
-    close=pd.Timestamp("2026-09-10 09:50",tz=core.EASTERN)
+    close=pd.Timestamp("2026-09-10 09:55",tz=core.EASTERN)
     confirmation={"confirmation_mode":"orb_5","follow_through_enabled":True,
                   "volume_enabled":False,"require_extension":True}
     with patch("bot_core.fetch_ib_intraday") as intraday, patch("bot_core.fetch_ib_daily") as daily:
@@ -164,7 +164,7 @@ def test_cached_stock_scan_does_no_network_fetch_and_excludes_unfinished_candle(
     intraday.assert_not_called();daily.assert_not_called()
     assert result["Signal"]=="CALL"
     assert result["Confirmation Candle Minutes"]==5
-    assert "09:50" in result["Confirmation Closed At"]
+    assert "09:55" in result["Confirmation Closed At"]
     assert result["Intraday Data"].index.max()+timedelta(minutes=5)<=close
 
 

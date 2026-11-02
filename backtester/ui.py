@@ -483,6 +483,7 @@ def _apply_strategy_lab_to_engine(config: dict, settings: StrategyLabSettings, s
         "ORB": int(settings.orb_minutes),
         "Breakout volume": f"{float(confirmation.get('min_breakout_volume_ratio', 2.0)):g}×" if volume_enabled else "Off",
         "Confirmation": CONFIRMATION_MODES[confirmation_mode(confirmation)] if follow_enabled else "Off",
+        "Separate PDH/PDL body confirmation": bool(confirmation.get("pdh_pdl_body_confirmation", True)),
         "ORB freshness window (minutes)": int(confirmation.get("freshness_minutes", 5)),
         "Fresh breakout reset": bool(confirmation.get("fresh_breakout_enabled", False)),
         "Staged timeline": bool(settings.use_staged_timeline),
@@ -1299,11 +1300,17 @@ def render_strategy_lab_tab(config: dict, default_symbols: list[str]):
                 )
             else:
                 breakout_follow_through["confirmation_minutes"] = confirmation_minutes(breakout_follow_through)
+            breakout_follow_through["pdh_pdl_body_confirmation"] = st.toggle(
+                "Require a separate candle to open and close beyond PDH/PDL",
+                value=bool(breakout_follow_through.get("pdh_pdl_body_confirmation", True)),
+                help="Applies to five-minute ORB confirmation. On: wait for a subsequent completed candle with its open and close beyond PDH/PDL and close beyond ORB; wicks are allowed. Off: use the previous close-only confirmation; the crossing candle may qualify. PDH/PDL crossing remains required.",
+                key="sl_pdh_pdl_body_confirmation",
+            )
             breakout_follow_through["freshness_minutes"] = st.selectbox(
                 "ORB freshness window", [5, 10, 15],
                 index=[5, 10, 15].index(int(breakout_follow_through.get("freshness_minutes", 5))),
                 format_func=lambda value: f"{value} minutes",
-                help="Entry window after the ORB confirmation candle closes. At the end of this window the attempt expires. PDH/PDL and completed candle requirements still apply.",
+                help="Entry window after the qualifying confirmation candle closes. In five-minute mode, a separate candle must open and close beyond PDH/PDL after the ORB breakout. Wicks are allowed.",
                 key="sl_freshness_minutes",
             )
             breakout_follow_through["fresh_breakout_enabled"] = st.checkbox(

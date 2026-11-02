@@ -1280,11 +1280,17 @@ def render_platform_settings(section="Advanced"):
             )
         else:
             breakout_confirmation["confirmation_minutes"] = confirmation_minutes(breakout_confirmation)
+        breakout_confirmation["pdh_pdl_body_confirmation"] = st.toggle(
+            "Require a separate candle to open and close beyond PDH/PDL",
+            value=bool(breakout_confirmation.get("pdh_pdl_body_confirmation", True)),
+            help="Applies to five-minute ORB confirmation. On: wait for a subsequent completed candle with its open and close beyond PDH/PDL and close beyond ORB; wicks are allowed. Off: use the previous close-only confirmation; the crossing candle may qualify. PDH/PDL crossing remains required.",
+            key="live_pdh_pdl_body_confirmation",
+        )
         breakout_confirmation["freshness_minutes"] = st.selectbox(
             "ORB freshness window", [5, 10, 15],
             index=[5, 10, 15].index(int(breakout_confirmation.get("freshness_minutes", 5))),
             format_func=lambda value: f"{value} minutes",
-            help="Entry window after the ORB confirmation candle closes. At the end of this window the attempt expires. PDH/PDL and completed candle requirements still apply.",
+            help="Entry window after the qualifying confirmation candle closes. In five-minute mode, a separate candle must open and close beyond PDH/PDL after the ORB breakout. Wicks are allowed.",
             key="live_freshness_minutes",
         )
         breakout_confirmation["fresh_breakout_enabled"] = st.checkbox(

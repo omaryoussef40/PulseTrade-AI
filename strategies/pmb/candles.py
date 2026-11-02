@@ -46,7 +46,7 @@ def completed_live_bars(
 
 # Keep the legacy choice when loading a configuration saved before modes existed.
 CONFIRMATION_MODES = {
-    'orb_5': '5-minute candle after the ORB',
+    'orb_5': '5-minute ORB confirmation',
     'orb_15': '15-minute candle after the ORB',
     'breakout_5': '15-minute breakout, then 5-minute confirmation',
     'legacy_next': 'Legacy: next candle after the breakout',

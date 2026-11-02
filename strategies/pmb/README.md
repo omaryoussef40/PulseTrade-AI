@@ -40,7 +40,7 @@ Live **Breakout Confirmation** and Strategy Lab **Scanner** share the optional
 
 | Choice (`confirmation_mode`) | Analysis | Earliest confirmation with a 09:30–09:45 ORB |
 | --- | --- | --- |
-| `orb_5`: 5-minute candle after the ORB | 5 minutes | 09:50 |
+| `orb_5`: separate five-minute body beyond PDH/PDL after ORB | 5 minutes | 09:55 at earliest for a 09:45–09:50 breakout |
 | `orb_15`: 15-minute candle after the ORB | 15 minutes | 10:00 |
 | `breakout_5`: 15-minute breakout, then 5-minute confirmation | 15 minutes | 10:05 |
 | `legacy_next`: next candle after the breakout | Existing scanner timeframe | Existing behavior |
@@ -170,7 +170,7 @@ Optional RVOL bonus           5
 
 Live settings and Strategy Lab each have an independent **ORB freshness window**
 with choices of 5, 10, or 15 minutes (`breakout_follow_through.freshness_minutes`).
-The default is 5. In direct five-minute mode the clock starts when the breakout
+The default is 5. In five-minute mode the clock starts when the qualifying body-confirmation
 candle closes: a close at 11:55 with a 10-minute window permits evaluations at
 11:55 and 12:00, and expires exactly at 12:05. The latest completed candle must
 still close beyond the ORB; PDH/PDL and all other entry filters still apply.
@@ -179,3 +179,22 @@ For next-candle modes the clock starts at the selected confirmation's close;
 legacy configurations without this setting retain their analysis-bar window.
 Changing a Lab setting does not change live settings unless explicitly applied
 to the engine. Backtest run metadata records the selected freshness window.
+
+## Five-minute body confirmation
+
+The five-minute ORB mode used by live PMB and Strategy Lab now waits for a
+separate candle after the ORB breakout candle. A CALL confirmation must open
+and close strictly above PDH, and close above the ORB high. A PUT confirmation
+must open and close strictly below PDL, and close below the ORB low. Wicks
+through the daily level are allowed. Unfinished candles never qualify.
+The first qualifying confirmation close starts the configured 5/10/15-minute
+freshness window; each later entry evaluation must also pass the body rule.
+The window does not restart on every qualifying candle. Other confirmation
+modes retain their existing behavior.
+
+Live settings and Strategy Lab each provide an independent **Require a separate
+candle to open and close beyond PDH/PDL** toggle
+(`breakout_follow_through.pdh_pdl_body_confirmation`, default on). Turning it off
+restores the earlier close-only behavior in five-minute mode, including its
+freshness clock starting at the ORB breakout close. It does not disable the
+PDH/PDL crossing requirement or allow unfinished candles.

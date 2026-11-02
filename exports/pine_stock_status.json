@@ -1,17 +1,17 @@
 {
-  "timestamp": "2026-10-19T10:13:55.871176-04:00",
+  "timestamp": "2026-10-30T09:36:45.942557-04:00",
   "mode": "IBKR Live",
   "plan_date": "2026-10-12",
   "decisions": [
     {
-      "symbol": "URBN",
+      "symbol": "HUM",
       "status": "BLOCKED",
-      "reason": "Stock quote unavailable."
+      "reason": "Stock spread too wide."
     },
     {
-      "symbol": "XOM",
+      "symbol": "URBN",
       "status": "BLOCKED",
-      "reason": "Stock quote unavailable."
+      "reason": "Stock spread too wide."
     }
   ],
   "positions": [],

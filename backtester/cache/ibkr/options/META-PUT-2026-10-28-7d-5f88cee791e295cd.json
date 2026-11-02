@@ -1,0 +1,11 @@
+{
+  "symbol": "META",
+  "option_dte": 7,
+  "expiry": "20261104",
+  "strike": 615.0,
+  "right": "P",
+  "localSymbol": "META  261104P00615000",
+  "conId": 937419800,
+  "tradingClass": "META",
+  "multiplier": "100"
+}

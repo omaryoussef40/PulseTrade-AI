@@ -1,16 +1,16 @@
 {
-  "date": "2026-10-14",
+  "date": "2026-10-29",
   "status": "COMPLETE",
-  "completed_at": "2026-10-14T23:48:23.334295-04:00",
+  "completed_at": "2026-10-29T16:20:32.674479-04:00",
   "symbols": [
     "SPY",
     "QQQ",
+    "MSFT",
+    "AMZN",
     "IWM",
     "NVDA",
     "AAPL",
-    "MSFT",
     "META",
-    "AMZN",
     "GOOGL",
     "TSLA",
     "AMD",
@@ -40,7 +40,7 @@
   ],
   "period": "60d",
   "interval": "5m",
-  "candles": 124644,
+  "candles": 127296,
   "symbols_loaded": 34,
   "data_errors": 0
 }

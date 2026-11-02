@@ -1,0 +1,11 @@
+{
+  "symbol": "GS",
+  "option_dte": 7,
+  "expiry": "20261106",
+  "strike": 895.0,
+  "right": "C",
+  "localSymbol": "GS    261106C00895000",
+  "conId": 927793715,
+  "tradingClass": "GS",
+  "multiplier": "100"
+}

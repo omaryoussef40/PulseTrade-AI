@@ -20,7 +20,7 @@ def config(mode, fresh=False):
 
 
 @pytest.mark.parametrize('mode,clock,previous,minutes', [
-    ('orb_5', '09:50', '09:49:59', 5),
+    ('orb_5', '09:55', '09:54:59', 5),
     ('orb_15', '10:00', '09:59:59', 15),
     ('breakout_5', '10:05', '10:04:59', 5),
 ])
@@ -59,7 +59,7 @@ def test_modes_match_live_and_replay_at_first_completed_confirmation(mode, clock
     assert confirmation_scan_interval_seconds(900, cfg) == minutes * 60
 
 
-@pytest.mark.parametrize('mode,clock', [('orb_5', '09:50'), ('orb_15', '10:00'), ('breakout_5', '10:05')])
+@pytest.mark.parametrize('mode,clock', [('orb_5', '09:55'), ('orb_15', '10:00'), ('breakout_5', '10:05')])
 def test_full_replay_records_first_entry_at_selected_time(mode, clock):
     settings = StrategyLabSettings(symbols=['TEST'], period='1d', interval='5m',
                                    first_signal_minutes=20, min_session_bars=2,

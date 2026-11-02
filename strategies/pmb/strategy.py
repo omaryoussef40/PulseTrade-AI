@@ -301,6 +301,8 @@ def evaluate_breakout_follow_through(
     confirmation_intraday: pd.DataFrame | None = None,
     confirmation_source_minutes: int | None = None,
     as_of: pd.Timestamp | None = None,
+    pdh: float | None = None,
+    pdl: float | None = None,
 ) -> dict:
     """Apply volume and the selected confirmation sequence to an ORB attempt.
 
@@ -396,6 +398,33 @@ def evaluate_breakout_follow_through(
         source = confirmation_intraday if confirmation_intraday is not None else today_data
         source_minutes = int(confirmation_source_minutes or analysis_minutes)
         current = pd.Timestamp(as_of) if as_of is not None else source.index[-1] + pd.Timedelta(minutes=source_minutes)
+        if analysis_minutes == 5 and bool(cfg.get("pdh_pdl_body_confirmation", True)) and pdh is not None and pdl is not None:
+            # The crossing candle is not confirmation. Wait for a subsequent
+            # completed body beyond yesterday's level, allowing wicks through it.
+            completed = source[(source.index >= end) & (source.index + pd.Timedelta(minutes=source_minutes) <= current)]
+            result["confirmation_minutes"] = 5
+            if source_minutes != 5:
+                result["reason"] = "PDH/PDL body confirmation requires five-minute candles"
+                return result
+            daily_level = float(pdh if is_call else pdl)
+            bodies = ((completed["Open"] > daily_level) & (completed["Close"] > daily_level) & (completed["Close"] > level)) if is_call else ((completed["Open"] < daily_level) & (completed["Close"] < daily_level) & (completed["Close"] < level))
+            qualifying = completed[bodies]
+            result["reason"] = "Waiting for a completed five-minute candle opening and closing beyond PDH/PDL after ORB breakout"
+            if qualifying.empty:
+                return result
+            first = qualifying.index[0]
+            end = first + pd.Timedelta(minutes=5)
+            result.update(follow_through_time=first, confirmation_closed_at=end,
+                          confirmation_close=float(qualifying.iloc[0]["Close"]))
+            if current >= end + pd.Timedelta(minutes=freshness_minutes):
+                result["reason"] = "Follow-through confirmation is stale"
+            elif not bool(bodies.iloc[-1]):
+                result["reason"] = "Latest completed candle must open and close beyond PDH/PDL and close beyond ORB"
+            else:
+                result.update(confirmed=True, follow_through_confirmed=True,
+                              evaluated_close_at=completed.index[-1] + pd.Timedelta(minutes=5),
+                              reason="Five-minute candle opened and closed beyond PDH/PDL after ORB breakout")
+            return result
         result.update(confirmation_minutes=analysis_minutes, follow_through_time=breakout_time,
                       confirmation_closed_at=end, confirmation_close=float(breakout["Close"]))
         if current < end:
@@ -736,6 +765,8 @@ def scan_dataframe(
         orb_low=orb_low,
         orb_bars=orb_bars,
         config=breakout_follow_through,
+        pdh=pdh,
+        pdl=pdl,
         confirmation_intraday=_normalize_ohlcv(confirmation_intraday, timezone=timezone) if confirmation_intraday is not None else None,
         confirmation_source_minutes=confirmation_source_minutes,
         as_of=as_of,
@@ -839,6 +870,7 @@ def scan_dataframe(
         "Breakout Follow-through Time": follow_through.get("follow_through_time").strftime("%Y-%m-%d %H:%M %Z") if hasattr(follow_through.get("follow_through_time"), "strftime") else None,
         "Confirmation Breakout Time": str(follow_through.get("breakout_time") or ""),
         "Confirmation Mode": (breakout_follow_through or {}).get("confirmation_mode", "legacy_next"),
+        "PDH/PDL Body Confirmation Required": bool((breakout_follow_through or {}).get("pdh_pdl_body_confirmation", True)),
         "ORB Freshness Minutes": int((breakout_follow_through or {}).get("freshness_minutes", 5)),
         "Confirmation Evaluated Close At": str(follow_through.get("evaluated_close_at") or ""),
         "Fresh Breakout Enabled": bool((breakout_follow_through or {}).get("fresh_breakout_enabled", False)),
