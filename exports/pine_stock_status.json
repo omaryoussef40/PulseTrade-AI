@@ -1,17 +1,27 @@
 {
-  "timestamp": "2026-10-30T09:36:45.942557-04:00",
+  "timestamp": "2026-11-03T12:09:44.372026-05:00",
   "mode": "IBKR Live",
   "plan_date": "2026-10-12",
   "decisions": [
     {
-      "symbol": "HUM",
+      "symbol": "AMD",
       "status": "BLOCKED",
-      "reason": "Stock spread too wide."
+      "reason": "Invalid or crossed stock quote."
     },
     {
-      "symbol": "URBN",
+      "symbol": "MU",
       "status": "BLOCKED",
-      "reason": "Stock spread too wide."
+      "reason": "Invalid or crossed stock quote."
+    },
+    {
+      "symbol": "NVDA",
+      "status": "BLOCKED",
+      "reason": "Invalid or crossed stock quote."
+    },
+    {
+      "symbol": "XOM",
+      "status": "BLOCKED",
+      "reason": "Invalid or crossed stock quote."
     }
   ],
   "positions": [],

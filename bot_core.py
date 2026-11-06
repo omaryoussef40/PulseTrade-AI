@@ -1276,10 +1276,16 @@ def get_today_traded_symbols() -> set[str]:
         return set()
 
 
-def get_open_position_deployed() -> float:
-    """Return capital currently deployed in locally tracked open option positions."""
+def get_open_position_deployed(count_prior_day_positions: bool = True) -> float:
+    """Return entry-cost exposure included in the option allocation budget.
+
+    Unknown entry dates remain counted; known prior New York dates may be excluded.
+    This changes sizing only, never broker holdings or exit ownership.
+    """
     deployed = 0.0
     for pos in read_active_positions():
+        if not count_prior_day_positions and is_prior_session_position(pos):
+            continue
         qty = _number_or_none(pos.get("quantity")) or 0
         entry_price = _number_or_none(pos.get("entry_price")) or 0
         if qty > 0 and entry_price > 0:
@@ -1923,12 +1929,35 @@ def _position_history_keys(position: dict) -> list[str]:
     return keys
 
 
+def is_prior_session_position(position: dict, now_et: datetime | None = None) -> bool:
+    """Prior New York session holdings are outside automated exit ownership."""
+    now_et = now_et or datetime.now(EASTERN)
+    raw = position.get("entry_time") or position.get("opened_at") or position.get("timestamp")
+    if not raw:
+        lookup = _trade_log_entry_lookup()
+        for key in _position_history_keys(position):
+            if key in lookup:
+                row = lookup[key]
+                raw = row.get("entry_time") or row.get("timestamp") or row.get("opened_at")
+                if raw:
+                    break
+    try:
+        opened = datetime.fromisoformat(str(raw))
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=EASTERN)
+        return opened.astimezone(EASTERN).date() < now_et.astimezone(EASTERN).date()
+    except (ValueError, TypeError):
+        return False
+
+
 def assert_position_exit_allowed(position: dict) -> None:
+    if is_prior_session_position(position):
+        raise ValueError("Prior-session position is monitor only; PulseTrade exits are prohibited")
     # Check both persisted provenance and live local records at the final order boundary.
     keys = set(_position_history_keys(position))
     manual = is_monitor_only_position(position)
     for existing in read_active_positions():
-        if keys.intersection(_position_history_keys(existing)) and is_monitor_only_position(existing):
+        if keys.intersection(_position_history_keys(existing)) and (is_monitor_only_position(existing) or is_prior_session_position(existing)):
             manual = True
     if manual:
         raise ValueError("Manual position is monitor only; PulseTrade exits are prohibited")
@@ -2517,6 +2546,9 @@ def ensure_protective_orders(ib: IB, pos: dict, account: str | None = None,
                              stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
                              take_profit_pct: float = DEFAULT_TAKE_PROFIT_PCT,
                              fixed_take_profit_enabled: bool = True) -> list[dict]:
+    if is_prior_session_position(pos):
+        return [{"Symbol": pos.get("symbol"), "Action": "PRIOR_SESSION_MONITOR_ONLY",
+                 "Reason": "Prior-session holding; existing broker orders left unchanged"}]
     if pos.get("exit_evaluation_mode") != CANDLE_CLOSE_MODE or is_monitor_only_position(pos):
         return _ensure_protective_orders(ib, pos, account, stop_loss_pct, take_profit_pct,
                                          fixed_take_profit_enabled)
@@ -2542,6 +2574,8 @@ def _ensure_protective_orders(
     fixed_take_profit_enabled: bool = True,
 ) -> list[dict]:
     """Create missing broker-side fixed SL/TP OCA orders for an open option position."""
+    if is_prior_session_position(pos):
+        return []
     if is_monitor_only_position(pos):
         if account:
             pos["account"] = account
@@ -3445,6 +3479,12 @@ def manage_open_positions(
 
     for pos in positions:
         try:
+            if is_prior_session_position(pos, now_et):
+                pos["exit_management_status"] = "Prior-session holding - automated exits disabled"
+                still_active.append(pos)
+                events.append({"Symbol": pos.get("symbol"), "Action": "PRIOR_SESSION_MONITOR_ONLY",
+                               "Reason": "Prior-session holding; existing broker orders left unchanged"})
+                continue
             monitor_only = is_monitor_only_position(pos)
             configure_option_exit_mode(pos, exit_evaluation_mode, stop_loss_pct)
             if not monitor_only and exit_order_still_pending(ib, pos):
@@ -3874,7 +3914,7 @@ def default_config() -> dict:
         "staged_trading_timeline": {"enabled": False, "opening_start_hour": 9, "opening_start_minute": 35, "opening_end_hour": 9, "opening_end_minute": 45, "midday_end_hour": 11, "midday_end_minute": 30, "retest_end_hour": 13, "retest_end_minute": 30, "opening_scan_interval_seconds": 60, "orb_scan_interval_seconds": 300, "retest_scan_interval_seconds": 300},
         "opening_orb_trade": {"enabled": False, "start_hour": 9, "start_minute": 35, "end_hour": 9, "end_minute": 45, "orb_minutes": 5, "capital_pct": 50.0, "scan_interval_seconds": 30, "min_score": 94.0, "min_rvol": 1.5, "stop_loss_pct": 5.0},
         "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "use_sr_filter": True, "min_sr_room_pct": 0.75, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7, "require_break_retest": False, "retest_tolerance_pct": 0.10, "retest_max_minutes": 45},
-        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "allow_same_symbol_same_day": False, "recycle_capital_after_exit": False, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 14, "entry_cutoff_minute": 30, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_from_entry": True, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "use_take_profit_with_trailing": False, "force_exit_enabled": True, "require_eod_exit_approval": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
+        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "allow_same_symbol_same_day": False, "recycle_capital_after_exit": False, "count_prior_day_positions_in_allocation": True, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 14, "entry_cutoff_minute": 30, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_from_entry": True, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "use_take_profit_with_trailing": False, "force_exit_enabled": True, "require_eod_exit_approval": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},
         "option_filters": dict(DEFAULT_OPTION_FILTERS),
         "watchlist": WATCHLIST,

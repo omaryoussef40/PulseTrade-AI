@@ -1144,6 +1144,12 @@ def render_platform_settings(section="Advanced"):
             value=bool(r.get("recycle_capital_after_exit", False)),
             help="When enabled, closed trades free daily capital for later entries. Max trades per day still counts every entry.",
         )
+        r["count_prior_day_positions_in_allocation"] = st.toggle(
+            "Count prior-day positions toward today's option allocation",
+            value=bool(r.get("count_prior_day_positions_in_allocation", True)),
+            help="When recycling capital, include older open option positions at their entry cost. Turn off to reserve today's allocation for today's positions only. Unknown entry dates remain counted. IBKR available funds still limit entries; older holdings remain real account exposure.",
+            key="live_count_prior_day_positions_in_allocation",
+        )
         r["reserve_capital_for_remaining_trades"] = st.checkbox(
             "Reserve daily capital across remaining trades",
             value=bool(r.get("reserve_capital_for_remaining_trades", True)),
@@ -1158,8 +1164,8 @@ def render_platform_settings(section="Advanced"):
         today_trade_count, today_deployed_capital = get_today_trade_stats()
         if r["recycle_capital_after_exit"]:
             from bot_core import get_open_position_deployed
-            open_deployed_capital = get_open_position_deployed()
-            st.caption(f"Today: {today_trade_count} trades | ${open_deployed_capital:,.2f} currently open | ${today_deployed_capital:,.2f} gross entries")
+            open_deployed_capital = get_open_position_deployed(count_prior_day_positions=bool(r.get("count_prior_day_positions_in_allocation", True)))
+            st.caption(f"Today: {today_trade_count} trades | ${open_deployed_capital:,.2f} open capital counted toward allocation | ${today_deployed_capital:,.2f} gross entries")
         else:
             st.caption(f"Today: {today_trade_count} trades | ${today_deployed_capital:,.2f} deployed")
 

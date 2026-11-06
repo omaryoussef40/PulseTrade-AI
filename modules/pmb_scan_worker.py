@@ -26,20 +26,35 @@ class OptionPreparation:
         self.running = {}
         self.options = {}
         self.attempted = {}
+        self.errors = {}
 
     def poll(self, now):
         for slot, (process, key, started, target) in list(self.running.items()):
-            if process.poll() is None and (now - started).total_seconds() <= 150:
+            timed_out = process.poll() is None and (now - started).total_seconds() > 150
+            if process.poll() is None and not timed_out:
                 continue
-            if process.poll() is None:
+            if timed_out:
                 process.kill()
             stdout, _ = process.communicate(timeout=5)
+            option = None
             try:
-                option = json.loads(stdout).get("option")
+                response = json.loads(stdout)
+                option = response.get("option")
+                error = response.get("error") or response.get("diagnostic")
             except (ValueError, AttributeError):
-                option = None
+                error = "Option worker returned invalid or empty JSON"
+            if timed_out:
+                error = "Option worker exceeded 150-second deadline"
+            elif process.returncode:
+                error = error or f"Option worker exited with code {process.returncode}"
             if option:
                 self.options[key] = {"option": option, "prepared_at": now.isoformat(), "target": target}
+                self.errors.pop(key, None)
+            else:
+                detail = str(error or "No option passed discovery and configured quality filters")[:1000]
+                self.errors[key] = {"reason": detail, "at": now.isoformat(), "target": target}
+                from bot_core import app_log
+                app_log(f"PMB option discovery failed | symbol_side={key} | target={target} | reason={detail}", "WARN")
             self.running.pop(slot, None)
 
     def prepare(self, symbol, side, price, target, now):
@@ -242,7 +257,7 @@ def run(parent_pid):
                     option = options.get(symbol, result["Signal"], now)
                     if option:
                         prepared_options[symbol] = option
-            content = json_safe({"results": results, "options": prepared_options})
+            content = json_safe({"results": results, "options": prepared_options, "option_errors": options.errors})
             from hashlib import sha256
             generation = sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
             write_snapshot({**content, "fingerprint": signature, "generation": generation,

@@ -1260,7 +1260,7 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
         if approval_cfg.get('_concurrent_strategies'):
             equity=verified_account_equity(ib,ib_cfg.account)
             if approval_cfg.get('risk',{}).get('recycle_capital_after_exit'):
-                deployed=get_open_position_deployed()
+                deployed=get_open_position_deployed(count_prior_day_positions=bool(approval_cfg.get("risk", {}).get("count_prior_day_positions_in_allocation", True)))
         check_automated_option_entry(approval_cfg, order, count, deployed,account_size=equity)
         approval_risk = approval_cfg.get("risk", {})
         symbol = str(order.get("symbol") or "").strip().upper()
@@ -1538,7 +1538,7 @@ def run_opening_orb_trade_cycle(
         )
 
     recycle_capital = bool(risk.get("recycle_capital_after_exit", False))
-    current_deployed = get_open_position_deployed() if recycle_capital else daily_deployed
+    current_deployed = get_open_position_deployed(count_prior_day_positions=bool(risk.get("count_prior_day_positions_in_allocation", True))) if recycle_capital else daily_deployed
     remaining_capital = max(0.0, float(max_daily_capital) - float(current_deployed))
     spend_limit = opening_orb_spend_limit(
         account_size,
@@ -2371,7 +2371,7 @@ def run_cycle(*, opening_trade_only: bool = False, prepared_scan: dict | None = 
 
     current_trade_count, daily_deployed = get_today_trade_stats()
     recycle_capital = bool(risk.get("recycle_capital_after_exit", False))
-    current_deployed = get_open_position_deployed() if recycle_capital else daily_deployed
+    current_deployed = get_open_position_deployed(count_prior_day_positions=bool(risk.get("count_prior_day_positions_in_allocation", True))) if recycle_capital else daily_deployed
     remaining_trades = max(0, int(risk.get("max_trades_per_day", 2)) - current_trade_count)
     remaining_capital = max(0.0, max_daily_capital - current_deployed)
     reserve_capital = bool(risk.get("reserve_capital_for_remaining_trades", True))
@@ -2481,7 +2481,7 @@ def run_cycle(*, opening_trade_only: bool = False, prepared_scan: dict | None = 
             prepared_option = prepared_scan.get("options", {}).get(symbol) if prepared_scan is not None else None
             if prepared_scan is not None and prepared_option is None:
                 log_engine_decision(symbol=symbol, row=row, decision="WAIT_OPTION_PREPARATION",
-                                    reason="Confirmed signal; waiting for read-only option discovery")
+                                    reason=("Option discovery failed: " + str(prepared_scan["option_errors"][f"{symbol}:{row['Signal']}"]["reason"])) if f"{symbol}:{row['Signal']}" in prepared_scan.get("option_errors", {}) else "Confirmed signal; waiting for read-only option discovery")
                 continue
             option_full = recommend_option_ib(
                 ib,
