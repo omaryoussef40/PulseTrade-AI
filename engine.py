@@ -14,6 +14,8 @@ import traceback
 from datetime import datetime, time as dtime, timedelta
 from html import escape
 from pathlib import Path
+from modules.daily_option_capital import daily_option_capital
+from modules.telegram_polling import polling_slot
 from modules.strategy_controls import effective_config, check_automated_option_entry, verified_account_equity
 from modules.pmb_scan_preparation import (
     enabled as scan_preparation_enabled, read_snapshot as read_prepared_scan,
@@ -38,6 +40,9 @@ from bot_core import (
     add_active_position_from_entry,
     app_log,
     assert_position_exit_allowed,
+    requires_prior_session_exit_approval,
+    is_prior_session_position,
+    suspend_prior_session_protection,
     calculate_contract_quantity,
     clean_for_table,
     connect_ib,
@@ -317,9 +322,16 @@ def request_eod_exit_approvals(tg_cfg: TelegramConfig, events: list[dict] | None
             approval_mode="Telegram",
         )
         sent = False
-        if created:
+        retry = not order.get("telegram_message_id") and str(order.get("status")) in {"pending", "approval_send_failed"}
+        attempted = order.get("telegram_last_attempt_at")
+        if attempted:
+            retry = retry and (datetime.now(EASTERN) - datetime.fromisoformat(attempted)).total_seconds() >= 60
+        if created or retry:
+            update_pending_approval(order["id"], telegram_last_attempt_at=datetime.now(EASTERN).isoformat())
             try:
                 sent = send_order_approval_message(tg_cfg, order)
+                if not sent:
+                    update_pending_approval(order["id"], status="approval_send_failed")
             except Exception as exc:
                 update_pending_approval(order["id"], status="approval_send_failed", error=str(exc))
                 app_log(f"{position.get('symbol')}: EOD exit approval send failed | id={order.get('id')} | {exc}", "WARN")
@@ -719,7 +731,7 @@ def opening_orb_spend_limit(
         max(float(account_size), 0.0) * max(float(capital_pct), 0.0) / 100.0,
         max(float(remaining_daily_capital), 0.0),
     )
-    if liquidity_available is not None and float(liquidity_available) > 0:
+    if liquidity_available is not None:
         limit = min(limit, float(liquidity_available))
     return max(0.0, float(limit))
 
@@ -1062,12 +1074,23 @@ def create_pending_approval(row: pd.Series, option_clean: dict, option_full: dic
 def create_pending_exit_approval(position: dict, current_price: float | None, reason: str, mode: str, *, approval_mode: str = "Telegram") -> tuple[dict, bool]:
     position_id = str(position.get("id") or position.get("con_id") or position.get("option") or "")
     orders = read_pending_approvals()
+    prior_session = is_prior_session_position(position)
+    today = datetime.now(EASTERN).date().isoformat()
     for order in orders:
-        if (
-            str(order.get("status", "")).lower() in ["pending", "sent", "approval_send_failed"]
-            and str(order.get("source") or "") == "position_exit"
-            and str(order.get("position_id") or "") == position_id
-        ):
+        same_position = str(order.get("source") or "") == "position_exit" and str(order.get("position_id") or "") == position_id
+        if not same_position:
+            continue
+        if prior_session and order.get("approval_day") != today:
+            if str(order.get("status", "")).lower() in {"pending", "sent", "approval_send_failed", "approved"}:
+                order["status"] = "expired"
+            continue
+        statuses = {"pending", "sent", "approval_send_failed"}
+        if prior_session:
+            statuses.add("rejected")
+        if prior_session and int(order.get("quantity") or 0) != int(position.get("quantity") or 0):
+            order["status"] = "expired"
+            continue
+        if str(order.get("status", "")).lower() in statuses:
             return order, False
 
     qty = int(float(position.get("quantity") or 0))
@@ -1077,6 +1100,13 @@ def create_pending_exit_approval(position: dict, current_price: float | None, re
         "status": "pending",
         "created_at": datetime.now(EASTERN).isoformat(),
         "source": "position_exit",
+        "approval_day": today,
+        "prior_session_exit": prior_session,
+        "entry_time": position.get("entry_time"),
+        "management_mode": position.get("management_mode"),
+        "entry_source": position.get("entry_source"),
+        "software_control_enabled": position.get("software_control_enabled"),
+        "account": position.get("account"),
         "approval_mode": approval_mode,
         "action": "SELL",
         "position_id": position_id,
@@ -1096,7 +1126,7 @@ def create_pending_exit_approval(position: dict, current_price: float | None, re
         "account_mode": mode,
         "score": "EOD",
         "grade": "Exit",
-        "setup_quality": "End-of-day close approval",
+        "setup_quality": "Previous-day position — confirmation required" if prior_session else "End-of-day close approval",
         "rank_score": 0,
         "reasons": reason,
         "raw_signal": {
@@ -1124,7 +1154,7 @@ def approval_message(order: dict) -> str:
     limit_price = order.get("limit_price")
     limit_line = f"Limit: ${float(limit_price):.2f}" if limit_price not in [None, "", 0] else "Limit: N/A"
     action = str(order.get("action") or "BUY").upper()
-    title = "PulseTrade Exit Approval" if action == "SELL" else "PulseTrade Order Approval"
+    title = "PulseTrade Previous-Day Exit Approval" if order.get("prior_session_exit") else "PulseTrade Exit Approval" if action == "SELL" else "PulseTrade Order Approval"
     cost_label = "Estimated proceeds" if action == "SELL" else "Estimated cost"
     return (
         f"🚨 <b>{title}</b>\n\n"
@@ -1147,11 +1177,18 @@ def approval_message(order: dict) -> str:
     )
 
 
+class TelegramAPIError(RuntimeError):
+    def __init__(self, method, data):
+        self.error_code = data.get("error_code")
+        self.retry_after = data.get("parameters", {}).get("retry_after", 0)
+        super().__init__(f"Telegram {method} failed: {data}")
+
+
 def telegram_post(bot_token: str, method: str, payload: dict, timeout: int = 10) -> dict:
     response = requests.post(f"https://api.telegram.org/bot{bot_token}/{method}", json=payload, timeout=timeout)
     data = response.json() if response.content else {}
     if response.status_code != 200 or not data.get("ok"):
-        raise RuntimeError(f"Telegram {method} failed: {data}")
+        raise TelegramAPIError(method, data)
     return data
 
 
@@ -1238,8 +1275,25 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
             or str(approval_state.get("status") or "").upper() != "PENDING_APPROVAL"
         ):
             raise RuntimeError("The 09:35-09:45 ET opening ORB approval window is closed.")
+    prior_session_approved = False
     if str(order.get("action") or "BUY").upper() == "SELL":
-        assert_position_exit_allowed(order)
+        if requires_prior_session_exit_approval(order):
+            saved = next((item for item in read_pending_approvals() if item.get("id") == order.get("id")), {})
+            matches = all(saved.get(key) == order.get(key) for key in ("position_id", "con_id", "symbol", "expiry", "strike", "signal", "quantity", "account"))
+            prior_session_approved = bool(matches and saved.get("source") == "position_exit"
+                and saved.get("action") == "SELL" and saved.get("status") == "approved"
+                and saved.get("confirmed_via") == "Telegram" and saved.get("telegram_message_id")
+                and saved.get("approval_day") == datetime.now(EASTERN).date().isoformat())
+        assert_position_exit_allowed(order, prior_session_approved=prior_session_approved)
+        if prior_session_approved:
+            positions = [pos for pos in read_active_positions() if str(pos.get("id") or pos.get("con_id") or pos.get("option") or "") == str(order.get("position_id") or "")]
+            if len(positions) != 1 or int(positions[0].get("quantity") or 0) != int(order.get("quantity") or 0):
+                raise ValueError("Position changed since exit approval; request a fresh confirmation.")
+            if positions[0].get("account") and positions[0]["account"] != ib_cfg.account:
+                raise ValueError("Exit approval belongs to a different IBKR account.")
+            cleanup = suspend_prior_session_protection(ib, positions[0], ib_cfg.account)
+            if any(event.get("Action") == "CANCEL_PROTECTION_FAILED" for event in cleanup):
+                raise ValueError("Could not cancel existing bot exit orders; exit submission blocked.")
     contract = reconstruct_option_contract(order)
     qualified = ib.qualifyContracts(contract)
     if qualified:
@@ -1257,10 +1311,16 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
         approval_cfg = effective_config(load_config())
         count, deployed = get_today_trade_stats()
         equity=None
-        if approval_cfg.get('_concurrent_strategies'):
+        approval_risk = approval_cfg.get("risk", {})
+        if approval_risk.get("use_daily_available_capital", False):
+            equity, available = daily_option_capital(ib, ib_cfg.account)
+            cost = float(limit_price or order.get("mid") or 0) * qty * 100
+            if cost <= 0 or cost > available:
+                raise ValueError("Option entry exceeds current IBKR available funds.")
+        elif approval_cfg.get('_concurrent_strategies'):
             equity=verified_account_equity(ib,ib_cfg.account)
-            if approval_cfg.get('risk',{}).get('recycle_capital_after_exit'):
-                deployed=get_open_position_deployed(count_prior_day_positions=bool(approval_cfg.get("risk", {}).get("count_prior_day_positions_in_allocation", True)))
+        if approval_risk.get('recycle_capital_after_exit'):
+            deployed=get_open_position_deployed(count_prior_day_positions=not bool(approval_risk.get("use_daily_available_capital", False)))
         check_automated_option_entry(approval_cfg, order, count, deployed,account_size=equity)
         approval_risk = approval_cfg.get("risk", {})
         symbol = str(order.get("symbol") or "").strip().upper()
@@ -1270,7 +1330,7 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
             and symbol in get_today_traded_symbols()
         ):
             raise RuntimeError(f"{symbol} was already traded today; repeat ticker entries are disabled.")
-    trade = place_option_order(ib, contract, action, qty, order_type, limit_price, ib_cfg.account, max_wait_seconds=max_wait_seconds)
+    trade = place_option_order(ib, contract, action, qty, order_type, limit_price, ib_cfg.account, max_wait_seconds=max_wait_seconds, **({"prior_session_approved": True} if prior_session_approved else {}))
     fallback_entry_price = float(limit_price if limit_price else order.get("mid") or order.get("entry_price") or 0)
     fill = trade_fill_details(trade, qty, fallback_entry_price)
     status = str(fill["status"])
@@ -1427,13 +1487,38 @@ def submit_approved_order(ib, ib_cfg: IBConfig, order: dict, max_wait_seconds: i
 def process_telegram_order_callbacks(ib, ib_cfg: IBConfig, tg_cfg: TelegramConfig, can_trade: bool) -> int:
     if not tg_cfg.bot_token or not tg_cfg.chat_id:
         return 0
+    # Keep ownership through order submission and saving the Telegram offset.
+    # Other dashboard sessions or engine processes return immediately.
+    with polling_slot(tg_cfg.bot_token) as slot:
+        if slot is None or not slot.ready():
+            return 0
+        try:
+            processed = _process_telegram_order_callbacks(ib, ib_cfg, tg_cfg, can_trade)
+        except Exception as exc:
+            code = getattr(exc, "error_code", None)
+            transient = (is_telegram_polling_noise(exc)
+                         or isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError))
+                         or code in {409, 429, 500, 502, 503, 504})
+            if not transient:
+                raise
+            warn, delay = slot.failed(getattr(exc, "retry_after", 0))
+            if warn:
+                conflict = code == 409 or "terminated by other getUpdates" in str(exc)
+                reason = "another program or machine is receiving replies for this bot" if conflict else "Telegram is temporarily unavailable or rate-limited"
+                app_log(f"Telegram reply polling paused: {reason}; retry in {delay:g} seconds. Repeated warnings are limited to once every 5 minutes.", "WARN")
+            return 0
+        if slot.succeeded():
+            app_log("Telegram reply polling recovered.")
+        return processed
+
+
+def _process_telegram_order_callbacks(ib, ib_cfg: IBConfig, tg_cfg: TelegramConfig, can_trade: bool) -> int:
     state = read_json_file(TELEGRAM_APPROVAL_STATE_FILE, {})
     payload = {"timeout": 3}
     if state.get("offset") is not None:
         payload["offset"] = state["offset"]
     data = telegram_post(tg_cfg.bot_token, "getUpdates", payload, timeout=12)
     processed = 0
-    orders_by_id = {order.get("id"): order for order in read_pending_approvals()}
     for update in data.get("result", []):
         state["offset"] = int(update["update_id"]) + 1
         callback = update.get("callback_query") or {}
@@ -1448,7 +1533,7 @@ def process_telegram_order_callbacks(ib, ib_cfg: IBConfig, tg_cfg: TelegramConfi
         if chat_id != str(tg_cfg.chat_id):
             telegram_try_post(tg_cfg.bot_token, "answerCallbackQuery", {"callback_query_id": callback_id, "text": "Unauthorized chat"})
             continue
-        pending = orders_by_id.get(order_id)
+        pending = next((item for item in read_pending_approvals() if item.get("id") == order_id), None)
         if not pending or str(pending.get("status", "")).lower() not in ["pending", "sent"]:
             telegram_try_post(tg_cfg.bot_token, "answerCallbackQuery", {"callback_query_id": callback_id, "text": "Order is no longer pending"})
             continue
@@ -1471,6 +1556,8 @@ def process_telegram_order_callbacks(ib, ib_cfg: IBConfig, tg_cfg: TelegramConfi
                 telegram_try_post(tg_cfg.bot_token, "answerCallbackQuery", {"callback_query_id": callback_id, "text": "Trading is not armed"})
                 continue
             try:
+                if pending.get("prior_session_exit"):
+                    pending = update_pending_approval(order_id, status="approved", confirmed_via="Telegram", confirmed_at=datetime.now(EASTERN).isoformat())
                 status = submit_approved_order(ib, ib_cfg, pending)
                 telegram_try_post(tg_cfg.bot_token, "answerCallbackQuery", {"callback_query_id": callback_id, "text": f"Submitted: {status}"})
                 if message_id:
@@ -1538,7 +1625,7 @@ def run_opening_orb_trade_cycle(
         )
 
     recycle_capital = bool(risk.get("recycle_capital_after_exit", False))
-    current_deployed = get_open_position_deployed(count_prior_day_positions=bool(risk.get("count_prior_day_positions_in_allocation", True))) if recycle_capital else daily_deployed
+    current_deployed = get_open_position_deployed(count_prior_day_positions=not bool(risk.get("use_daily_available_capital", False))) if recycle_capital else daily_deployed
     remaining_capital = max(0.0, float(max_daily_capital) - float(current_deployed))
     spend_limit = opening_orb_spend_limit(
         account_size,
@@ -1832,6 +1919,10 @@ def run_opening_orb_trade_cycle(
             break
 
         try:
+            if risk.get("use_daily_available_capital", False):
+                _, current_funds = daily_option_capital(ib, ib_cfg.account)
+                if estimated_cost > current_funds:
+                    raise ValueError("Option entry exceeds current IBKR available funds.")
             trade = place_option_order(
                 ib,
                 option_full["Contract"],
@@ -2108,7 +2199,15 @@ def run_cycle(*, opening_trade_only: bool = False, prepared_scan: dict | None = 
     consecutive_losses, realized_pnl_today = get_today_loss_stats()
     account_size = max(float(risk.get("account_size", 1000) or 1000), 1.0)
     liquidity_available: float | None = None
-    if bool(risk.get("use_ibkr_buying_power", False)):
+    daily_available = bool(risk.get("use_daily_available_capital", False))
+    if daily_available:
+        try:
+            account_size, liquidity_available = daily_option_capital(ib, ib_cfg.account)
+            app_log(f"Daily option starting capital={account_size:.2f} | current available funds={liquidity_available:.2f}")
+        except (ValueError, OSError) as exc:
+            app_log(f"Daily available capital unavailable; new option entries blocked: {exc}", "WARN")
+            account_size, liquidity_available, can_trade = 0.0, 0.0, False
+    elif bool(risk.get("use_ibkr_buying_power", False)):
         try:
             summary_rows = ib.accountSummary()
             buying_power = None
@@ -2146,7 +2245,7 @@ def run_cycle(*, opening_trade_only: bool = False, prepared_scan: dict | None = 
                 app_log("IBKR account value unavailable; using saved account size for sizing.", "WARN")
         except Exception as exc:
             app_log(f"IBKR account value refresh failed; using saved account size: {exc}", "WARN")
-    if cfg.get('_concurrent_strategies'):
+    if cfg.get('_concurrent_strategies') and not daily_available:
         try:
             account_size=verified_account_equity(ib,ib_cfg.account)
         except ValueError as exc:
@@ -2371,7 +2470,7 @@ def run_cycle(*, opening_trade_only: bool = False, prepared_scan: dict | None = 
 
     current_trade_count, daily_deployed = get_today_trade_stats()
     recycle_capital = bool(risk.get("recycle_capital_after_exit", False))
-    current_deployed = get_open_position_deployed(count_prior_day_positions=bool(risk.get("count_prior_day_positions_in_allocation", True))) if recycle_capital else daily_deployed
+    current_deployed = get_open_position_deployed(count_prior_day_positions=not bool(risk.get("use_daily_available_capital", False))) if recycle_capital else daily_deployed
     remaining_trades = max(0, int(risk.get("max_trades_per_day", 2)) - current_trade_count)
     remaining_capital = max(0.0, max_daily_capital - current_deployed)
     reserve_capital = bool(risk.get("reserve_capital_for_remaining_trades", True))
@@ -2470,7 +2569,7 @@ def run_cycle(*, opening_trade_only: bool = False, prepared_scan: dict | None = 
             continue
 
         spend_limit = min(max_spend_per_trade, remaining_capital)
-        if liquidity_available and liquidity_available > 0:
+        if liquidity_available is not None:
             spend_limit = min(spend_limit, liquidity_available)
         if reserve_capital and remaining_trades > 0:
             spend_limit = min(spend_limit, remaining_capital / remaining_trades)
@@ -2481,7 +2580,7 @@ def run_cycle(*, opening_trade_only: bool = False, prepared_scan: dict | None = 
             prepared_option = prepared_scan.get("options", {}).get(symbol) if prepared_scan is not None else None
             if prepared_scan is not None and prepared_option is None:
                 log_engine_decision(symbol=symbol, row=row, decision="WAIT_OPTION_PREPARATION",
-                                    reason=("Option discovery failed: " + str(prepared_scan["option_errors"][f"{symbol}:{row['Signal']}"]["reason"])) if f"{symbol}:{row['Signal']}" in prepared_scan.get("option_errors", {}) else "Confirmed signal; waiting for read-only option discovery")
+                                    reason="Confirmed signal; waiting for read-only option discovery")
                 continue
             option_full = recommend_option_ib(
                 ib,
@@ -2757,6 +2856,11 @@ def run_cycle(*, opening_trade_only: bool = False, prepared_scan: dict | None = 
                     max_daily_capital=max_daily_capital,
                 )
                 continue
+            if daily_available:
+                _, current_funds = daily_option_capital(ib, ib_cfg.account)
+                if estimated_cost > current_funds:
+                    app_log(f"{symbol}: entry blocked; cost exceeds current IBKR available funds", "WARN")
+                    continue
             trade = place_option_order(ib, option_full["Contract"], "BUY", qty, entry_order_type, limit_price, ib_cfg.account)
             fallback_entry_price = float(limit_price if limit_price else option_full["Mid"])
             fill = trade_fill_details(trade, qty, fallback_entry_price)
@@ -2971,9 +3075,7 @@ def run_broker_sync_cycle() -> None:
                 if processed_callbacks:
                     app_log(f"Processed {processed_callbacks} Telegram order approval callback(s)")
             except Exception as exc:
-                if is_telegram_polling_noise(exc):
-                    app_log(f"Telegram order approval polling skipped: {exc}", "WARN")
-                else:
+                if not is_telegram_polling_noise(exc):
                     app_log(f"Telegram order approval callback check failed: {exc}", "WARN")
 
         imported, message = sync_today_executions_to_trade_log(ib, account=ib_cfg.account)

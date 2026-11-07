@@ -1,5 +1,3 @@
-from datetime import datetime
-from zoneinfo import ZoneInfo
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,10 +10,6 @@ import engine
 
 class ManualExitSafetyTests(unittest.TestCase):
     def setUp(self):
-        clock_patch = patch.object(core, "datetime", wraps=datetime)
-        clock = clock_patch.start()
-        clock.now.return_value = datetime(2026, 9, 15, 12, tzinfo=ZoneInfo("America/New_York"))
-        self.addCleanup(clock_patch.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = str(Path(self.tmp.name) / 'trades.csv')

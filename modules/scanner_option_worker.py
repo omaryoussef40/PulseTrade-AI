@@ -39,14 +39,12 @@ def main():
 
     payload = json.load(sys.stdin)
     ib = None
-    stage = "connect"
     try:
         with contextlib.redirect_stdout(io.StringIO()):
             settings = dict(payload["ib"])
             settings["readonly"] = True
             ib = connect_ib(IBConfig(**settings))
             ib.RequestTimeout = 5
-            stage = "discover_and_filter"
             option = recommend_option_ib(
                 ib,
                 payload["symbol"],
@@ -57,9 +55,9 @@ def main():
                 **({"include_alternatives": True} if payload.get("prepare_only") else {}),
             )
             clean = {key: value for key, value in option.items() if key != "Contract"} if option else None
-        print(json.dumps({"option": clean, "diagnostic": None if clean else "No option passed chain discovery, qualification, quotes and configured quality filters"}, default=str))
+        print(json.dumps({"option": clean}, default=str))
     except Exception as exc:
-        print(json.dumps({"error": f"{stage}: {type(exc).__name__}: {str(exc) or type(exc).__name__}"}))
+        print(json.dumps({"error": str(exc) or type(exc).__name__}))
     finally:
         if ib is not None:
             ib.disconnect()

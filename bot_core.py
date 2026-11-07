@@ -1277,11 +1277,7 @@ def get_today_traded_symbols() -> set[str]:
 
 
 def get_open_position_deployed(count_prior_day_positions: bool = True) -> float:
-    """Return entry-cost exposure included in the option allocation budget.
-
-    Unknown entry dates remain counted; known prior New York dates may be excluded.
-    This changes sizing only, never broker holdings or exit ownership.
-    """
+    """Return capital currently deployed in locally tracked open option positions."""
     deployed = 0.0
     for pos in read_active_positions():
         if not count_prior_day_positions and is_prior_session_position(pos):
@@ -1354,6 +1350,7 @@ def place_option_order(
     limit_price: float | None,
     account: str | None = None,
     max_wait_seconds: int = 60,
+    *, prior_session_approved: bool = False,
 ):
     if str(action).upper() == "SELL":
         position = {
@@ -1363,7 +1360,7 @@ def place_option_order(
             "strike": getattr(option_contract, "strike", None),
             "signal": "CALL" if getattr(option_contract, "right", "") == "C" else "PUT",
         }
-        assert_position_exit_allowed(position)
+        assert_position_exit_allowed(position, prior_session_approved=prior_session_approved)
     if quantity <= 0:
         raise ValueError("Quantity must be greater than zero")
 
@@ -1930,7 +1927,7 @@ def _position_history_keys(position: dict) -> list[str]:
 
 
 def is_prior_session_position(position: dict, now_et: datetime | None = None) -> bool:
-    """Prior New York session holdings are outside automated exit ownership."""
+    """Identify positions entered before the current New York calendar date."""
     now_et = now_et or datetime.now(EASTERN)
     raw = position.get("entry_time") or position.get("opened_at") or position.get("timestamp")
     if not raw:
@@ -1950,17 +1947,28 @@ def is_prior_session_position(position: dict, now_et: datetime | None = None) ->
         return False
 
 
-def assert_position_exit_allowed(position: dict) -> None:
-    if is_prior_session_position(position):
-        raise ValueError("Prior-session position is monitor only; PulseTrade exits are prohibited")
+def requires_prior_session_exit_approval(position: dict) -> bool:
+    keys = set(_position_history_keys(position))
+    matching = [existing for existing in read_active_positions()
+                if keys.intersection(_position_history_keys(existing))]
+    if matching:
+        return any(is_prior_session_position(existing) for existing in matching)
+    return is_prior_session_position(position)
+
+
+def assert_position_exit_allowed(position: dict, *, prior_session_approved: bool = False) -> None:
     # Check both persisted provenance and live local records at the final order boundary.
     keys = set(_position_history_keys(position))
     manual = is_monitor_only_position(position)
-    for existing in read_active_positions():
-        if keys.intersection(_position_history_keys(existing)) and (is_monitor_only_position(existing) or is_prior_session_position(existing)):
-            manual = True
+    matching = [existing for existing in read_active_positions()
+                if keys.intersection(_position_history_keys(existing))]
+    if matching and not is_manual_order_metadata(position) and position.get("software_control_enabled") is not False:
+        manual = any(is_monitor_only_position(existing) for existing in matching)
     if manual:
         raise ValueError("Manual position is monitor only; PulseTrade exits are prohibited")
+
+    if not prior_session_approved and requires_prior_session_exit_approval(position):
+        raise ValueError("Prior-session position requires Telegram exit confirmation")
 
 
 def disable_manual_position_exits(ib: IB, pos: dict) -> list[dict]:
@@ -2546,9 +2554,8 @@ def ensure_protective_orders(ib: IB, pos: dict, account: str | None = None,
                              stop_loss_pct: float = DEFAULT_STOP_LOSS_PCT,
                              take_profit_pct: float = DEFAULT_TAKE_PROFIT_PCT,
                              fixed_take_profit_enabled: bool = True) -> list[dict]:
-    if is_prior_session_position(pos):
-        return [{"Symbol": pos.get("symbol"), "Action": "PRIOR_SESSION_MONITOR_ONLY",
-                 "Reason": "Prior-session holding; existing broker orders left unchanged"}]
+    if is_prior_session_position(pos) and not is_monitor_only_position(pos):
+        return suspend_prior_session_protection(ib, pos, account)
     if pos.get("exit_evaluation_mode") != CANDLE_CLOSE_MODE or is_monitor_only_position(pos):
         return _ensure_protective_orders(ib, pos, account, stop_loss_pct, take_profit_pct,
                                          fixed_take_profit_enabled)
@@ -2574,8 +2581,8 @@ def _ensure_protective_orders(
     fixed_take_profit_enabled: bool = True,
 ) -> list[dict]:
     """Create missing broker-side fixed SL/TP OCA orders for an open option position."""
-    if is_prior_session_position(pos):
-        return []
+    if is_prior_session_position(pos) and not is_monitor_only_position(pos):
+        return suspend_prior_session_protection(ib, pos, account)
     if is_monitor_only_position(pos):
         if account:
             pos["account"] = account
@@ -2957,6 +2964,24 @@ def _ensure_protective_orders(
     return events
 
 
+def suspend_prior_session_protection(ib: IB, pos: dict, account: str | None = None) -> list[dict]:
+    """Only PulseTrade-owned broker exits may be replaced with approval."""
+    events = []
+    for trade in _open_sell_trades_for_position(ib, pos):
+        order = trade.order
+        if not str(getattr(order, "ocaGroup", "") or "").startswith("PulseProtect-"):
+            continue
+        if (account or pos.get("account")) and getattr(order, "account", None) != (account or pos.get("account")):
+            continue
+        try:
+            ib.cancelOrder(order)
+            events.append({"Symbol": pos.get("symbol"), "Action": "CANCEL_PROTECTION", "Order ID": _order_id(order)})
+        except Exception as exc:
+            events.append({"Symbol": pos.get("symbol"), "Action": "CANCEL_PROTECTION_FAILED", "Status": str(exc)})
+    pos["protective_orders_status"] = "Prior-session position: Telegram confirmation required for exits"
+    return events
+
+
 def cancel_protective_orders(ib: IB, pos: dict) -> list[dict]:
     """Cancel local-position protective orders before Pulse submits its own exit."""
     wanted_ids = {
@@ -3333,7 +3358,7 @@ def manage_candle_close_position(ib, pos, contract, now_et, *, account,
             events.append({"Symbol": pos.get("symbol"), "Action": "OPTION_CANDLE_CLOSE", "Candle Close": timestamp.isoformat(), "Option Close": close, "Stop": pos["current_stop_price"], "Emergency Stop": pos["emergency_stop_price"], "Reason": reason})
             if reason:
                 break
-    if reason == "End-of-day forced exit" and require_eod_exit_approval:
+    if reason and (is_prior_session_position(pos, now_et) or (reason == "End-of-day forced exit" and require_eod_exit_approval)):
         events.append({"Symbol": pos.get("symbol"), "Option": pos.get("option"), "Action": "EXIT_APPROVAL_REQUIRED", "Reason": reason, "Quantity": pos.get("quantity"), "Entry": pos.get("entry_price"), "Current": pos.get("current_price"), "Position": dict(pos)})
     elif reason and allow_live_orders:
         submit_exit_order(ib, pos, None, reason, account=account, use_market=True)
@@ -3479,12 +3504,6 @@ def manage_open_positions(
 
     for pos in positions:
         try:
-            if is_prior_session_position(pos, now_et):
-                pos["exit_management_status"] = "Prior-session holding - automated exits disabled"
-                still_active.append(pos)
-                events.append({"Symbol": pos.get("symbol"), "Action": "PRIOR_SESSION_MONITOR_ONLY",
-                               "Reason": "Prior-session holding; existing broker orders left unchanged"})
-                continue
             monitor_only = is_monitor_only_position(pos)
             configure_option_exit_mode(pos, exit_evaluation_mode, stop_loss_pct)
             if not monitor_only and exit_order_still_pending(ib, pos):
@@ -3608,7 +3627,7 @@ def manage_open_positions(
                 reason = "Trailing stop hit"
 
             if reason:
-                if reason == "End-of-day forced exit" and require_eod_exit_approval:
+                if is_prior_session_position(pos, now_et) or (reason == "End-of-day forced exit" and require_eod_exit_approval):
                     still_active.append(pos)
                     events.append({
                         "Symbol": pos.get("symbol"),
@@ -3914,7 +3933,7 @@ def default_config() -> dict:
         "staged_trading_timeline": {"enabled": False, "opening_start_hour": 9, "opening_start_minute": 35, "opening_end_hour": 9, "opening_end_minute": 45, "midday_end_hour": 11, "midday_end_minute": 30, "retest_end_hour": 13, "retest_end_minute": 30, "opening_scan_interval_seconds": 60, "orb_scan_interval_seconds": 300, "retest_scan_interval_seconds": 300},
         "opening_orb_trade": {"enabled": False, "start_hour": 9, "start_minute": 35, "end_hour": 9, "end_minute": 45, "orb_minutes": 5, "capital_pct": 50.0, "scan_interval_seconds": 30, "min_score": 94.0, "min_rvol": 1.5, "stop_loss_pct": 5.0},
         "strategy": {"option_dte": 7, "min_score": 70, "min_confidence": 0, "use_rvol_filter": False, "min_rvol": 1.5, "use_rvol_score": False, "use_rvol_ranking": False, "use_sr_filter": True, "min_sr_room_pct": 0.75, "min_atr": 0.3, "top_n_tickers": 2, "active_strategy": "pmb", "orb_minutes": 15, "first_signal_minutes": 20, "min_session_bars": 7, "require_break_retest": False, "retest_tolerance_pct": 0.10, "retest_max_minutes": 45},
-        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "max_trades_per_day": 2, "allow_same_symbol_same_day": False, "recycle_capital_after_exit": False, "count_prior_day_positions_in_allocation": True, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 14, "entry_cutoff_minute": 30, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_from_entry": True, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "use_take_profit_with_trailing": False, "force_exit_enabled": True, "require_eod_exit_approval": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
+        "risk": {"account_size": 1000, "use_ibkr_buying_power": False, "use_daily_available_capital": False, "max_trades_per_day": 2, "allow_same_symbol_same_day": False, "recycle_capital_after_exit": False, "reserve_capital_for_remaining_trades": True, "max_spend_per_trade_pct": 20.0, "max_daily_capital_pct": 35.0, "max_spend_per_trade": 200, "max_daily_capital": 350, "max_contracts": 5, "entry_cutoff_hour": 14, "entry_cutoff_minute": 30, "stop_loss_pct": 20.0, "take_profit_pct": 30.0, "breakeven_trigger_pct": 15.0, "trailing_from_entry": True, "trailing_trigger_pct": 25.0, "trailing_stop_pct": 10.0, "use_take_profit_with_trailing": False, "force_exit_enabled": True, "require_eod_exit_approval": True, "force_exit_hour": 15, "force_exit_minute": 55, "max_consecutive_losses": 2, "max_daily_drawdown_pct": 5.0},
         "order": {"type": "LIMIT"},
         "option_filters": dict(DEFAULT_OPTION_FILTERS),
         "watchlist": WATCHLIST,

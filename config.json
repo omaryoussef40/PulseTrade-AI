@@ -121,7 +121,8 @@
     "force_exit_minute": 45,
     "max_consecutive_losses": 2,
     "max_daily_drawdown_pct": 6.0,
-    "exit_evaluation_mode": "five_minute_close"
+    "exit_evaluation_mode": "five_minute_close",
+    "use_daily_available_capital": true
   },
   "order": {
     "type": "MARKET"

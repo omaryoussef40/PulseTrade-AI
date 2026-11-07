@@ -33,7 +33,7 @@ def evaluate(pos, close, timestamp="11:05:00"):
 @pytest.fixture(autouse=True)
 def isolated_trade_history():
     with patch("bot_core._trade_log_entry_lookup", return_value={}), patch("bot_core.datetime", wraps=datetime) as clock:
-        clock.now.return_value = at("12:00:00")
+        clock.now.return_value = at("11:30:00")
         yield
 
 

@@ -1091,8 +1091,13 @@ def render_platform_settings(section="Advanced"):
         st.markdown("#### Position Size")
         r = cfg["risk"]
         s = cfg["strategy"]
+        r["use_daily_available_capital"] = st.toggle(
+            "Start each day with available capital only",
+            value=bool(r.get("use_daily_available_capital", False)),
+            help="For options, keep the first verified IBKR AvailableFunds balance of each New York trading day as the daily starting capital. Older open positions do not consume today's allocation. Current funds still limit every new entry. The baseline survives restarts.",
+        )
         buying_power = _number_or_none((st.session_state.get("ibkr_account_summary") or {}).get("AvailableFunds"))
-        use_buying_power = st.checkbox("Use IBKR available funds as account size", value=bool(r.get("use_ibkr_buying_power", False)))
+        use_buying_power = st.checkbox("Use IBKR available funds as account size", value=bool(r.get("use_ibkr_buying_power", False)) or r["use_daily_available_capital"], disabled=r["use_daily_available_capital"])
         r["use_ibkr_buying_power"] = bool(use_buying_power)
         if use_buying_power and buying_power is None:
             try:
@@ -1108,15 +1113,24 @@ def render_platform_settings(section="Advanced"):
                 st.session_state["ibkr_account_summary"] = summary
                 buying_power = _number_or_none(summary.get("AvailableFunds"))
             except Exception as exc:
-                st.caption(f"IBKR available funds are not available yet, using saved account size. {exc}")
+                st.caption(f"IBKR available funds are not available yet. {exc}")
 
-        if use_buying_power and buying_power is not None:
+        starting = None
+        if r["use_daily_available_capital"]:
+            from modules.daily_option_capital import saved_starting_capital
+            starting = saved_starting_capital(ib_cfg.account)
+        if starting is not None:
+            r["account_size"] = starting
+            st.number_input("Today's starting option capital USD", value=starting, min_value=0.0, step=100.0, disabled=True)
+        elif use_buying_power and buying_power is not None:
             r["account_size"] = round(float(buying_power), 2)
             st.number_input("Account size USD", value=float(r["account_size"]), min_value=0.0, step=100.0, disabled=True)
-            st.caption(f"Using IBKR AvailableFunds: ${float(buying_power):,.2f}")
         else:
-            r["account_size"] = st.number_input("Account size USD", value=float(r.get("account_size", 1000)), min_value=100.0, step=100.0)
-
+            r["account_size"] = st.number_input("Account size USD", value=float(r.get("account_size", 1000)), min_value=0.0, step=100.0, disabled=r["use_daily_available_capital"])
+        if use_buying_power and buying_power is not None:
+            st.caption(f"Current IBKR AvailableFunds: ${float(buying_power):,.2f}")
+        if r["use_daily_available_capital"]:
+            st.caption("Older positions are excluded from today's option allocation. The starting capital is fixed at the first engine option cycle and survives restarts; unavailable broker funds block new entries.")
         account_size = max(float(r.get("account_size", 1000) or 1000), 1.0)
         r["max_trades_per_day"] = st.number_input("Max trades per day", value=int(r.get("max_trades_per_day", 2)), min_value=1, max_value=10, step=1, disabled=preset_locked)
         r["allow_same_symbol_same_day"] = st.checkbox(
@@ -1144,12 +1158,6 @@ def render_platform_settings(section="Advanced"):
             value=bool(r.get("recycle_capital_after_exit", False)),
             help="When enabled, closed trades free daily capital for later entries. Max trades per day still counts every entry.",
         )
-        r["count_prior_day_positions_in_allocation"] = st.toggle(
-            "Count prior-day positions toward today's option allocation",
-            value=bool(r.get("count_prior_day_positions_in_allocation", True)),
-            help="When recycling capital, include older open option positions at their entry cost. Turn off to reserve today's allocation for today's positions only. Unknown entry dates remain counted. IBKR available funds still limit entries; older holdings remain real account exposure.",
-            key="live_count_prior_day_positions_in_allocation",
-        )
         r["reserve_capital_for_remaining_trades"] = st.checkbox(
             "Reserve daily capital across remaining trades",
             value=bool(r.get("reserve_capital_for_remaining_trades", True)),
@@ -1164,8 +1172,8 @@ def render_platform_settings(section="Advanced"):
         today_trade_count, today_deployed_capital = get_today_trade_stats()
         if r["recycle_capital_after_exit"]:
             from bot_core import get_open_position_deployed
-            open_deployed_capital = get_open_position_deployed(count_prior_day_positions=bool(r.get("count_prior_day_positions_in_allocation", True)))
-            st.caption(f"Today: {today_trade_count} trades | ${open_deployed_capital:,.2f} open capital counted toward allocation | ${today_deployed_capital:,.2f} gross entries")
+            open_deployed_capital = get_open_position_deployed(count_prior_day_positions=not r["use_daily_available_capital"])
+            st.caption(f"Today: {today_trade_count} trades | ${open_deployed_capital:,.2f} counted toward allocation | ${today_deployed_capital:,.2f} gross entries")
         else:
             st.caption(f"Today: {today_trade_count} trades | ${today_deployed_capital:,.2f} deployed")
 
@@ -1216,6 +1224,7 @@ def render_platform_settings(section="Advanced"):
         r["entry_cutoff_minute"] = st.number_input("No new entries after minute ET", value=int(r.get("entry_cutoff_minute", 0)), min_value=0, max_value=59, step=1, disabled=preset_locked or timeline_locked)
         r["force_exit_enabled"] = st.checkbox("Force exit open trades near end of day", value=bool(r.get("force_exit_enabled", True)))
         r["require_eod_exit_approval"] = st.checkbox("Require Telegram approval for EOD exit", value=bool(r.get("require_eod_exit_approval", True)))
+        st.caption("Positions opened on earlier New York dates always require Telegram confirmation before a PulseTrade exit. Their bot-owned standing protection is replaced by confirmation requests; manually placed broker orders stay active.")
         r["force_exit_hour"] = st.number_input("Force exit hour ET", value=int(r.get("force_exit_hour", 15)), min_value=9, max_value=15, step=1)
         r["force_exit_minute"] = st.number_input("Force exit minute ET", value=int(r.get("force_exit_minute", 55)), min_value=0, max_value=59, step=1)
         r["max_consecutive_losses"] = st.number_input("Stop after consecutive losses", value=int(r.get("max_consecutive_losses", 2)), min_value=1, max_value=10, step=1, disabled=preset_locked)
@@ -2729,7 +2738,8 @@ def start_telegram_decision_worker() -> None:
         while True:
             try:
                 current_cfg = load_config()
-                if bool(current_cfg.get("automation", {}).get("require_trade_approval", False)):
+                engine_running, _ = get_trading_engine_process_status()
+                if engine_running and bool(current_cfg.get("automation", {}).get("enabled", False)):
                     time.sleep(2)
                     continue
                 current_ib_cfg = IBConfig(
