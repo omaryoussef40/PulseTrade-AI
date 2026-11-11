@@ -1,0 +1,11 @@
+{
+  "symbol": "HIMS",
+  "option_dte": 7,
+  "expiry": "20261113",
+  "strike": 24.0,
+  "right": "P",
+  "localSymbol": "HIMS  261113P00024000",
+  "conId": 930324627,
+  "tradingClass": "HIMS",
+  "multiplier": "100"
+}

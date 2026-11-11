@@ -1,0 +1,11 @@
+{
+  "symbol": "MSTR",
+  "option_dte": 7,
+  "expiry": "20261113",
+  "strike": 136.0,
+  "right": "C",
+  "localSymbol": "MSTR  261113C00136000",
+  "conId": 939171881,
+  "tradingClass": "MSTR",
+  "multiplier": "100"
+}

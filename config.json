@@ -97,6 +97,7 @@
   "risk": {
     "account_size": 3000.0,
     "use_ibkr_buying_power": true,
+    "use_daily_available_capital": true,
     "max_trades_per_day": 3,
     "allow_same_symbol_same_day": false,
     "recycle_capital_after_exit": true,
@@ -121,8 +122,7 @@
     "force_exit_minute": 45,
     "max_consecutive_losses": 2,
     "max_daily_drawdown_pct": 6.0,
-    "exit_evaluation_mode": "five_minute_close",
-    "use_daily_available_capital": true
+    "exit_evaluation_mode": "five_minute_close"
   },
   "order": {
     "type": "MARKET"
@@ -336,13 +336,13 @@
       "ibkr_request_delay_seconds": 0.25,
       "ibkr_max_retries": 2
     },
-    "account_size": 13000.0,
+    "account_size": 9000.0,
     "max_trades_per_day": 3,
     "sizing_method": "percent_equity",
     "position_allocation_pct": 65.0,
     "max_daily_exposure_pct": 95.0,
-    "max_spend_per_trade": 8450.0,
-    "max_daily_capital": 12350.0,
+    "max_spend_per_trade": 5850.0,
+    "max_daily_capital": 8550.0,
     "max_contracts": 0,
     "recycle_capital_after_exit": true,
     "reserve_capital_for_remaining_trades": true,

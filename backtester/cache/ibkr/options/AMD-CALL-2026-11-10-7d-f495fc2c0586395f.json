@@ -1,0 +1,11 @@
+{
+  "symbol": "AMD",
+  "option_dte": 7,
+  "expiry": "20261116",
+  "strike": 525.0,
+  "right": "C",
+  "localSymbol": "AMD   261116C00525000",
+  "conId": 941401440,
+  "tradingClass": "AMD",
+  "multiplier": "100"
+}

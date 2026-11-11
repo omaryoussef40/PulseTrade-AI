@@ -645,6 +645,10 @@ def _option_chain_candidates(ib: IB, symbol: str, dte_target=7) -> list[dict]:
         params,
         key=lambda p: (
             0 if str(getattr(p, "exchange", "")).upper() == "SMART" else 1,
+            # Adjusted classes such as 2SPY can otherwise consume the entire
+            # worker's qualification budget before standard SPY is reached.
+            0 if str(getattr(p, "tradingClass", "")).upper() == str(stock.symbol).upper() else 1,
+            0 if str(getattr(p, "multiplier", "") or "100") == "100" else 1,
             str(getattr(p, "tradingClass", "")),
         ),
     )
@@ -731,7 +735,7 @@ def estimate_delta(option_type: str, strike: float, stock_price: float) -> float
     return max(-0.90, min(-0.10, delta))
 
 
-def get_snapshot_mid(ib: IB, contract) -> dict:
+def get_snapshot_mid(ib: IB, contract, *, require_live_greeks: bool = True) -> dict:
     ticker = ib.reqMktData(contract, "", snapshot=True, regulatorySnapshot=False)
     is_option_contract = str(getattr(contract, "secType", "") or "").upper() in {"OPT", "FOP"}
     deadline = time.time() + 3
@@ -739,7 +743,9 @@ def get_snapshot_mid(ib: IB, contract) -> dict:
         ib.sleep(0.25)
         has_quote = (ticker.bid and ticker.bid > 0) or (ticker.ask and ticker.ask > 0) or (ticker.last and ticker.last > 0)
         has_greeks = bool(ticker.modelGreeks or ticker.bidGreeks or ticker.askGreeks or ticker.lastGreeks)
-        if has_greeks or (has_quote and not is_option_contract):
+        has_bid_ask = bool(_finite_number(ticker.bid) and ticker.bid > 0
+                           and _finite_number(ticker.ask) and ticker.ask > 0)
+        if (is_option_contract and has_bid_ask and (has_greeks or not require_live_greeks)) or (has_quote and not is_option_contract):
             break
 
     bid = ticker.bid if ticker.bid and ticker.bid > 0 else np.nan
@@ -998,7 +1004,7 @@ def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dt
     option_type = "CALL" if signal == "CALL" else "PUT"
 
     # Start with strikes close to target estimated delta to reduce API calls,
-    # then require real IBKR Greeks before a contract can be selected.
+    # Live Greeks are required only when the corresponding filter is enabled.
     option_rows = []
     rejects: dict[str, int] = {}
     qualification_checks = 0
@@ -1042,7 +1048,7 @@ def recommend_option_ib(ib: IB, symbol: str, signal: str, stock_price: float, dt
                 continue
             contract = qualified[0]
             market_checks += 1
-            market = get_snapshot_mid(ib, contract)
+            market = get_snapshot_mid(ib, contract, require_live_greeks=bool(filters.get("require_live_greeks", True)))
             if prepared_option is not None:
                 quote_time = market.get("Quote Time")
                 if market.get("Market Data Type") != 1 or not isinstance(quote_time, datetime) or quote_time.tzinfo is None or not 0 <= (datetime.now(EASTERN) - quote_time).total_seconds() <= 15:

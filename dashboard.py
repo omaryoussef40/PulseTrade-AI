@@ -3916,7 +3916,9 @@ def run_ibkr_scanner_job(scan_cfg: dict, scan_symbols: list[str], source: str = 
         final_message = "Scanner complete"
         if stock_df.empty:
             final_status = "no_data"
-            analysis_minutes = 15
+            from strategies.pmb.candles import confirmation_analysis_minutes
+            analysis_minutes = confirmation_analysis_minutes(
+                scan_cfg["strategy"].get("breakout_follow_through"), 15)
             required_bars = max(
                 int(scan_cfg["strategy"].get("min_session_bars", 7)),
                 max(1, int(round(float(scan_cfg["strategy"].get("orb_minutes", 15)) / analysis_minutes))) + 1,
@@ -4534,7 +4536,7 @@ elif selected_page == "📈 Scanner & Breakdown":
                                 "No clean option contract passed the live filters "
                                 f"(spread <= {filters.get('max_spread_pct')}%, "
                                 f"|delta| >= {filters.get('min_abs_delta')}, "
-                                "live Greeks required)."
+                                f"{'live Greeks required' if filters.get('require_live_greeks', True) else 'estimated delta allowed when live Greeks are missing'})."
                             )
                     else:
                         st.info("No option contract priced because the scanner signal is WAIT.")

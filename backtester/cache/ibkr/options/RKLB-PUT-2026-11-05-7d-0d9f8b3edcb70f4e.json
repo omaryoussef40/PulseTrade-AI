@@ -1,0 +1,11 @@
+{
+  "symbol": "RKLB",
+  "option_dte": 7,
+  "expiry": "20261113",
+  "strike": 47.5,
+  "right": "P",
+  "localSymbol": "RKLB  261113P00047500",
+  "conId": 939202835,
+  "tradingClass": "RKLB",
+  "multiplier": "100"
+}
